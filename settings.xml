@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 
+                              https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+  <!-- ========================================
+       本地倉庫路徑（可自訂）
+       ======================================== -->
+  <localRepository>D:/maven_repo</localRepository>
+
+  <!-- ========================================
+       鏡像配置（台灣/亞洲優化）
+       優先順序：阿里雲 > 清華 > 中國科大 > Maven Central
+       ======================================== -->
+  <mirrors>
+    <!-- 阿里雲公共代理（推薦，速度快且穩定） -->
+    <mirror>
+      <id>aliyun-central</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Aliyun Maven Central Mirror</name>
+      <url>https://maven.aliyun.com/repository/central</url>
+    </mirror>
+
+    <!-- 阿里雲公共倉庫（排除 GitHub Packages 和 central-direct，讓它們從官方下載） -->
+    <mirror>
+      <id>aliyun-public</id>
+      <mirrorOf>*,!github,!central-direct</mirrorOf>
+      <name>Aliyun Public Repository</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+
+    <!-- 清華大學 TUNA 鏡像（備用1） -->
+    <mirror>
+      <id>tuna</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Tsinghua University Maven Mirror</name>
+      <url>https://mirrors.tuna.tsinghua.edu.cn/maven/</url>
+    </mirror>
+
+    <!-- 中國科技大學鏡像（備用2） -->
+    <mirror>
+      <id>ustc</id>
+      <mirrorOf>central</mirrorOf>
+      <name>USTC Maven Mirror</name>
+      <url>https://mirrors.ustc.edu.cn/maven/maven2/</url>
+    </mirror>
+
+    <!-- 華為雲鏡像（備用3） -->
+    <mirror>
+      <id>huaweicloud</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Huawei Cloud Maven Mirror</name>
+      <url>https://repo.huaweicloud.com/repository/maven/</url>
+    </mirror>
+  </mirrors>
+
+  <!-- ========================================
+       Profile 配置（多倉庫源）
+       ======================================== -->
+  <profiles>
+    <!-- 阿里雲 Profile -->
+    <profile>
+      <id>aliyun</id>
+      <repositories>
+        <!-- Maven Central -->
+        <repository>
+          <id>aliyun-central</id>
+          <url>https://maven.aliyun.com/repository/central</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+
+        <!-- Public Repository (包含 JCenter, Spring, Apache Snapshots 等) -->
+        <repository>
+          <id>aliyun-public</id>
+          <url>https://maven.aliyun.com/repository/public</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+
+        <!-- Spring Repository -->
+        <repository>
+          <id>aliyun-spring</id>
+          <url>https://maven.aliyun.com/repository/spring</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+
+        <!-- Apache Snapshots -->
+        <repository>
+          <id>aliyun-apache-snapshots</id>
+          <url>https://maven.aliyun.com/repository/apache-snapshots</url>
+          <releases>
+            <enabled>false</enabled>
+          </releases>
+          <snapshots>
+            <enabled>true</enabled>
+            <updatePolicy>daily</updatePolicy>
+          </snapshots>
+        </repository>
+
+        <!-- Maven Central (for packages not in mirrors like modern-docking) -->
+        <repository>
+          <id>central-direct</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+      </repositories>
+
+      <pluginRepositories>
+        <pluginRepository>
+          <id>aliyun-plugin-central</id>
+          <url>https://maven.aliyun.com/repository/central</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </pluginRepository>
+
+        <pluginRepository>
+          <id>aliyun-plugin-public</id>
+          <url>https://maven.aliyun.com/repository/public</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+
+    <!-- 清華 TUNA Profile（備用） -->
+    <profile>
+      <id>tuna</id>
+      <repositories>
+        <repository>
+          <id>tuna-central</id>
+          <url>https://mirrors.tuna.tsinghua.edu.cn/maven/</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+      </repositories>
+
+      <pluginRepositories>
+        <pluginRepository>
+          <id>tuna-plugin</id>
+          <url>https://mirrors.tuna.tsinghua.edu.cn/maven/</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+
+    <!-- Maven Central 官方（最終備用） -->
+    <profile>
+      <id>maven-central</id>
+      <repositories>
+        <repository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </repository>
+      </repositories>
+
+      <pluginRepositories>
+        <pluginRepository>
+          <id>central-plugin</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>false</enabled>
+          </snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <!-- ========================================
+       啟用的 Profile（預設使用阿里雲）
+       ======================================== -->
+  <activeProfiles>
+    <activeProfile>aliyun</activeProfile>
+  </activeProfiles>
+
+  <!-- ========================================
+       伺服器認證（如需私有倉庫可在此配置）
+       ======================================== -->
+  <servers>
+    <!-- 範例：如果需要認證的私有倉庫 -->
+    <!--
+    <server>
+      <id>private-repo</id>
+      <username>your-username</username>
+      <password>your-password</password>
+    </server>
+    -->
+  </servers>
+
+  <!-- ========================================
+       代理配置（如需透過代理連線）
+       ======================================== -->
+  <proxies>
+    <!-- 範例：如果需要 HTTP 代理 -->
+    <!--
+    <proxy>
+      <id>proxy1</id>
+      <active>false</active>
+      <protocol>http</protocol>
+      <host>proxy.example.com</host>
+      <port>8080</port>
+      <username>proxyuser</username>
+      <password>proxypass</password>
+      <nonProxyHosts>localhost|127.0.0.1</nonProxyHosts>
+    </proxy>
+    -->
+  </proxies>
+
+</settings>
+
