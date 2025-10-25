@@ -7,6 +7,8 @@
 ![FlatLaf](https://img.shields.io/badge/FlatLaf-3.6.1-green)
 ![License](https://img.shields.io/badge/License-Learning-yellow)
 
+> 📋 **完整文檔**: [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md) 包含詳細的技術細節、開發歷程和進度追蹤
+
 ---
 
 ## ✨ 主要特色
@@ -229,60 +231,12 @@ executor.scheduleAtFixedRate(
 
 ## 📦 技術架構
 
-### 技術棧
-```
-Frontend (UI)
-├── Swing (核心 UI 框架)
-├── FlatLaf 3.6.1 (現代化外觀)
-├── MigLayout 11.3 (佈局管理)
-└── Modern Docking 1.3.1 (可停靠面板)
+**核心技術棧**:
+- **UI**: Java Swing + FlatLaf + Modern Docking
+- **圖表**: JFreeChart + ta4j (技術指標)
+- **建構**: Maven + JDK 17
 
-Chart & Analysis
-├── JFreeChart 1.5.4 (圖表繪製)
-└── ta4j 0.15 (技術指標計算)
-
-Data Management
-├── GlazedLists 1.11.0 (動態表格)
-└── Java Concurrent (執行緒安全)
-
-Build Tools
-├── Maven 3.8+ (建構管理)
-└── JDK 17 (執行環境)
-```
-
-### 專案結構
-```
-DreamHouseTrading/
-├── src/main/java/com/dreamhouse/trading/
-│   ├── Main.java                    # 程式入口
-│   ├── core/                        # 核心邏輯
-│   │   ├── MarketDataFeed.java      # 行情介面
-│   │   ├── SimulatorFeed.java       # 模擬器
-│   │   ├── IndicatorService.java    # 指標服務
-│   │   └── model/                   # 數據模型
-│   ├── ui/                          # 使用者介面
-│   │   ├── MainFrameWithDocking.java  # 主視窗
-│   │   ├── StatusBar.java           # 狀態列
-│   │   ├── MenuBarFactory.java      # 選單
-│   │   ├── ToolBarFactory.java      # 工具列
-│   │   └── dock/                    # 面板元件
-│   │       ├── ChartDock.java       # 圖表
-│   │       ├── WatchlistPanel.java  # 觀察清單
-│   │       ├── OrderBookDock.java   # 掛單簿
-│   │       ├── TimeSalesDock.java   # 成交明細
-│   │       └── NewsDock.java        # 新聞
-│   └── util/
-│       └── I18n.java                # 國際化工具
-├── src/main/resources/
-│   ├── messages_zh.properties       # 中文翻譯
-│   └── messages_en.properties       # 英文翻譯
-├── pom.xml                          # Maven 設定
-├── settings.xml                     # Maven 映射設定
-├── FEATURES.md                      # 詳細功能清單
-├── MAVEN_SETUP_GUIDE.md            # Maven 設定指南
-├── MODERN_DOCKING_GUIDE.md         # Modern Docking 指南
-└── I18N_GUIDE.md                   # 國際化指南
-```
+> 📋 **詳細架構**: 請參考 [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md#技術架構)
 
 ---
 
@@ -298,140 +252,43 @@ DreamHouseTrading/
 
 ## 🔧 疑難排解
 
-### 常見問題
+### 快速解決
 
-**Q1: 編譯失敗，找不到依賴套件**
+**編譯失敗**:
 ```bash
-# 解決方法：清理並重新下載
-mvn clean
-mvn dependency:purge-local-repository
-mvn compile
+mvn clean compile
 ```
 
-**Q2: 圖表沒有顯示數據**
-- 確認程式已啟動超過 1 秒（第一根 K 線需要時間）
-- 檢查狀態列是否顯示「● 模擬中」
-- 查看 FPS 是否大於 0
+**圖表無數據**: 等待1秒，檢查狀態列「● 模擬中」
 
-**Q3: Modern Docking 無法下載**
-- 使用提供的 `settings.xml` 設定 Maven 映射
-- 參考 [MAVEN_SETUP_GUIDE.md](MAVEN_SETUP_GUIDE.md)
+**Modern Docking 問題**: 使用提供的 `settings.xml`
 
-**Q4: 主題切換後圖表沒有變色**
-- 確認使用的是 `MainFrameWithDocking` 而非 `MainFrameAdvanced`
-- 重新啟動程式
+> 🐛 **完整問題解決**: 請參考 [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md#問題解決)
 
 ---
 
 ## 🚀 未來規劃
 
-### 短期目標 (1-2 個月)
+### 📅 **近期目標**
 
-#### 1. 完善繪圖工具 🎨
-- [x] **趨勢線繪製**
-  - [x] 滑鼠拖曳繪製趨勢線
-  - [x] 支援線條編輯（移動、調整角度）
-  - [x] 線條樣式設定（顏色、粗細、虛線）
-  - [ ] 趨勢線突破提醒
-  - [ ] 保存與載入繪圖
-  
-- [x] **水平線繪製**
-  - [x] 快速標記支撐/壓力位
-  - [x] 價格標籤顯示
-  - [x] 批量管理水平線
-  - [x] 顏色分類（支撐綠、壓力紅）
-  
-- [ ] **測量工具**
-  - [ ] 價格漲跌幅測量
-  - [ ] 時間跨度測量
-  - [ ] K線數量統計
+#### ✅ **已完成** (2024-10-25)
+- 📈 **K線圖表系統** - 即時更新、多時間週期
+- 🎨 **繪圖工具** - 趨勢線、水平線
+- 📊 **技術指標** - SMA/EMA/RSI/MACD/BOLL/KD/ADX/OBV/CCI/WR
+- 🌐 **國際化** - 中英文切換
+- 📁 **CSV 管理** - 匯入/匯出功能
 
-#### 2. 擴充技術指標 📊
-- [x] **趨勢類指標**
-  - [x] BOLL (布林通道) - 20, 2σ
-  - [x] MACD 加入零軸線
-  - [x] DMI/ADX (趨向指標)
-  - [ ] SAR (拋物線轉向)
-  
-- [x] **震盪類指標**
-  - [x] KD (隨機指標) - 9, 3, 3
-  - [x] CCI (順勢指標) - 14
-  - [x] Williams %R - 14
-  
-- [x] **成交量指標**
-  - [x] OBV (能量潮)
-  - [ ] VRSI (量相對強弱)
-  - [ ] 成交量 MA
+#### 🔄 **進行中**
+- 🎯 **測量工具** - 價格/時間測量
+- 📊 **回測系統** - 策略框架
+- 📈 **更多指標** - SAR/ATR/VRSI
 
-- [x] **指標自訂**
-  - [x] 週期參數調整介面
-  - [x] 指標顏色自訂
-  - [x] 多指標疊加（最多3個）
+#### 📅 **下一步**
+- 🔗 **外部數據** - Yahoo Finance API
+- ⏱️ **多時間框架** - 同步顯示
+- 🤖 **智能功能** - 策略編輯器
 
-#### 3. 多時間框架分析 ⏱️
-- [ ] **同步顯示**
-  - 分割視窗顯示多週期
-  - 1分 + 5分 + 15分 三聯圖
-  - 時間軸同步捲動
-  
-- [ ] **快速切換**
-  - Tab 鍵快速切換週期
-  - 週期比較模式
-  - 主/次週期標示
-  
-- [ ] **數據對齊**
-  - 高低週期K線對齊
-  - 指標數值同步
-  - 游標同步定位
-
-#### 4. 歷史數據與回測 📈
-- [x] **數據管理**
-  - [x] CSV 檔案匯入/匯出
-  - [ ] 歷史數據下載（Yahoo Finance API）
-  - [ ] 數據庫儲存（SQLite）
-  - [x] 數據修復與補齊
-  
-- [ ] **回測引擎**
-  - [ ] 簡單策略回測框架
-  - [ ] 買賣訊號標記
-  - [ ] 績效統計（勝率、最大回撤）
-  - [ ] 資金曲線圖
-  
-- [ ] **策略範例**
-  - [ ] 雙均線交叉策略
-  - [ ] RSI 超買超賣策略
-  - [ ] MACD 金叉死叉策略
-  - [ ] 布林通道突破策略
-
-#### 5. 使用體驗優化 ✨
-- [ ] **圖表增強**
-  - 背景網格密度調整
-  - 字體大小設定
-  - K線寬度自適應
-  - 圖表截圖功能
-  
-- [ ] **數據顯示**
-  - Tooltip 資訊增強（顯示所有指標數值）
-  - K線資訊懸浮視窗
-  - 即時漲跌排行榜
-  
-- [ ] **快捷操作**
-  - 空白鍵暫停/恢復更新
-  - 方向鍵逐根K線瀏覽
-  - Home/End 跳至首尾
-  - PageUp/PageDown 翻頁
-
-### 中期目標
-- [ ] 接入真實行情 API
-- [ ] 策略編輯器與回測引擎
-- [ ] 下單交易介面
-- [ ] 部位管理系統
-
-### 長期目標
-- [ ] 資料庫持久化
-- [ ] 雲端同步
-- [ ] 移動端應用
-- [ ] AI 智能輔助
+> 📋 **詳細規劃**: 請參考 [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md#未來規劃)
 
 ---
 
