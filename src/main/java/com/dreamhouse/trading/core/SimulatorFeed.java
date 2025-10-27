@@ -51,7 +51,7 @@ public class SimulatorFeed implements MarketDataFeed {
     private void generateHistoricalData() {
         for (String symbol : listeners.keySet()) {
             double basePrice = lastPrices.get(symbol);
-            LocalDateTime startTime = LocalDateTime.now().minusMinutes(50);
+            LocalDateTime startTime = LocalDateTime.now().minusMinutes(300);
             
             double currentPrice = basePrice - 5.0 + random.nextDouble() * 10.0; // 起始價格
             
@@ -59,7 +59,7 @@ public class SimulatorFeed implements MarketDataFeed {
             if (symbolListeners == null) continue;
             
             // 生成 50 根歷史 K 線
-            for (int i = 0; i < 50; i++) {
+            for (int i = 0; i < 300; i++) {
                 LocalDateTime barTime = startTime.plusMinutes(i);
                 
                 // 模擬K線的開高低收

@@ -18,6 +18,10 @@ import org.jfree.chart.renderer.xy.XYBarRenderer;
 import org.jfree.chart.renderer.xy.XYItemRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.data.time.Minute;
+import org.jfree.data.time.Hour;
+import org.jfree.data.time.Day;
+import org.jfree.data.time.Week;
+import org.jfree.data.time.Month;
 import org.jfree.data.time.RegularTimePeriod;
 import org.jfree.data.time.TimeSeries;
 import org.jfree.data.time.TimeSeriesCollection;
@@ -99,6 +103,12 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private double lastLow = 100.0;
     private long lastVolume = 0;
     private LocalDateTime lastBarTime = null;
+    
+    // 時間週期類型（根據數據自動檢測）
+    private enum TimeFrame {
+        MINUTE, HOUR, DAY, WEEK, MONTH
+    }
+    private TimeFrame detectedTimeFrame = TimeFrame.MINUTE;
     
     // 主題顏色（會根據 FlatLaf 主題自動調整）
     private Color plotBackgroundColor;
@@ -532,15 +542,78 @@ public class ChartDock extends JPanel implements MarketDataListener {
         // Not used in chart
     }
     
-    private void addNewBar() {
-        ZonedDateTime zdt = lastBarTime.atZone(ZoneId.systemDefault());
+    /**
+     * 根據 LocalDateTime 創建適當的時間週期
+     */
+    private RegularTimePeriod createTimePeriod(LocalDateTime dateTime) {
+        ZonedDateTime zdt = dateTime.atZone(ZoneId.systemDefault());
         Date date = Date.from(zdt.toInstant());
-        RegularTimePeriod period = new Minute(date);
+        
+        switch (detectedTimeFrame) {
+            case MONTH:
+                return new Month(date);
+            case WEEK:
+                return new Week(date);
+            case DAY:
+                return new Day(date);
+            case HOUR:
+                return new Hour(date);
+            case MINUTE:
+            default:
+                return new Minute(date);
+        }
+    }
+    
+    /**
+     * 檢測數據的時間週期類型
+     */
+    private void detectTimeFrame(java.util.List<Bar> bars) {
+        if (bars == null || bars.size() < 2) {
+            detectedTimeFrame = TimeFrame.MINUTE;
+            return;
+        }
+        
+        // 計算前幾根 K 線的平均時間間隔
+        long totalMinutes = 0;
+        int count = 0;
+        for (int i = 1; i < Math.min(bars.size(), 10); i++) {
+            Duration duration = Duration.between(
+                bars.get(i - 1).getTimestamp(),
+                bars.get(i).getTimestamp()
+            );
+            totalMinutes += duration.toMinutes();
+            count++;
+        }
+        
+        long avgMinutes = totalMinutes / count;
+        
+        // 根據平均時間間隔判斷週期類型
+        if (avgMinutes >= 20000) { // 約 14 天以上
+            detectedTimeFrame = TimeFrame.MONTH;
+            System.out.println("[ChartDock] 檢測到月線數據 (平均間隔: " + avgMinutes + " 分鐘)");
+        } else if (avgMinutes >= 5000) { // 約 3.5 天以上
+            detectedTimeFrame = TimeFrame.WEEK;
+            System.out.println("[ChartDock] 檢測到週線數據 (平均間隔: " + avgMinutes + " 分鐘)");
+        } else if (avgMinutes >= 1000) { // 約 16 小時以上
+            detectedTimeFrame = TimeFrame.DAY;
+            System.out.println("[ChartDock] 檢測到日線數據 (平均間隔: " + avgMinutes + " 分鐘)");
+        } else if (avgMinutes >= 30) { // 30 分鐘以上
+            detectedTimeFrame = TimeFrame.HOUR;
+            System.out.println("[ChartDock] 檢測到小時線數據 (平均間隔: " + avgMinutes + " 分鐘)");
+        } else {
+            detectedTimeFrame = TimeFrame.MINUTE;
+            System.out.println("[ChartDock] 檢測到分鐘線數據 (平均間隔: " + avgMinutes + " 分鐘)");
+        }
+    }
+    
+    private void addNewBar() {
+        RegularTimePeriod period = createTimePeriod(lastBarTime);
         
         ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
         volumeSeries.addOrUpdate(period, lastVolume);
         
         // 添加到 ta4j BarSeries
+        ZonedDateTime zdt = lastBarTime.atZone(ZoneId.systemDefault());
         indicatorService.addBar(
             zdt,  // 使用 ZonedDateTime
             lastOpen,
@@ -557,9 +630,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private void updateLastBar() {
         if (ohlcSeries.getItemCount() == 0) return;
         
-        ZonedDateTime zdt = lastBarTime.atZone(ZoneId.systemDefault());
-        Date date = Date.from(zdt.toInstant());
-        RegularTimePeriod period = new Minute(date);
+        RegularTimePeriod period = createTimePeriod(lastBarTime);
         
         // 刪除最後一根並重新添加（JFreeChart OHLCSeries 沒有 update 方法）
         int lastIndex = ohlcSeries.getItemCount() - 1;
@@ -854,11 +925,13 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     public void setOverlayIndicator(String indicator) {
+        System.out.println("設置疊線指標: " + indicator);
         this.currentOverlayIndicator = indicator;
         updateIndicators();
     }
     
     public void setSubIndicator(String indicator) {
+        System.out.println("設置副圖指標: " + indicator);
         this.currentSubIndicator = indicator;
         
         // 重建副圖
@@ -1027,16 +1100,13 @@ public class ChartDock extends JPanel implements MarketDataListener {
             cciSeries.clear();
             wrSeries.clear();
             
+            // 檢測數據的時間週期類型
+            detectTimeFrame(bars);
+            
             // 載入新數據
             for (Bar bar : bars) {
-                // 添加 OHLC 數據
-                Minute timePeriod = new Minute(
-                    bar.getTimestamp().getMinute(),
-                    bar.getTimestamp().getHour(),
-                    bar.getTimestamp().getDayOfMonth(),
-                    bar.getTimestamp().getMonthValue(),
-                    bar.getTimestamp().getYear()
-                );
+                // 使用智能時間週期創建
+                RegularTimePeriod timePeriod = createTimePeriod(bar.getTimestamp());
                 
                 ohlcSeries.add(
                     timePeriod,
@@ -1183,6 +1253,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
         chartPanel.addChartMouseListener(new ChartMouseListener() {
             private double lastX = 0;
             private double lastY = 0;
+            private long lastRepaintTime = 0;
+            private static final long REPAINT_THROTTLE_MS = 16; // 約60 FPS
             
             @Override
             public void chartMouseClicked(ChartMouseEvent event) {
@@ -1191,7 +1263,34 @@ public class ChartDock extends JPanel implements MarketDataListener {
             
             @Override
             public void chartMouseMoved(ChartMouseEvent event) {
-                handleChartMouseMoved(event);
+                // 節流處理，避免過度重繪
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastRepaintTime > REPAINT_THROTTLE_MS) {
+                    handleChartMouseMoved(event);
+                    lastRepaintTime = currentTime;
+                }
+            }
+        });
+        
+        // 添加鍵盤事件監聽器支援刪除
+        chartPanel.setFocusable(true);
+        chartPanel.addKeyListener(new java.awt.event.KeyAdapter() {
+            @Override
+            public void keyPressed(java.awt.event.KeyEvent e) {
+                if (e.getKeyCode() == java.awt.event.KeyEvent.VK_DELETE) {
+                    if (drawingManager.getSelectedObject() != null) {
+                        drawingManager.deleteSelected();
+                        chartPanel.repaint();
+                    }
+                } else if (e.getKeyCode() == java.awt.event.KeyEvent.VK_ESCAPE) {
+                    if (drawingManager.isDrawing()) {
+                        drawingManager.cancelDrawing();
+                        chartPanel.repaint();
+                    } else {
+                        drawingManager.deselectAll();
+                        chartPanel.repaint();
+                    }
+                }
             }
         });
     }
@@ -1218,20 +1317,34 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 if (drawingManager.isDrawing()) {
                     // 完成繪製
                     drawingManager.finishDrawing(screenX, screenY, dataArea);
-                } else {
-                    // 開始繪製或選擇對象
+                } else if (drawingManager.getCurrentTool() != DrawingManager.DrawingTool.NONE) {
+                    // 開始繪製新對象
                     drawingManager.startDrawing(screenX, screenY, dataArea);
+                } else {
+                    // 選擇模式：嘗試選擇對象
+                    boolean selected = drawingManager.selectObjectAt(screenX, screenY, dataArea);
+                    if (!selected) {
+                        // 點擊空白區域，取消所有選擇
+                        drawingManager.deselectAll();
+                    }
                 }
                 
                 // 重繪圖表
-                chartPanel.repaint();
+                SwingUtilities.invokeLater(() -> chartPanel.repaint());
+                
+                // 確保圖表面板獲得焦點以接收鍵盤事件
+                chartPanel.requestFocusInWindow();
+                
             } else if (SwingUtilities.isRightMouseButton(event.getTrigger())) {
                 // 右鍵：取消繪製或顯示菜單
                 if (drawingManager.isDrawing()) {
                     drawingManager.cancelDrawing();
-                    chartPanel.repaint();
+                    SwingUtilities.invokeLater(() -> chartPanel.repaint());
                 } else {
-                    // 可以在這裡添加右鍵菜單
+                    // 如果右鍵點擊在對象上，先選擇它
+                    if (drawingManager.getCurrentTool() == DrawingManager.DrawingTool.NONE) {
+                        drawingManager.selectObjectAt(screenX, screenY, dataArea);
+                    }
                     showDrawingContextMenu(event.getTrigger().getX(), event.getTrigger().getY());
                 }
             }
@@ -1242,7 +1355,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
      * 處理滑鼠移動事件
      */
     private void handleChartMouseMoved(ChartMouseEvent event) {
-        if (pricePlot == null || !drawingManager.isDrawing()) return;
+        if (pricePlot == null) return;
         
         java.awt.geom.Point2D point = chartPanel.translateScreenToJava2D(
             new java.awt.Point(event.getTrigger().getX(), event.getTrigger().getY())
@@ -1254,9 +1367,43 @@ public class ChartDock extends JPanel implements MarketDataListener {
             double screenX = point.getX() - dataArea.getX();
             double screenY = point.getY() - dataArea.getY();
             
-            // 更新繪製中的對象
-            drawingManager.updateDrawing(screenX, screenY, dataArea);
-            chartPanel.repaint();
+            // 如果正在繪製，更新臨時對象
+            if (drawingManager.isDrawing()) {
+                drawingManager.updateDrawing(screenX, screenY, dataArea);
+                // 使用 SwingUtilities.invokeLater 避免阻塞
+                SwingUtilities.invokeLater(() -> chartPanel.repaint());
+            } else {
+                // 檢查滑鼠懸停效果（可選）
+                updateMouseCursor(screenX, screenY, dataArea);
+            }
+        }
+    }
+    
+    /**
+     * 更新滑鼠游標樣式
+     */
+    private void updateMouseCursor(double x, double y, java.awt.geom.Rectangle2D dataArea) {
+        // 檢查是否懸停在繪圖對象上
+        boolean overObject = false;
+        for (DrawingObject obj : drawingManager.getAllDrawings()) {
+            if (obj.isVisible() && obj.hitTest(x, y, dataArea)) {
+                overObject = true;
+                break;
+            }
+        }
+        
+        // 設定游標樣式
+        java.awt.Cursor cursor;
+        if (drawingManager.getCurrentTool() != DrawingManager.DrawingTool.NONE) {
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.CROSSHAIR_CURSOR);
+        } else if (overObject) {
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR);
+        } else {
+            cursor = java.awt.Cursor.getDefaultCursor();
+        }
+        
+        if (chartPanel.getCursor() != cursor) {
+            chartPanel.setCursor(cursor);
         }
     }
     
@@ -1264,15 +1411,10 @@ public class ChartDock extends JPanel implements MarketDataListener {
      * 顯示繪圖工具右鍵菜單
      */
     private void showDrawingContextMenu(int x, int y) {
+        JPopupMenu menu = new JPopupMenu();
+        
+        // 如果有選中的對象，顯示編輯選項
         if (drawingManager.getSelectedObject() != null) {
-            JPopupMenu menu = new JPopupMenu();
-            
-            JMenuItem deleteItem = new JMenuItem(I18n.get("drawing.delete"));
-            deleteItem.addActionListener(e -> {
-                drawingManager.deleteSelected();
-                chartPanel.repaint();
-            });
-            
             JMenuItem colorItem = new JMenuItem(I18n.get("drawing.color"));
             colorItem.addActionListener(e -> {
                 DrawingObject obj = drawingManager.getSelectedObject();
@@ -1289,8 +1431,46 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 }
             });
             
+            JMenuItem deleteItem = new JMenuItem(I18n.get("drawing.delete"));
+            deleteItem.addActionListener(e -> {
+                drawingManager.deleteSelected();
+                chartPanel.repaint();
+            });
+            
             menu.add(colorItem);
             menu.add(deleteItem);
+            menu.addSeparator();
+        }
+        
+        // 通用選項
+        if (drawingManager.getDrawingCount() > 0) {
+            JMenuItem clearAllItem = new JMenuItem(I18n.get("drawing.clear.all"));
+            clearAllItem.addActionListener(e -> {
+                int result = JOptionPane.showConfirmDialog(
+                    this,
+                    "確定要清除所有繪圖嗎？",
+                    "確認清除",
+                    JOptionPane.YES_NO_OPTION
+                );
+                if (result == JOptionPane.YES_OPTION) {
+                    drawingManager.clearAll();
+                    chartPanel.repaint();
+                }
+            });
+            menu.add(clearAllItem);
+        }
+        
+        // 工具切換選項
+        menu.addSeparator();
+        JMenuItem selectToolItem = new JMenuItem("選擇工具");
+        selectToolItem.addActionListener(e -> {
+            drawingManager.setCurrentTool(DrawingManager.DrawingTool.NONE);
+            updateMouseCursor(0, 0, null); // 更新游標
+        });
+        menu.add(selectToolItem);
+        
+        // 只有在有菜單項目時才顯示
+        if (menu.getComponentCount() > 0) {
             menu.show(chartPanel, x, y);
         }
     }

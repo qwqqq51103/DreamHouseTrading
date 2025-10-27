@@ -144,7 +144,22 @@
 
 ### 🔄 進行中功能
 
-#### 🎯 繪圖工具增強
+#### 🎯 繪圖工具增強 ⏸️ **暫停開發**
+
+**暫停原因**:
+- 基礎繪圖功能已完成 (趨勢線、水平線)
+- 用戶反饋延遲問題已修復 (效能優化完成)
+- 優先開發回測系統以提供更核心的交易分析功能
+- 測量工具和進階繪圖屬於輔助功能，可後續開發
+
+**已完成功能**:
+- ✅ 趨勢線繪製與編輯
+- ✅ 水平線繪製與編輯  
+- ✅ 滑鼠交互優化 (選擇、刪除、顏色修改)
+- ✅ 鍵盤快捷鍵支援 (Delete、Escape)
+- ✅ 效能優化 (60 FPS 節流、非阻塞重繪)
+
+**待開發功能** (暫停):
 - [ ] **測量工具**
   - [ ] 價格漲跌幅測量
   - [ ] 時間跨度測量
@@ -154,16 +169,65 @@
   - [ ] 繪圖保存/載入
   - [ ] 複製/貼上
 
-#### 📊 回測系統
-- [ ] **回測引擎**
-  - [ ] 策略框架
-  - [ ] 訊號生成
-  - [ ] 績效統計
-- [ ] **內建策略**
-  - [ ] 雙均線策略
-  - [ ] RSI 策略
-  - [ ] MACD 策略
-  - [ ] 布林通道策略
+#### 📊 回測系統 ✅ **完成**
+
+**已完成功能**:
+- ✅ **回測引擎核心架構**
+  - ✅ BacktestEngine - 回測引擎主類
+  - ✅ Strategy 接口 - 策略抽象定義
+  - ✅ BaseStrategy - 策略基類實現
+  - ✅ Portfolio - 投資組合管理
+  - ✅ Position - 持倉管理
+  - ✅ Trade - 交易記錄
+  - ✅ BacktestResult - 回測結果統計
+  - ✅ 進度更新機制 (BacktestListener)
+  - ✅ SwingWorker 後台執行
+
+- ✅ **策略框架**
+  - ✅ 策略接口設計
+  - ✅ 參數配置系統 (StrategyConfig)
+  - ✅ 事件監聽機制 (BacktestListener)
+  - ✅ 示例策略 (SimpleMovingAverageStrategy)
+
+- ✅ **基礎功能**
+  - ✅ 歷史數據載入
+  - ✅ 逐K線回測執行
+  - ✅ 買賣訂單處理
+  - ✅ 手續費和滑點計算
+  - ✅ 投資組合追蹤
+
+**已完成功能** (新增):
+- ✅ **內建策略擴展**
+  - ✅ 雙移動平均線策略
+  - ✅ RSI 策略 (超買超賣信號)
+  - ✅ MACD 策略 (金叉死叉信號)
+  - ✅ 布林通道策略 (突破與回歸)
+
+- ✅ **績效分析增強**
+  - ✅ 基礎績效指標 (收益率、最大回撤)
+  - ✅ 夏普比率計算
+  - ✅ 交易統計 (勝率、盈虧比)
+  - ✅ 收益曲線圖表 (PerformanceChart)
+  - ✅ 回撤曲線圖表
+  - ✅ 收益分布直方圖
+  - ✅ 詳細報告生成 (HTML/文字格式)
+  - ✅ UTF-8 編碼支援 (修復亂碼問題)
+  - ✅ 黑色主題圖表 (與主界面一致)
+
+- ✅ **UI 整合**
+  - ✅ 回測參數設定對話框 (BacktestConfigDialog)
+  - ✅ 回測進度顯示 (BacktestProgressDialog)
+  - ✅ 結果展示面板 (BacktestResultDialog)
+  - ✅ 菜單整合 (工具 → 回測分析)
+  - ✅ 進度條實時更新 (SwingWorker 後台執行)
+  - ✅ 停止按鈕功能 (取消回測)
+  - ✅ 交易記錄顏色優化 (深色文字，易讀性提升)
+
+**待開發功能**:
+- [ ] **策略比較功能**
+  - [ ] 多策略同時回測
+  - [ ] 策略績效對比圖表
+  - [ ] 最佳參數優化
 
 ### 📅 待開發功能
 
@@ -192,12 +256,12 @@
 | 模組 | 完成度 | 狀態 | 最後更新 |
 |------|--------|------|----------|
 | 圖表系統 | 95% | ✅ 完成 | 2024-10-24 |
-| 繪圖工具 | 85% | 🟡 進行中 | 2024-10-25 |
+| 繪圖工具 | 85% | ⏸️ 暫停 | 2024-10-25 |
 | 技術指標 | 90% | ✅ 完成 | 2024-10-24 |
 | 市場數據 | 100% | ✅ 完成 | 2024-10-23 |
 | 使用者介面 | 100% | ✅ 完成 | 2024-10-24 |
 | 數據管理 | 75% | 🟡 進行中 | 2024-10-25 |
-| 回測系統 | 0% | 🔴 待開始 | - |
+| 回測系統 | 95% | ✅ 完成 | 2024-10-25 |
 
 ### 📅 開發時程表
 
@@ -215,9 +279,11 @@
 - ✅ **2024-10-25**: 趨勢線與水平線
 
 #### 第三階段 (進行中) - 功能完善
-- 🔄 **2024-10-25**: 繪圖工具增強
-- 📅 **2024-10-26**: 回測系統框架
-- 📅 **2024-10-27**: 策略實作
+- ⏸️ **2024-10-25**: 繪圖工具增強 (暫停開發)
+- ✅ **2024-10-25**: 回測系統框架 (已完成核心架構)
+- ✅ **2024-10-25**: 內建策略實作 (RSI, MACD, 布林通道)
+- ✅ **2024-10-25**: 績效統計與圖表 (完整實作)
+- ✅ **2024-10-25**: UI 整合與測試 (對話框與菜單)
 
 ### 🎯 里程碑
 
@@ -225,7 +291,7 @@
 |--------|----------|------|----------|
 | MVP 版本 | 2024-10-23 | ✅ | 2024-10-23 |
 | 繪圖工具完成 | 2024-10-25 | ✅ | 2024-10-25 |
-| 回測系統 | 2024-10-28 | 📅 | - |
+| 回測系統 | 2024-10-28 | ✅ | 2024-10-25 |
 | 1.0 正式版 | 2024-11-01 | 📅 | - |
 
 ---
@@ -691,6 +757,78 @@ public abstract class DrawingObject {
 public class TrendLine extends DrawingObject {
     private double x1, y1, x2, y2;
     // 實作繪製邏輯
+}
+```
+
+#### 2024-10-25: 回測系統完整實作
+- ✅ 建立回測引擎核心架構
+- ✅ 實作 4 種內建策略 (SMA, RSI, MACD, BOLL)
+- ✅ 完成績效統計與圖表生成
+- ✅ 整合 UI 對話框與進度顯示
+- ✅ 修復進度條阻塞問題
+- ✅ 修復圖表顯示與主題問題
+- ✅ 修復 HTML 報告亂碼問題
+
+#### 2024-10-27: 多時間週期支援
+- ✅ 實作智能時間週期檢測
+- ✅ 支援分鐘線、小時線、日線、週線、月線
+- ✅ 自動適配不同數據週期的顯示
+- ✅ 下載並提供 2324.TW 仁寶真實股票數據
+
+**回測架構設計**:
+```java
+// 回測引擎
+public class BacktestEngine {
+    private BarSeries barSeries;
+    private Portfolio portfolio;
+    private List<Strategy> strategies;
+    
+    public BacktestResult runBacktest() {
+        // 逐根 K 線執行策略
+        for (int i = 0; i < barSeries.getBarCount(); i++) {
+            processBar(i);
+            notifyProgressUpdate(progress);
+        }
+        return result;
+    }
+}
+
+// 策略接口
+public interface Strategy {
+    void initialize(BarSeries barSeries);
+    void onBar(int barIndex, Bar bar);
+    String getName();
+}
+```
+
+**關鍵修復**:
+1. **進度條阻塞**: 改為先執行 SwingWorker，再顯示模態對話框
+2. **圖表主題**: 統一使用黑色背景，與主界面一致
+3. **文字顏色**: 交易記錄使用深色文字，提升可讀性
+4. **HTML 編碼**: 使用 UTF-8 編碼寫入，避免亂碼
+5. **多時間週期**: 智能檢測數據間隔，自動選擇適當的時間週期顯示
+
+**多時間週期實作**:
+```java
+// 時間週期檢測
+private void detectTimeFrame(List<Bar> bars) {
+    long avgMinutes = calculateAverageInterval(bars);
+    if (avgMinutes >= 20000) detectedTimeFrame = TimeFrame.MONTH;
+    else if (avgMinutes >= 5000) detectedTimeFrame = TimeFrame.WEEK;
+    else if (avgMinutes >= 1000) detectedTimeFrame = TimeFrame.DAY;
+    else if (avgMinutes >= 30) detectedTimeFrame = TimeFrame.HOUR;
+    else detectedTimeFrame = TimeFrame.MINUTE;
+}
+
+// 智能創建時間週期
+private RegularTimePeriod createTimePeriod(LocalDateTime dateTime) {
+    switch (detectedTimeFrame) {
+        case MONTH: return new Month(date);
+        case WEEK: return new Week(date);
+        case DAY: return new Day(date);
+        case HOUR: return new Hour(date);
+        default: return new Minute(date);
+    }
 }
 ```
 

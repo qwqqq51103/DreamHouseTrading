@@ -1,11 +1,18 @@
 package com.dreamhouse.trading.ui;
 
 import com.dreamhouse.trading.core.*;
-import com.dreamhouse.trading.core.model.*;
+import com.dreamhouse.trading.core.model.Bar;
+import com.dreamhouse.trading.core.model.DepthLevel;
+import com.dreamhouse.trading.core.model.NewsItem;
+import com.dreamhouse.trading.core.model.Tick;
 import com.dreamhouse.trading.ui.chart.DrawingManager;
 import com.dreamhouse.trading.ui.dialog.CsvExportDialog;
 import com.dreamhouse.trading.ui.dialog.CsvImportDialog;
 import com.dreamhouse.trading.ui.dialog.IndicatorSettingsDialog;
+import com.dreamhouse.trading.ui.dialog.BacktestConfigDialog;
+import com.dreamhouse.trading.ui.dialog.BacktestProgressDialog;
+import com.dreamhouse.trading.ui.dialog.BacktestResultDialog;
+import com.dreamhouse.trading.core.backtest.*;
 import com.dreamhouse.trading.ui.dock.*;
 import com.dreamhouse.trading.util.I18n;
 import com.formdev.flatlaf.FlatDarkLaf;
@@ -18,6 +25,7 @@ import io.github.andrewauclair.moderndocking.Dockable;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -191,6 +199,15 @@ public class MainFrameWithDocking extends JFrame {
         
         menuBar.add(viewMenu);
         
+        // Tools Menu
+        JMenu toolsMenu = new JMenu(I18n.get("menu.tools"));
+        
+        JMenuItem backtestItem = new JMenuItem(I18n.get("menu.tools.backtest"));
+        backtestItem.addActionListener(e -> openBacktestDialog());
+        toolsMenu.add(backtestItem);
+        
+        menuBar.add(toolsMenu);
+        
         // Layout Menu
         JMenu layoutMenu = new JMenu(I18n.get("menu.layout"));
         JMenuItem resetLayout = new JMenuItem(I18n.get("menu.layout.reset"));
@@ -216,18 +233,66 @@ public class MainFrameWithDocking extends JFrame {
     }
     
     private JToolBar createToolBar() {
-        ToolBarFactory.ToolBarCallbacks callbacks = new ToolBarFactory.ToolBarCallbacks();
-        callbacks.onSymbolChange = this::changeSymbol;
-        callbacks.onTimeframeChange = this::changeTimeframe;
-        callbacks.onIndicatorChange = this::changeIndicator;
-        callbacks.onZoomIn = () -> chartDock.zoomIn();
-        callbacks.onZoomOut = () -> chartDock.zoomOut();
-        callbacks.onZoomReset = () -> chartDock.resetZoom();
-        callbacks.onCrosshairToggle = () -> chartDock.toggleCrosshair();
-        callbacks.onTrendlineToggle = this::toggleTrendline;
-        callbacks.onHorizontalLineToggle = this::toggleHorizontalLine;
+        // 創建簡化的工具列，避免 ToolBarCallbacks 載入問題
+        JToolBar toolBar = new JToolBar();
+        toolBar.setFloatable(false);
         
-        return ToolBarFactory.createToolBar(callbacks);
+        // Symbol 搜尋框
+        toolBar.add(new JLabel(" 商品 "));
+        JTextField symbolField = new JTextField("AAPL", 8);
+        symbolField.addActionListener(e -> changeSymbol(symbolField.getText()));
+        toolBar.add(symbolField);
+        
+        JButton addToWatchlist = new JButton("加入觀察");
+        toolBar.add(addToWatchlist);
+        toolBar.addSeparator();
+        
+        // Timeframe 選擇
+        toolBar.add(new JLabel(" 週期 "));
+        JComboBox<Timeframe> timeframeCombo = new JComboBox<>(Timeframe.values());
+        timeframeCombo.setMaximumSize(new Dimension(80, 25));
+        timeframeCombo.addActionListener(e -> changeTimeframe((Timeframe) timeframeCombo.getSelectedItem()));
+        toolBar.add(timeframeCombo);
+        toolBar.addSeparator();
+        
+        // 指標選擇
+        toolBar.add(new JLabel(" 指標 "));
+        String[] indicators = {"無", "SMA", "EMA", "RSI", "MACD", "BOLL", "KD", "ADX", "OBV", "CCI", "WR"};
+        JComboBox<String> indicatorCombo = new JComboBox<>(indicators);
+        indicatorCombo.setMaximumSize(new Dimension(120, 25));
+        indicatorCombo.addActionListener(e -> changeIndicator((String) indicatorCombo.getSelectedItem()));
+        toolBar.add(indicatorCombo);
+        toolBar.addSeparator();
+        
+        // 繪圖工具
+        JToggleButton crosshairBtn = new JToggleButton("✛ 十字線");
+        crosshairBtn.setSelected(true);
+        crosshairBtn.addActionListener(e -> chartDock.toggleCrosshair());
+        toolBar.add(crosshairBtn);
+        
+        JToggleButton trendlineBtn = new JToggleButton("📈 趨勢線");
+        trendlineBtn.addActionListener(e -> toggleTrendline());
+        toolBar.add(trendlineBtn);
+        
+        JToggleButton hlineBtn = new JToggleButton("─ 水平線");
+        hlineBtn.addActionListener(e -> toggleHorizontalLine());
+        toolBar.add(hlineBtn);
+        toolBar.addSeparator();
+        
+        // Zoom 控制
+        JButton zoomInBtn = new JButton("🔍+ 放大");
+        zoomInBtn.addActionListener(e -> chartDock.zoomIn());
+        toolBar.add(zoomInBtn);
+        
+        JButton zoomOutBtn = new JButton("🔍- 縮小");
+        zoomOutBtn.addActionListener(e -> chartDock.zoomOut());
+        toolBar.add(zoomOutBtn);
+        
+        JButton zoomResetBtn = new JButton("重置");
+        zoomResetBtn.addActionListener(e -> chartDock.resetZoom());
+        toolBar.add(zoomResetBtn);
+        
+        return toolBar;
     }
     
     private void subscribeMarketData() {
@@ -246,7 +311,7 @@ public class MainFrameWithDocking extends JFrame {
             }
             
             @Override
-            public void onTrade(Trade trade) {
+            public void onTrade(com.dreamhouse.trading.core.model.Trade trade) {
                 timeSalesDock.addTrade(trade);
             }
         });
@@ -266,39 +331,40 @@ public class MainFrameWithDocking extends JFrame {
     
     private void changeIndicator(String indicator) {
         // 根據工具列選擇的指標，控制 ChartDock 的疊線指標和副圖指標
-        // 從工具列取得的是翻譯後的文字，需要轉回英文
-        if (I18n.get("indicator.none").equals(indicator)) {
+        // 工具列使用的是英文字符串，直接匹配
+        System.out.println("選擇指標: " + indicator);
+        if ("無".equals(indicator) || "None".equals(indicator)) {
             chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("None");
-        } else if (I18n.get("indicator.sma").equals(indicator)) {
+        } else if ("SMA".equals(indicator)) {
             chartDock.setOverlayIndicator("SMA");
-            chartDock.setSubIndicator("RSI");
-        } else if (I18n.get("indicator.ema").equals(indicator)) {
+            chartDock.setSubIndicator("None");
+        } else if ("EMA".equals(indicator)) {
             chartDock.setOverlayIndicator("EMA");
+            chartDock.setSubIndicator("None");
+        } else if ("RSI".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("RSI");
-        } else if (I18n.get("indicator.rsi").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
-            chartDock.setSubIndicator("RSI");
-        } else if (I18n.get("indicator.macd").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+        } else if ("MACD".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("MACD");
-        } else if (I18n.get("indicator.boll").equals(indicator)) {
+        } else if ("BOLL".equals(indicator)) {
             chartDock.setOverlayIndicator("BOLL");
-            chartDock.setSubIndicator("RSI");
-        } else if (I18n.get("indicator.kd").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+            chartDock.setSubIndicator("None");
+        } else if ("KD".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("KD");
-        } else if (I18n.get("indicator.adx").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+        } else if ("ADX".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("ADX");
-        } else if (I18n.get("indicator.obv").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+        } else if ("OBV".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("OBV");
-        } else if (I18n.get("indicator.cci").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+        } else if ("CCI".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("CCI");
-        } else if (I18n.get("indicator.wr").equals(indicator)) {
-            chartDock.setOverlayIndicator("SMA");
+        } else if ("WR".equals(indicator)) {
+            chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("WR");
         }
     }
@@ -422,6 +488,121 @@ public class MainFrameWithDocking extends JFrame {
             statusBar.setText(I18n.get("status.indicator.updated"));
             System.out.println("✓ 指標參數已應用到圖表");
         }
+    }
+    
+    /**
+     * 開啟回測對話框
+     */
+    private void openBacktestDialog() {
+        // 1. 顯示配置對話框
+        BacktestConfigDialog configDialog = new BacktestConfigDialog(this);
+        configDialog.setVisible(true);
+        
+        if (!configDialog.isConfirmed()) {
+            return;
+        }
+        
+        // 2. 獲取當前圖表數據
+        List<org.ta4j.core.Bar> ta4jBars = chartDock.getCurrentBars();
+        if (ta4jBars == null || ta4jBars.isEmpty()) {
+            JOptionPane.showMessageDialog(this, 
+                "沒有可用的歷史數據進行回測！\n請先載入 CSV 數據或等待實時數據累積。", 
+                "數據不足", 
+                JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        
+        // 3. 轉換數據格式
+        List<com.dreamhouse.trading.core.model.Bar> bars = new ArrayList<>();
+        for (org.ta4j.core.Bar ta4jBar : ta4jBars) {
+            com.dreamhouse.trading.core.model.Bar bar = new com.dreamhouse.trading.core.model.Bar(
+                ta4jBar.getBeginTime().toLocalDateTime(),
+                ta4jBar.getOpenPrice().doubleValue(),
+                ta4jBar.getHighPrice().doubleValue(),
+                ta4jBar.getLowPrice().doubleValue(),
+                ta4jBar.getClosePrice().doubleValue(),
+                ta4jBar.getVolume().longValue()
+            );
+            bars.add(bar);
+        }
+        
+        // 4. 創建回測引擎
+        BacktestEngine engine = new BacktestEngine();
+        engine.setInitialCapital(configDialog.getInitialCapital());
+        engine.setCommission(configDialog.getCommission());
+        engine.setSlippage(configDialog.getSlippage());
+        engine.setData(bars);
+        
+        // 5. 添加策略
+        Strategy strategy = configDialog.getSelectedStrategy();
+        if (strategy != null) {
+            engine.addStrategy(strategy);
+        }
+        
+        // 6. 創建 SwingWorker
+        SwingWorker<BacktestResult, Void> worker = new SwingWorker<BacktestResult, Void>() {
+            @Override
+            protected BacktestResult doInBackground() throws Exception {
+                try {
+                    return engine.runBacktest();
+                } catch (Exception e) {
+                    System.out.println("回測執行異常: " + e.getMessage());
+                    e.printStackTrace();
+                    throw e;
+                }
+            }
+            
+            @Override
+            protected void done() {
+                try {
+                    if (isCancelled()) {
+                        System.out.println("回測被取消");
+                        return;
+                    }
+                    
+                    BacktestResult result = get();
+                    System.out.println("回測完成，結果: " + (result != null ? "成功" : "失敗"));
+                    if (result != null) {
+                        System.out.println("交易次數: " + result.getTrades().size());
+                    }
+                    
+                    if (result != null) {
+                        // 顯示結果對話框
+                        SwingUtilities.invokeLater(() -> {
+                            try {
+                                BacktestResultDialog resultDialog = new BacktestResultDialog(
+                                    MainFrameWithDocking.this, result, strategy.getName());
+                                resultDialog.setVisible(true);
+                            } catch (Exception ex) {
+                                ex.printStackTrace();
+                                JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                                    "顯示回測結果時發生錯誤: " + ex.getMessage(),
+                                    "錯誤", JOptionPane.ERROR_MESSAGE);
+                            }
+                        });
+                    } else {
+                        System.out.println("回測結果為空，可能是數據不足或策略沒有產生交易");
+                    }
+                } catch (java.util.concurrent.CancellationException e) {
+                    System.out.println("回測被取消: " + e.getMessage());
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this, 
+                        "回測執行失敗：" + e.getMessage(), 
+                        "錯誤", 
+                        JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        
+        // 7. 先啟動 SwingWorker，然後顯示進度對話框
+        BacktestProgressDialog progressDialog = new BacktestProgressDialog(this, engine, worker);
+        
+        // 先執行 worker，再顯示對話框（模態對話框會阻塞）
+        worker.execute();
+        
+        // 顯示模態對話框（這會阻塞直到對話框關閉）
+        progressDialog.setVisible(true);
     }
     
     private void importCsvData() {

@@ -13,11 +13,44 @@ public class MenuBarFactory {
         JMenuBar menuBar = new JMenuBar();
         
         // File Menu
-        JMenu fileMenu = new JMenu("File");
-        JMenuItem exitItem = new JMenuItem("Exit");
+        JMenu fileMenu = new JMenu(I18n.get("menu.file"));
+        
+        JMenuItem importCsvItem = new JMenuItem(I18n.get("menu.file.import.csv"));
+        importCsvItem.addActionListener(e -> {
+            if (callbacks.onImportCsv != null) {
+                callbacks.onImportCsv.run();
+            }
+        });
+        fileMenu.add(importCsvItem);
+        
+        JMenuItem exportCsvItem = new JMenuItem(I18n.get("menu.file.export.csv"));
+        exportCsvItem.addActionListener(e -> {
+            if (callbacks.onExportCsv != null) {
+                callbacks.onExportCsv.run();
+            }
+        });
+        fileMenu.add(exportCsvItem);
+        
+        fileMenu.addSeparator();
+        
+        JMenuItem exitItem = new JMenuItem(I18n.get("menu.file.exit"));
         exitItem.addActionListener(e -> System.exit(0));
         fileMenu.add(exitItem);
+        
         menuBar.add(fileMenu);
+        
+        // Tools Menu
+        JMenu toolsMenu = new JMenu(I18n.get("menu.tools"));
+        
+        JMenuItem backtestItem = new JMenuItem(I18n.get("menu.tools.backtest"));
+        backtestItem.addActionListener(e -> {
+            if (callbacks.onBacktest != null) {
+                callbacks.onBacktest.run();
+            }
+        });
+        toolsMenu.add(backtestItem);
+        
+        menuBar.add(toolsMenu);
         
         // View Menu
         JMenu viewMenu = new JMenu("View");
@@ -86,6 +119,9 @@ public class MenuBarFactory {
     
     public static class Callbacks {
         public Runnable onIndicatorSettings;
+        public Runnable onImportCsv;
+        public Runnable onExportCsv;
+        public Runnable onBacktest;
     }
 }
 

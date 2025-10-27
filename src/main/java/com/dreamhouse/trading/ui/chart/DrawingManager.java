@@ -59,7 +59,7 @@ public class DrawingManager {
     public void startDrawing(double x, double y, Rectangle2D plotArea) {
         if (currentTool == DrawingTool.NONE) {
             // 選擇模式：檢查是否點擊到對象
-            selectObjectAt(x, y, plotArea);
+            // 這個方法在選擇模式下不應該被調用，但為了安全起見保留
             return;
         }
         
@@ -135,8 +135,9 @@ public class DrawingManager {
     
     /**
      * 選擇指定位置的對象
+     * @return true 如果選中了對象，false 如果沒有選中
      */
-    public void selectObjectAt(double x, double y, Rectangle2D plotArea) {
+    public boolean selectObjectAt(double x, double y, Rectangle2D plotArea) {
         // 取消當前選擇
         if (selectedObject != null) {
             selectedObject.setSelected(false);
@@ -148,12 +149,13 @@ public class DrawingManager {
             if (obj.isVisible() && obj.hitTest(x, y, plotArea)) {
                 obj.setSelected(true);
                 selectedObject = obj;
-                return;
+                return true;
             }
         }
         
         // 沒有選中任何對象
         selectedObject = null;
+        return false;
     }
     
     /**
@@ -240,5 +242,6 @@ public class DrawingManager {
     public boolean isDrawing() {
         return isDrawing;
     }
+    
 }
 
