@@ -114,6 +114,13 @@ public class MainFrameWithDocking extends JFrame {
     private void createDockPanels() {
         // 主圖（包含 K線、成交量、技術指標）
         chartDock = new ChartDock();
+        
+        // 設置交易標記點擊監聽器
+        chartDock.setTradeSelectionListener(trade -> {
+            // 當用戶點擊交易標記時，顯示詳細信息
+            showTradeDetail(trade);
+        });
+        
         DockableWrapper chartWrapper = new DockableWrapper("chart", I18n.get("dock.chart"), chartDock);
         Docking.registerDockable(chartWrapper);
         Docking.dock(chartWrapper, this);
@@ -291,6 +298,20 @@ public class MainFrameWithDocking extends JFrame {
         JButton zoomResetBtn = new JButton("重置");
         zoomResetBtn.addActionListener(e -> chartDock.resetZoom());
         toolBar.add(zoomResetBtn);
+        toolBar.addSeparator();
+        
+        // 數據模擬控制
+        JToggleButton simulationBtn = new JToggleButton("⏸ 暫停模擬");
+        simulationBtn.setSelected(false);  // 預設為運行狀態
+        simulationBtn.addActionListener(e -> toggleSimulation(simulationBtn));
+        toolBar.add(simulationBtn);
+        
+        toolBar.addSeparator();
+        
+        // 交易標記篩選
+        JButton filterBtn = new JButton("🔍 篩選標記");
+        filterBtn.addActionListener(e -> chartDock.showTradeMarkerFilter());
+        toolBar.add(filterBtn);
         
         return toolBar;
     }
@@ -389,6 +410,81 @@ public class MainFrameWithDocking extends JFrame {
             chartDock.setDrawingTool(DrawingManager.DrawingTool.HORIZONTAL_LINE);
             System.out.println("Horizontal line tool enabled");
         }
+    }
+    
+    /**
+     * 切換數據模擬的暫停/開始狀態
+     */
+    private void toggleSimulation(JToggleButton button) {
+        if (button.isSelected()) {
+            // 暫停模擬
+            dataFeed.pause();
+            button.setText("▶ 開始模擬");
+            statusBar.setText("數據模擬已暫停 - 適合查看歷史數據");
+            System.out.println("[MainFrame] 數據模擬已暫停");
+        } else {
+            // 恢復模擬
+            dataFeed.resume();
+            button.setText("⏸ 暫停模擬");
+            statusBar.setText("數據模擬運行中");
+            System.out.println("[MainFrame] 數據模擬已恢復");
+        }
+    }
+    
+    /**
+     * 顯示交易詳情對話框
+     */
+    private void showTradeDetail(com.dreamhouse.trading.core.backtest.Trade trade) {
+        JDialog dialog = new JDialog(this, "交易詳情", true);
+        dialog.setLayout(new BorderLayout(10, 10));
+        
+        // 創建詳情面板
+        JPanel detailPanel = new JPanel(new GridLayout(0, 2, 10, 5));
+        detailPanel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        
+        // 添加交易信息
+        addDetailRow(detailPanel, "交易類型:", trade.getType().getDisplayName());
+        addDetailRow(detailPanel, "時間:", trade.getTimestamp().toString());
+        addDetailRow(detailPanel, "商品代碼:", trade.getSymbol());
+        addDetailRow(detailPanel, "價格:", String.format("%.2f", trade.getPrice()));
+        addDetailRow(detailPanel, "數量:", String.valueOf(trade.getQuantity()));
+        addDetailRow(detailPanel, "金額:", String.format("%.2f", trade.getTotalAmount()));
+        addDetailRow(detailPanel, "手續費:", String.format("%.2f", trade.getCommissionAmount()));
+        
+        if (trade.getStopLoss() != null) {
+            addDetailRow(detailPanel, "停損價格:", String.format("%.2f", trade.getStopLoss()));
+        }
+        if (trade.getTakeProfit() != null) {
+            addDetailRow(detailPanel, "停利價格:", String.format("%.2f", trade.getTakeProfit()));
+        }
+        if (trade.getExitReason() != null) {
+            addDetailRow(detailPanel, "出場原因:", trade.getExitReason());
+        }
+        
+        // 按鈕面板
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton closeButton = new JButton("關閉");
+        closeButton.addActionListener(e -> dialog.dispose());
+        buttonPanel.add(closeButton);
+        
+        dialog.add(detailPanel, BorderLayout.CENTER);
+        dialog.add(buttonPanel, BorderLayout.SOUTH);
+        
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+    
+    /**
+     * 添加詳情行
+     */
+    private void addDetailRow(JPanel panel, String label, String value) {
+        JLabel labelComp = new JLabel(label);
+        labelComp.setFont(labelComp.getFont().deriveFont(Font.BOLD));
+        panel.add(labelComp);
+        
+        JLabel valueComp = new JLabel(value);
+        panel.add(valueComp);
     }
     
     private void setTheme(boolean light) {
@@ -567,9 +663,13 @@ public class MainFrameWithDocking extends JFrame {
                     }
                     
                     if (result != null) {
-                        // 顯示結果對話框
+                        // 顯示結果對話框並在圖表上標記交易點
                         SwingUtilities.invokeLater(() -> {
                             try {
+                                // 在圖表上顯示交易標記
+                                chartDock.showTradeMarkers(result.getTrades());
+                                
+                                // 顯示回測結果對話框
                                 BacktestResultDialog resultDialog = new BacktestResultDialog(
                                     MainFrameWithDocking.this, result, strategy.getName());
                                 resultDialog.setVisible(true);

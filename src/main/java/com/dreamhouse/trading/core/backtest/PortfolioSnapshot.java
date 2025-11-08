@@ -40,6 +40,24 @@ public class PortfolioSnapshot {
         return totalValue > 0 ? positionValue / totalValue : 0.0;
     }
     
+    /**
+     * 是否持倉
+     */
+    public boolean hasPosition() {
+        return positionCount > 0;
+    }
+    
+    /**
+     * 獲取持倉狀態描述
+     */
+    public String getPositionStatus() {
+        if (positionCount == 0) {
+            return "空倉";
+        } else {
+            return String.format("持倉 (%d個)", positionCount);
+        }
+    }
+    
     // Getters
     public LocalDateTime getTimestamp() { return timestamp; }
     public double getTotalValue() { return totalValue; }

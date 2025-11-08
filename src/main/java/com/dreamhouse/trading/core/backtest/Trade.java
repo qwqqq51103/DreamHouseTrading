@@ -16,11 +16,25 @@ public class Trade {
     private final double commission;
     private final double totalAmount;
     
+    // 停利停損資訊
+    private final Double stopLoss;      // 停損價格
+    private final Double takeProfit;    // 停利價格
+    private final String exitReason;   // 出場原因
+    
     /**
-     * 構造函數
+     * 構造函數 (不包含停利停損)
      */
     public Trade(LocalDateTime timestamp, String symbol, TradeType type, 
                  int quantity, double price, double commission) {
+        this(timestamp, symbol, type, quantity, price, commission, null, null, null);
+    }
+    
+    /**
+     * 完整構造函數 (包含停利停損)
+     */
+    public Trade(LocalDateTime timestamp, String symbol, TradeType type, 
+                 int quantity, double price, double commission,
+                 Double stopLoss, Double takeProfit, String exitReason) {
         this.timestamp = timestamp;
         this.symbol = symbol;
         this.type = type;
@@ -28,6 +42,9 @@ public class Trade {
         this.price = price;
         this.commission = commission;
         this.totalAmount = quantity * price;
+        this.stopLoss = stopLoss;
+        this.takeProfit = takeProfit;
+        this.exitReason = exitReason;
     }
     
     /**
@@ -59,6 +76,9 @@ public class Trade {
     public double getPrice() { return price; }
     public double getCommission() { return commission; }
     public double getTotalAmount() { return totalAmount; }
+    public Double getStopLoss() { return stopLoss; }
+    public Double getTakeProfit() { return takeProfit; }
+    public String getExitReason() { return exitReason; }
     
     @Override
     public String toString() {

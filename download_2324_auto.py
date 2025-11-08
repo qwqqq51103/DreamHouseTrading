@@ -93,10 +93,10 @@ def main():
     print("=" * 60)
     print()
     
-    symbol = "2324.TW"
+    symbol = "2457.TW"
     period = "1y"
     interval = "1d"
-    filename = "2324_TW_仁寶_1年日線.csv"
+    filename = "2457_TW_飛宏_1年日線.csv"
     
     print(f"下載設定: {symbol}")
     print(f"期間: {period} (最近 1 年)")

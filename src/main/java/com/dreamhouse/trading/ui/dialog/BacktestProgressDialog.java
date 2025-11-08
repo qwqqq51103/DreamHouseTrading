@@ -21,6 +21,7 @@ public class BacktestProgressDialog extends JDialog implements BacktestListener 
     private JLabel tradesLabel;
     private JLabel returnLabel;
     private JLabel drawdownLabel;
+    private JLabel positionLabel;  // 新增：持倉狀態標籤
     private JButton stopButton;
     private JButton closeButton;
     
@@ -82,6 +83,7 @@ public class BacktestProgressDialog extends JDialog implements BacktestListener 
         tradesLabel = new JLabel("交易次數: 0");
         returnLabel = new JLabel("當前收益: 0.00%");
         drawdownLabel = new JLabel("最大回撤: 0.00%");
+        positionLabel = new JLabel("持倉狀態: 空倉");
         
         stopButton = new JButton("停止");
         closeButton = new JButton("關閉");
@@ -112,6 +114,7 @@ public class BacktestProgressDialog extends JDialog implements BacktestListener 
         statsPanel.add(tradesLabel, "wrap");
         statsPanel.add(returnLabel, "wrap");
         statsPanel.add(drawdownLabel, "wrap");
+        statsPanel.add(positionLabel, "wrap");
         
         mainPanel.add(progressPanel, "wrap, growx");
         mainPanel.add(statsPanel, "wrap, growx");
@@ -220,6 +223,16 @@ public class BacktestProgressDialog extends JDialog implements BacktestListener 
             String drawdownText = String.format("最大回撤: %.2f%%", maxDrawdown);
             drawdownLabel.setText(drawdownText);
             drawdownLabel.setForeground(Color.RED);
+            
+            // 持倉狀態
+            int positionCount = portfolio.getPositions().size();
+            if (positionCount > 0) {
+                positionLabel.setText(String.format("持倉狀態: 持倉中 (%d個)", positionCount));
+                positionLabel.setForeground(new Color(0, 100, 200)); // 藍色
+            } else {
+                positionLabel.setText("持倉狀態: 空倉");
+                positionLabel.setForeground(Color.GRAY);
+            }
         }
     }
     

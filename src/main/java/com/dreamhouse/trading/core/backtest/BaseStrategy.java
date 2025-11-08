@@ -103,6 +103,26 @@ public abstract class BaseStrategy implements Strategy {
     }
     
     /**
+     * 買入股票 (帶停利停損)
+     */
+    protected boolean buyWithStops(String symbol, int quantity, Double stopLoss, Double takeProfit, String reason) {
+        if (engine != null) {
+            return engine.buyWithStops(symbol, quantity, OrderType.MARKET, stopLoss, takeProfit, reason);
+        }
+        return false;
+    }
+    
+    /**
+     * 賣出股票 (帶出場原因)
+     */
+    protected boolean sellWithReason(String symbol, int quantity, String reason) {
+        if (engine != null) {
+            return engine.sellWithReason(symbol, quantity, OrderType.MARKET, reason);
+        }
+        return false;
+    }
+    
+    /**
      * 獲取當前價格
      */
     protected double getCurrentPrice() {

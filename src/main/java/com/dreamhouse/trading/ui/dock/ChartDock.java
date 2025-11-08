@@ -2,6 +2,7 @@ package com.dreamhouse.trading.ui.dock;
 
 import com.dreamhouse.trading.core.*;
 import com.dreamhouse.trading.core.model.*;
+import com.dreamhouse.trading.core.backtest.Trade;
 import com.dreamhouse.trading.ui.chart.*;
 import com.dreamhouse.trading.util.I18n;
 import org.jfree.chart.ChartMouseEvent;
@@ -35,6 +36,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -88,6 +90,10 @@ public class ChartDock extends JPanel implements MarketDataListener {
     // 繪圖工具
     private DrawingManager drawingManager;
     private ChartOverlay chartOverlay;
+    
+    // 交易標記
+    private List<TradeMarker> tradeMarkers = new ArrayList<>();
+    private TradeMarkerManager markerManager;
     
     private Timeframe currentTimeframe = Timeframe.M1;
     private String currentOverlayIndicator = "SMA";  // SMA/EMA/None
@@ -528,7 +534,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     @Override
-    public void onTrade(Trade trade) {
+    public void onTrade(com.dreamhouse.trading.core.model.Trade trade) {
         SwingUtilities.invokeLater(() -> {
             if (lastBarTime != null) {
                 lastVolume += trade.getQuantity();
@@ -609,7 +615,19 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private void addNewBar() {
         RegularTimePeriod period = createTimePeriod(lastBarTime);
         
-        ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+        // 檢查是否已存在相同時間的數據點，使用 addOrUpdate 避免衝突
+        try {
+            // 嘗試直接添加
+            ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+        } catch (org.jfree.data.general.SeriesException e) {
+            // 如果已存在，則移除舊的並添加新的
+            System.out.println("警告: 時間點已存在，更新數據: " + period);
+            int existingIndex = ohlcSeries.indexOf(period);
+            if (existingIndex >= 0) {
+                ohlcSeries.remove(existingIndex);
+            }
+            ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+        }
         volumeSeries.addOrUpdate(period, lastVolume);
         
         // 添加到 ta4j BarSeries
@@ -1149,6 +1167,81 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     /**
+     * 顯示交易標記
+     */
+    public void showTradeMarkers(List<com.dreamhouse.trading.core.backtest.Trade> trades) {
+        if (trades == null || trades.isEmpty()) {
+            clearTradeMarkers();
+            return;
+        }
+        
+        // 使用新的標記管理器
+        TradeMarker.TimeFrameConverter converter = this::createTimePeriod;
+        markerManager.setTrades(trades, converter);
+        
+        System.out.println("[ChartDock] 顯示 " + trades.size() + " 個交易標記");
+    }
+    
+    /**
+     * 設置交易選擇監聽器
+     */
+    public void setTradeSelectionListener(TradeMarkerManager.TradeSelectionListener listener) {
+        if (markerManager != null) {
+            markerManager.setSelectionListener(listener);
+        }
+    }
+    
+    /**
+     * 顯示交易標記篩選對話框
+     */
+    public void showTradeMarkerFilter() {
+        if (markerManager != null) {
+            markerManager.showFilterDialog();
+        }
+    }
+    
+    /**
+     * 清除交易標記
+     */
+    public void clearTradeMarkers() {
+        if (markerManager != null) {
+            markerManager.clearMarkers();
+            System.out.println("[ChartDock] 清除所有交易標記");
+        }
+    }
+    
+    /**
+     * 添加標記到圖表
+     */
+    private void addMarkersToChart() {
+        if (pricePlot == null || tradeMarkers.isEmpty()) {
+            return;
+        }
+        
+        for (TradeMarker marker : tradeMarkers) {
+            try {
+                // 添加多層形狀標記 (熱力圖效果)
+                for (org.jfree.chart.annotations.XYShapeAnnotation shapeAnnotation : marker.createShapeAnnotations()) {
+                    pricePlot.addAnnotation(shapeAnnotation);
+                }
+                
+                // 添加多層文字標記 (陰影效果)
+                for (org.jfree.chart.annotations.XYTextAnnotation textAnnotation : marker.createTextAnnotations()) {
+                    pricePlot.addAnnotation(textAnnotation);
+                }
+                
+            } catch (Exception e) {
+                System.err.println("添加交易標記失敗: " + e.getMessage());
+            }
+        }
+        
+        // 刷新圖表
+        if (chartPanel != null) {
+            chartPanel.repaint();
+        }
+    }
+    
+    /**
      * 初始化預設指標配置
      */
     private void initializeDefaultConfigs() {
@@ -1248,6 +1341,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
         // 創建並添加覆蓋層
         chartOverlay = new ChartOverlay(drawingManager);
         pricePlot.addAnnotation(chartOverlay);
+        
+        // 初始化交易標記管理器
+        markerManager = new TradeMarkerManager(chartPanel, pricePlot);
         
         // 添加滑鼠事件監聽器
         chartPanel.addChartMouseListener(new ChartMouseListener() {

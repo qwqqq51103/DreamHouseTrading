@@ -29,6 +29,7 @@ public class BacktestEngine {
     private LocalDateTime startDate;
     private LocalDateTime endDate;
     private BacktestResult result;
+    private int currentBarIndex = 0;  // 當前處理的K線索引
     
     /**
      * 構造函數
@@ -131,6 +132,7 @@ public class BacktestEngine {
         try {
             // 逐根K線執行回測
             for (int i = 0; i < barSeries.getBarCount() && isRunning; i++) {
+                currentBarIndex = i;  // 更新當前K線索引
                 processBar(i);
                 
                 // 通知進度
@@ -258,12 +260,67 @@ public class BacktestEngine {
         return false;
     }
     
+    /**
+     * 執行買入訂單 (帶停利停損)
+     */
+    public boolean buyWithStops(String symbol, int quantity, OrderType orderType, 
+                               Double stopLoss, Double takeProfit, String reason) {
+        if (!isRunning) return false;
+        
+        double price = getCurrentPrice();
+        double totalCost = price * quantity * (1 + commission + slippage);
+        
+        if (portfolio.getCash() >= totalCost) {
+            portfolio.addPosition(symbol, quantity, price, commission + slippage);
+            
+            // 記錄交易 (帶停利停損資訊)
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY, 
+                           quantity, price, commission + slippage, stopLoss, takeProfit, reason));
+            
+            notifyTradeExecuted(symbol, TradeType.BUY, quantity, price);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * 執行賣出訂單 (帶出場原因)
+     */
+    public boolean sellWithReason(String symbol, int quantity, OrderType orderType, String reason) {
+        if (!isRunning) return false;
+        
+        Position position = portfolio.getPosition(symbol);
+        if (position != null && position.getQuantity() >= quantity) {
+            double price = getCurrentPrice();
+            
+            portfolio.reducePosition(symbol, quantity, price, commission + slippage);
+            
+            // 記錄交易 (帶出場原因)
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.SELL, 
+                           quantity, price, commission + slippage, null, null, reason));
+            
+            notifyTradeExecuted(symbol, TradeType.SELL, quantity, price);
+            return true;
+        }
+        
+        return false;
+    }
+    
     // 輔助方法
     private double getCurrentPrice() {
+        // 使用當前正在處理的K線價格，而不是最後一根
+        if (currentBarIndex >= 0 && currentBarIndex < barSeries.getBarCount()) {
+            return barSeries.getBar(currentBarIndex).getClosePrice().doubleValue();
+        }
         return barSeries.getLastBar().getClosePrice().doubleValue();
     }
     
     private LocalDateTime getCurrentTimestamp() {
+        // 使用當前正在處理的K線時間，而不是最後一根
+        if (currentBarIndex >= 0 && currentBarIndex < barSeries.getBarCount()) {
+            return barSeries.getBar(currentBarIndex).getBeginTime().toLocalDateTime();
+        }
         return barSeries.getLastBar().getBeginTime().toLocalDateTime();
     }
     

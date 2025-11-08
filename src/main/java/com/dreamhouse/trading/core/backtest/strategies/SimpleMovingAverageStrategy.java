@@ -114,9 +114,15 @@ public class SimpleMovingAverageStrategy extends BaseStrategy {
         // 計算可買入的數量（預留手續費）
         int quantity = Math.min(maxPosition, (int) (availableCash / (price * 1.002)));
         
-        if (quantity > 0 && buy(symbol, quantity)) {
-            log(String.format("買入信號 - 數量: %d, 價格: %.2f, 金額: %.2f", 
-                             quantity, price, quantity * price));
+        if (quantity > 0) {
+            // 設定停利停損
+            double stopLoss = price * 0.95;     // 停損 5%
+            double takeProfit = price * 1.08;   // 停利 8%
+            
+            if (buyWithStops(symbol, quantity, stopLoss, takeProfit, "SMA金叉")) {
+                log(String.format("SMA金叉買入 - 數量: %d, 價格: %.2f, 停損: %.2f, 停利: %.2f", 
+                                 quantity, price, stopLoss, takeProfit));
+            }
         }
     }
     
@@ -126,9 +132,12 @@ public class SimpleMovingAverageStrategy extends BaseStrategy {
     private void executeSell(double price) {
         int currentQuantity = getPositionQuantity(symbol);
         
-        if (currentQuantity > 0 && sell(symbol, currentQuantity)) {
-            log(String.format("賣出信號 - 數量: %d, 價格: %.2f, 金額: %.2f", 
-                             currentQuantity, price, currentQuantity * price));
+        if (currentQuantity > 0) {
+            String reason = "SMA死叉";
+            if (sellWithReason(symbol, currentQuantity, reason)) {
+                log(String.format("SMA死叉賣出 - 數量: %d, 價格: %.2f, 原因: %s", 
+                                 currentQuantity, price, reason));
+            }
         }
     }
     

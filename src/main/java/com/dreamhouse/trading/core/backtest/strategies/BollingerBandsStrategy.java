@@ -176,9 +176,15 @@ public class BollingerBandsStrategy extends BaseStrategy {
         double positionRatio = Math.min(0.8, Math.max(0.3, 1.0 - bandWidth * 10));
         int quantity = Math.min(maxPosition, (int) (availableCash * positionRatio / (price * 1.002)));
         
-        if (quantity > 0 && buy(symbol, quantity)) {
-            log(String.format("布林通道買入 (%s) - 通道寬度: %.2f%%, 倉位: %.1f%%, 數量: %d, 價格: %.2f", 
-                             reason, bandWidth * 100, positionRatio * 100, quantity, price));
+        if (quantity > 0) {
+            // 設定停利停損
+            double stopLoss = price * 0.96;     // 停損 4%
+            double takeProfit = price * 1.06;   // 停利 6%
+            
+            if (buyWithStops(symbol, quantity, stopLoss, takeProfit, "布林" + reason)) {
+                log(String.format("布林通道買入 (%s) - 通道寬度: %.2f%%, 倉位: %.1f%%, 數量: %d, 價格: %.2f, 停損: %.2f, 停利: %.2f", 
+                                 reason, bandWidth * 100, positionRatio * 100, quantity, price, stopLoss, takeProfit));
+            }
         }
     }
     
@@ -188,7 +194,7 @@ public class BollingerBandsStrategy extends BaseStrategy {
     private void executeSell(double price, String reason) {
         int currentQuantity = getPositionQuantity(symbol);
         
-        if (currentQuantity > 0 && sell(symbol, currentQuantity)) {
+        if (currentQuantity > 0) {
             Portfolio portfolio = getPortfolio();
             double profit = 0.0;
             if (portfolio != null) {
@@ -198,8 +204,10 @@ public class BollingerBandsStrategy extends BaseStrategy {
                 }
             }
             
-            log(String.format("布林通道賣出 (%s) - 收益: %.2f%%, 數量: %d, 價格: %.2f", 
-                             reason, profit, currentQuantity, price));
+            if (sellWithReason(symbol, currentQuantity, "布林" + reason)) {
+                log(String.format("布林通道賣出 (%s) - 收益: %.2f%%, 數量: %d, 價格: %.2f", 
+                                 reason, profit, currentQuantity, price));
+            }
         }
     }
     

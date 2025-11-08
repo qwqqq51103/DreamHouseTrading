@@ -222,6 +222,9 @@
   - ✅ 進度條實時更新 (SwingWorker 後台執行)
   - ✅ 停止按鈕功能 (取消回測)
   - ✅ 交易記錄顏色優化 (深色文字，易讀性提升)
+  - ✅ K線圖交易標記 (熱力圖風格，多層視覺效果)
+  - ✅ 停利停損記錄 (新增表格欄位：停損、停利、出場原因)
+  - ✅ 策略增強 (RSI策略支援停利停損設定)
 
 **待開發功能**:
 - [ ] **策略比較功能**
@@ -775,6 +778,194 @@ public class TrendLine extends DrawingObject {
 - ✅ 自動適配不同數據週期的顯示
 - ✅ 下載並提供 2324.TW 仁寶真實股票數據
 
+#### 2024-10-27: 交易標記與停利停損功能
+- ✅ 實作 K 線圖交易標記系統
+- ✅ 新增停利停損記錄欄位
+- ✅ 修改 RSI 策略支援停利停損
+- ✅ 完善交易記錄表格顯示
+- ✅ 添加滑鼠懸停提示功能
+- ✅ 增強交易標記視覺效果 (熱力圖風格)
+- ✅ 修復編譯錯誤 (ArrayList 導入、Trade 類型衝突)
+- ✅ 解決 JFreeChart 依賴問題 (添加 JCommon 1.0.24)
+- ✅ 新增數據模擬控制 (暫停/開始按鈕，避免與歷史數據混淆)
+- ✅ 修復交易記錄持倉狀態顯示錯誤 (賣出後正確顯示空倉)
+- ✅ 為所有策略添加停利停損功能 (SMA、MACD、布林通道)
+
+**所有策略停利停損設定**:
+- **SMA策略**: 停損 5%, 停利 8%
+- **MACD策略**: 停損 6%, 停利 12%  
+- **布林通道策略**: 停損 4%, 停利 6%
+- **RSI策略**: 停損 5%, 停利 10%
+
+**交易標記系統 (熱力圖增強版)**:
+```java
+// 交易標記類 - 多層視覺效果
+public class TradeMarker {
+    // 熱力圖風格顏色配置
+    private static final Color BUY_COLOR_OUTER = new Color(0, 255, 0);      // 亮綠色
+    private static final Color BUY_COLOR_INNER = new Color(34, 139, 34);    // 森林綠
+    private static final Color BUY_COLOR_GLOW = new Color(0, 255, 0, 100);  // 綠色光暈
+    
+    private static final Color SELL_COLOR_OUTER = new Color(255, 0, 0);     // 亮紅色
+    private static final Color SELL_COLOR_INNER = new Color(178, 34, 34);   // 火磚紅
+    private static final Color SELL_COLOR_GLOW = new Color(255, 0, 0, 100); // 紅色光暈
+    
+    // 多層標記創建
+    public List<XYShapeAnnotation> createShapeAnnotations() {
+        // 1. 光暈效果 (半透明大圓)
+        // 2. 外圈 (亮色邊框)  
+        // 3. 內圈 (深色填充)
+        return annotations;
+    }
+    
+    public List<XYTextAnnotation> createTextAnnotations() {
+        // 1. 文字陰影 (黑色偏移)
+        // 2. 主要文字 (白色粗體)
+        return annotations;
+    }
+}
+
+// ChartDock 整合 - 多層渲染
+private void addMarkersToChart() {
+    for (TradeMarker marker : tradeMarkers) {
+        // 添加多層形狀標記 (熱力圖效果)
+        for (XYShapeAnnotation shape : marker.createShapeAnnotations()) {
+            pricePlot.addAnnotation(shape);
+        }
+        // 添加多層文字標記 (陰影效果)
+        for (XYTextAnnotation text : marker.createTextAnnotations()) {
+            pricePlot.addAnnotation(text);
+        }
+    }
+}
+```
+
+**編譯錯誤修復**:
+```java
+// 1. ArrayList 導入問題修復
+// ChartDock.java 缺少導入
+import java.util.ArrayList;  // 新增
+
+// 2. Trade 類型衝突修復
+// 區分兩種不同的 Trade 類
+// 市場數據 Trade (MarketDataListener)
+@Override
+public void onTrade(com.dreamhouse.trading.core.model.Trade trade) { ... }
+
+// 回測 Trade (交易標記)
+public void showTradeMarkers(List<com.dreamhouse.trading.core.backtest.Trade> trades) { ... }
+
+// 3. JFreeChart 依賴修復
+// pom.xml 添加 JCommon 依賴
+<dependency>
+    <groupId>org.jfree</groupId>
+    <artifactId>jcommon</artifactId>
+    <version>1.0.24</version>
+</dependency>
+
+// TextAnchor 導入修復
+import org.jfree.ui.TextAnchor;  // JFreeChart 1.5.4 兼容
+```
+
+**數據模擬控制**:
+```java
+// MarketDataFeed 接口擴展
+public interface MarketDataFeed {
+    // 原有方法...
+    default void pause() { }
+    default void resume() { }
+    default boolean isPaused() { return false; }
+}
+
+// SimulatorFeed 實現
+public class SimulatorFeed implements MarketDataFeed {
+    private boolean paused = false;
+    
+    private void generateMarketData() {
+        if (paused) return;  // 暫停時不生成數據
+        // ... 數據生成邏輯
+    }
+    
+    @Override
+    public void pause() {
+        paused = true;
+        System.out.println("[SimulatorFeed] 數據模擬已暫停");
+    }
+    
+    @Override
+    public void resume() {
+        paused = false;
+        System.out.println("[SimulatorFeed] 數據模擬已恢復");
+    }
+}
+
+// MainFrameWithDocking UI 控制
+private void toggleSimulation(JToggleButton button) {
+    if (button.isSelected()) {
+        dataFeed.pause();
+        button.setText("▶️ 開始模擬");
+        statusBar.setText("數據模擬已暫停 - 適合查看歷史數據");
+    } else {
+        dataFeed.resume();
+        button.setText("⏸️ 暫停模擬");
+        statusBar.setText("數據模擬運行中");
+    }
+}
+```
+
+**停利停損增強**:
+```java
+// Trade 類擴展
+public class Trade {
+    private final Double stopLoss;      // 停損價格
+    private final Double takeProfit;    // 停利價格
+    private final String exitReason;   // 出場原因
+    
+    // 完整構造函數
+    public Trade(LocalDateTime timestamp, String symbol, TradeType type, 
+                 int quantity, double price, double commission,
+                 Double stopLoss, Double takeProfit, String exitReason)
+}
+
+// 策略層面支援
+protected boolean buyWithStops(String symbol, int quantity, 
+                              Double stopLoss, Double takeProfit, String reason);
+protected boolean sellWithReason(String symbol, int quantity, String reason);
+```
+
+**交易記錄表格增強**:
+- 新增 3 個欄位：停損、停利、出場原因
+- 欄位總數：10 → 13
+- 保持原有顏色編碼和視覺效果
+- 支援滑鼠懸停顯示詳細交易資訊
+
+**視覺效果增強**:
+- 標記尺寸：8px → 16px (增大 100%)
+- 多層渲染：光暈 + 外圈 + 內圈 (3層效果)
+- 熱力圖配色：亮綠/亮紅 + 半透明光暈
+- 文字陰影：黑色偏移 + 白色主體
+- 更強對比度：在黑色背景下更加醒目
+
+**RSI 策略示範**:
+```java
+private void executeBuy(double price) {
+    double stopLoss = price * 0.95;     // 停損 5%
+    double takeProfit = price * 1.10;   // 停利 10%
+    
+    if (buyWithStops(symbol, quantity, stopLoss, takeProfit, "RSI超賣反彈")) {
+        log("RSI 買入 - 價格: %.2f, 停損: %.2f, 停利: %.2f", 
+            price, stopLoss, takeProfit);
+    }
+}
+
+private void executeSell(double price) {
+    String reason = currentRSI >= overboughtThreshold ? "RSI超買" : "RSI止損";
+    if (sellWithReason(symbol, currentQuantity, reason)) {
+        log("RSI 賣出 (%s) - 價格: %.2f", reason, price);
+    }
+}
+```
+
 **回測架構設計**:
 ```java
 // 回測引擎
@@ -807,6 +998,8 @@ public interface Strategy {
 3. **文字顏色**: 交易記錄使用深色文字，提升可讀性
 4. **HTML 編碼**: 使用 UTF-8 編碼寫入，避免亂碼
 5. **多時間週期**: 智能檢測數據間隔，自動選擇適當的時間週期顯示
+6. **編譯錯誤**: 修復 ArrayList 導入和 Trade 類型衝突問題
+7. **依賴問題**: 解決 JFreeChart TextAnchor 類找不到的問題
 
 **多時間週期實作**:
 ```java
@@ -1224,8 +1417,8 @@ System.out.println("Execution time: " + (endTime - startTime) + "ms");
 
 Made with ❤️ by DreamHouse Trading Team
 
-**最後更新**: 2024-10-25  
-**文檔版本**: v1.0  
+**最後更新**: 2024-10-27  
+**文檔版本**: v1.1  
 **專案狀態**: 🟢 積極開發中
 
 </div>

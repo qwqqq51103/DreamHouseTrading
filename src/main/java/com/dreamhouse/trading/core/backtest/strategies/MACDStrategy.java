@@ -152,9 +152,15 @@ public class MACDStrategy extends BaseStrategy {
         double positionRatio = Math.min(0.8, Math.max(0.3, Math.abs(histogram) * 1000));
         int quantity = Math.min(maxPosition, (int) (availableCash * positionRatio / (price * 1.002)));
         
-        if (quantity > 0 && buy(symbol, quantity)) {
-            log(String.format("MACD 金叉買入 - Histogram: %.4f, 倉位比例: %.1f%%, 數量: %d, 價格: %.2f", 
-                             histogram, positionRatio * 100, quantity, price));
+        if (quantity > 0) {
+            // 設定停利停損
+            double stopLoss = price * 0.94;     // 停損 6%
+            double takeProfit = price * 1.12;   // 停利 12%
+            
+            if (buyWithStops(symbol, quantity, stopLoss, takeProfit, "MACD金叉")) {
+                log(String.format("MACD金叉買入 - Histogram: %.4f, 倉位比例: %.1f%%, 數量: %d, 價格: %.2f, 停損: %.2f, 停利: %.2f", 
+                                 histogram, positionRatio * 100, quantity, price, stopLoss, takeProfit));
+            }
         }
     }
     
@@ -164,10 +170,10 @@ public class MACDStrategy extends BaseStrategy {
     private void executeSell(double price, double histogram) {
         int currentQuantity = getPositionQuantity(symbol);
         
-        if (currentQuantity > 0 && sell(symbol, currentQuantity)) {
+        if (currentQuantity > 0) {
             Portfolio portfolio = getPortfolio();
             String reason = prevMACD >= prevSignal && macd.getValue(barSeries.getBarCount() - 1).doubleValue() < 
-                           macdSignal.getValue(barSeries.getBarCount() - 1).doubleValue() ? "死叉" : "止損";
+                           macdSignal.getValue(barSeries.getBarCount() - 1).doubleValue() ? "MACD死叉" : "MACD止損";
             
             double profit = 0.0;
             if (portfolio != null) {
@@ -177,8 +183,10 @@ public class MACDStrategy extends BaseStrategy {
                 }
             }
             
-            log(String.format("MACD 賣出 (%s) - Histogram: %.4f, 收益: %.2f%%, 數量: %d, 價格: %.2f", 
-                             reason, histogram, profit, currentQuantity, price));
+            if (sellWithReason(symbol, currentQuantity, reason)) {
+                log(String.format("MACD賣出 (%s) - Histogram: %.4f, 收益: %.2f%%, 數量: %d, 價格: %.2f", 
+                                 reason, histogram, profit, currentQuantity, price));
+            }
         }
     }
     

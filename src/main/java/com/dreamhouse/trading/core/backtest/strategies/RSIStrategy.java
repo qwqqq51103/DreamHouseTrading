@@ -148,10 +148,16 @@ public class RSIStrategy extends BaseStrategy {
         // 計算可買入的數量（預留手續費）
         int quantity = Math.min(maxPosition, (int) (availableCash / (price * 1.002)));
         
-        if (quantity > 0 && buy(symbol, quantity)) {
-            double currentRSI = rsi.getValue(barSeries.getBarCount() - 1).doubleValue();
-            log(String.format("RSI 買入信號 - RSI: %.2f, 數量: %d, 價格: %.2f", 
-                             currentRSI, quantity, price));
+        if (quantity > 0) {
+            // 計算停損和停利價格
+            double stopLoss = price * 0.95;     // 停損 5%
+            double takeProfit = price * 1.10;   // 停利 10%
+            
+            if (buyWithStops(symbol, quantity, stopLoss, takeProfit, "RSI超賣反彈")) {
+                double currentRSI = rsi.getValue(barSeries.getBarCount() - 1).doubleValue();
+                log(String.format("RSI 買入信號 - RSI: %.2f, 數量: %d, 價格: %.2f, 停損: %.2f, 停利: %.2f", 
+                                 currentRSI, quantity, price, stopLoss, takeProfit));
+            }
         }
     }
     
@@ -161,13 +167,14 @@ public class RSIStrategy extends BaseStrategy {
     private void executeSell(double price) {
         int currentQuantity = getPositionQuantity(symbol);
         
-        if (currentQuantity > 0 && sell(symbol, currentQuantity)) {
+        if (currentQuantity > 0) {
             double currentRSI = rsi.getValue(barSeries.getBarCount() - 1).doubleValue();
-            Position position = getPortfolio().getPosition(symbol);
-            String reason = currentRSI >= overboughtThreshold ? "超買" : "止損";
+            String reason = currentRSI >= overboughtThreshold ? "RSI超買" : "RSI止損";
             
-            log(String.format("RSI 賣出信號 (%s) - RSI: %.2f, 數量: %d, 價格: %.2f", 
-                             reason, currentRSI, currentQuantity, price));
+            if (sellWithReason(symbol, currentQuantity, reason)) {
+                log(String.format("RSI 賣出信號 (%s) - RSI: %.2f, 數量: %d, 價格: %.2f", 
+                                 reason, currentRSI, currentQuantity, price));
+            }
         }
     }
     

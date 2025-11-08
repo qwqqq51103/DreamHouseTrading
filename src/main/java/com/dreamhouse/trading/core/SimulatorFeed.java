@@ -14,6 +14,8 @@ public class SimulatorFeed implements MarketDataFeed {
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
     private final Map<String, List<DepthLevel>> orderBooks = new ConcurrentHashMap<>();
     private boolean connected = false;
+    private boolean paused = false;  // 新增：暫停狀態
+    private ScheduledFuture<?> marketDataTask;  // 新增：任務引用
     
     @Override
     public void subscribe(String symbol, MarketDataListener listener) {
@@ -41,7 +43,7 @@ public class SimulatorFeed implements MarketDataFeed {
             generateHistoricalData();
             
             // 歷史數據生成完畢後，開始即時數據更新
-            executor.scheduleAtFixedRate(this::generateMarketData, 0, 1000, TimeUnit.MILLISECONDS);
+            marketDataTask = executor.scheduleAtFixedRate(this::generateMarketData, 0, 1000, TimeUnit.MILLISECONDS);
         }, "HistoricalDataGenerator").start();
     }
     
@@ -51,7 +53,7 @@ public class SimulatorFeed implements MarketDataFeed {
     private void generateHistoricalData() {
         for (String symbol : listeners.keySet()) {
             double basePrice = lastPrices.get(symbol);
-            LocalDateTime startTime = LocalDateTime.now().minusMinutes(300);
+            LocalDateTime startTime = LocalDateTime.now().minusMinutes(0);
             
             double currentPrice = basePrice - 5.0 + random.nextDouble() * 10.0; // 起始價格
             
@@ -59,7 +61,7 @@ public class SimulatorFeed implements MarketDataFeed {
             if (symbolListeners == null) continue;
             
             // 生成 50 根歷史 K 線
-            for (int i = 0; i < 300; i++) {
+            for (int i = 0; i < 0; i++) {
                 LocalDateTime barTime = startTime.plusMinutes(i);
                 
                 // 模擬K線的開高低收
@@ -152,6 +154,11 @@ public class SimulatorFeed implements MarketDataFeed {
     }
     
     private void generateMarketData() {
+        // 如果暫停，則不生成數據
+        if (paused) {
+            return;
+        }
+        
         for (String symbol : listeners.keySet()) {
             double lastPrice = lastPrices.get(symbol);
             
@@ -203,6 +210,32 @@ public class SimulatorFeed implements MarketDataFeed {
     
     private double round(double value) {
         return Math.round(value * 100.0) / 100.0;
+    }
+    
+    /**
+     * 暫停即時數據生成
+     */
+    @Override
+    public void pause() {
+        paused = true;
+        System.out.println("[SimulatorFeed] 數據模擬已暫停");
+    }
+    
+    /**
+     * 恢復即時數據生成
+     */
+    @Override
+    public void resume() {
+        paused = false;
+        System.out.println("[SimulatorFeed] 數據模擬已恢復");
+    }
+    
+    /**
+     * 獲取當前暫停狀態
+     */
+    @Override
+    public boolean isPaused() {
+        return paused;
     }
 }
 

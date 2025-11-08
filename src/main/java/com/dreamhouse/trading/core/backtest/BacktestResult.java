@@ -153,6 +153,7 @@ public class BacktestResult {
     
     /**
      * 計算交易統計
+     * 將買賣配對，計算每一輪交易的盈虧
      */
     private void calculateTradeStatistics() {
         totalTrades = trades.size();
@@ -162,23 +163,40 @@ public class BacktestResult {
         double totalWinAmount = 0.0;
         double totalLossAmount = 0.0;
         
+        // 配對買賣交易，計算盈虧
+        Trade lastBuy = null;
         for (Trade trade : trades) {
-            if (trade.getType() == TradeType.SELL) { // 只統計賣出交易的盈虧
-                // 這裡需要計算實際盈虧，簡化處理
-                // 實際應該根據買入價格計算
-                double profit = 0.0; // 需要實現具體邏輯
+            if (trade.getType() == TradeType.BUY) {
+                lastBuy = trade;
+            } else if (trade.getType() == TradeType.SELL && lastBuy != null) {
+                // 使用 Trade 類的方法計算成本和收入
+                double buyTotal = lastBuy.getTotalCost();      // 買入總成本（含手續費）
+                double sellTotal = trade.getNetProceeds();     // 賣出淨收入（扣除手續費）
+                
+                double profit = sellTotal - buyTotal;
                 
                 if (profit > 0) {
                     winningTrades++;
                     totalWinAmount += profit;
-                } else {
+                } else if (profit < 0) {
                     losingTrades++;
                     totalLossAmount += Math.abs(profit);
                 }
+                
+                // 調試輸出
+                if (totalTrades <= 30) { // 只輸出前30筆
+                    System.out.printf("交易配對: 買入%.2f (成本:%.2f) -> 賣出%.2f (收入:%.2f) = 盈虧:%.2f%n",
+                                     lastBuy.getPrice(), buyTotal, 
+                                     trade.getPrice(), sellTotal, profit);
+                }
+                
+                lastBuy = null; // 重置，準備下一輪交易
             }
         }
         
-        winRate = totalTrades > 0 ? (double) winningTrades / (totalTrades / 2) : 0.0; // 除以2因為買賣成對
+        // 計算統計指標
+        int completedTrades = winningTrades + losingTrades;
+        winRate = completedTrades > 0 ? (double) winningTrades / completedTrades : 0.0;
         avgWin = winningTrades > 0 ? totalWinAmount / winningTrades : 0.0;
         avgLoss = losingTrades > 0 ? totalLossAmount / losingTrades : 0.0;
         profitFactor = totalLossAmount > 0 ? totalWinAmount / totalLossAmount : 0.0;
