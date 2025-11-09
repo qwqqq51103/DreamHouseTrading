@@ -12,6 +12,7 @@ import com.dreamhouse.trading.ui.dialog.IndicatorSettingsDialog;
 import com.dreamhouse.trading.ui.dialog.BacktestConfigDialog;
 import com.dreamhouse.trading.ui.dialog.BacktestProgressDialog;
 import com.dreamhouse.trading.ui.dialog.BacktestResultDialog;
+import com.dreamhouse.trading.ui.dialog.DataSourceConfigDialog;
 import com.dreamhouse.trading.core.backtest.*;
 import com.dreamhouse.trading.ui.dock.*;
 import com.dreamhouse.trading.util.I18n;
@@ -30,30 +31,32 @@ import java.util.List;
 import java.util.Locale;
 
 public class MainFrameWithDocking extends JFrame {
-    private final MarketDataFeed dataFeed;
+    private final DataSourceManager dataSourceManager;
+    private MarketDataFeed dataFeed;
     private final StatusBar statusBar;
     private final RootDockingPanel dockingPanel;
-    
+
     private ChartDock chartDock;
     private WatchlistPanel watchlistPanel;
     private OrderBookDock orderBookDock;
     private TimeSalesDock timeSalesDock;
     private NewsDock newsDock;
-    
+
     private String currentSymbol = "AAPL";
     private Timeframe currentTimeframe = Timeframe.M1;
     private double lastPrice = 0;
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
-    
+
     public MainFrameWithDocking() {
         setTitle(I18n.get("app.title"));
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setSize(1600, 900);
         setLocationRelativeTo(null);
-        
-        // 建立資料源
-        dataFeed = new SimulatorFeed();
+
+        // 建立資料源管理器
+        dataSourceManager = new DataSourceManager();
+        dataFeed = dataSourceManager.getCurrentDataSource();
         
         // 建立 MenuBar
         setJMenuBar(createMenuBar());
@@ -205,16 +208,43 @@ public class MainFrameWithDocking extends JFrame {
         viewMenu.add(indicatorSettings);
         
         menuBar.add(viewMenu);
-        
+
+        // Data Source Menu
+        JMenu dataMenu = new JMenu(I18n.get("menu.data"));
+
+        JMenuItem dataSourceConfig = new JMenuItem(I18n.get("menu.data.config"));
+        dataSourceConfig.addActionListener(e -> openDataSourceConfig());
+        dataMenu.add(dataSourceConfig);
+
+        dataMenu.addSeparator();
+
+        // Quick switch submenu
+        JMenu switchMenu = new JMenu(I18n.get("menu.data.switch"));
+
+        JMenuItem switchToSimulator = new JMenuItem(I18n.get("menu.data.switch.simulator"));
+        switchToSimulator.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.SIMULATOR));
+        switchMenu.add(switchToSimulator);
+
+        JMenuItem switchToYahoo = new JMenuItem(I18n.get("menu.data.switch.yahoo"));
+        switchToYahoo.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.YAHOO_FINANCE));
+        switchMenu.add(switchToYahoo);
+
+        JMenuItem switchToAlphaVantage = new JMenuItem(I18n.get("menu.data.switch.alphavantage"));
+        switchToAlphaVantage.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.ALPHA_VANTAGE));
+        switchMenu.add(switchToAlphaVantage);
+
+        dataMenu.add(switchMenu);
+        menuBar.add(dataMenu);
+
         // Tools Menu
         JMenu toolsMenu = new JMenu(I18n.get("menu.tools"));
-        
+
         JMenuItem backtestItem = new JMenuItem(I18n.get("menu.tools.backtest"));
         backtestItem.addActionListener(e -> openBacktestDialog());
         toolsMenu.add(backtestItem);
-        
+
         menuBar.add(toolsMenu);
-        
+
         // Layout Menu
         JMenu layoutMenu = new JMenu(I18n.get("menu.layout"));
         JMenuItem resetLayout = new JMenuItem(I18n.get("menu.layout.reset"));
@@ -773,11 +803,73 @@ public class MainFrameWithDocking extends JFrame {
         }
     }
     
+    /**
+     * 開啟數據源配置對話框
+     */
+    private void openDataSourceConfig() {
+        DataSourceConfigDialog dialog = new DataSourceConfigDialog(this, dataSourceManager);
+        dialog.setVisible(true);
+
+        if (dialog.isConfirmed()) {
+            // 用戶確認了新配置，重新連接數據源
+            reconnectDataSource(dialog.getSelectedType());
+        }
+    }
+
+    /**
+     * 快速切換數據源
+     */
+    private void switchDataSource(DataSourceManager.DataSourceType type) {
+        // 檢查是否需要API密鑰
+        if (dataSourceManager.requiresApiKey(type) && !dataSourceManager.hasValidApiKey(type)) {
+            int choice = JOptionPane.showConfirmDialog(this,
+                "此數據源需要 API 密鑰，是否現在配置？",
+                "需要 API 密鑰",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE);
+
+            if (choice == JOptionPane.YES_OPTION) {
+                openDataSourceConfig();
+            }
+            return;
+        }
+
+        reconnectDataSource(type);
+    }
+
+    /**
+     * 重新連接數據源
+     */
+    private void reconnectDataSource(DataSourceManager.DataSourceType type) {
+        // 停止當前數據源
+        if (dataFeed != null && dataFeed.isConnected()) {
+            dataFeed.stop();
+        }
+
+        // 切換到新數據源
+        dataFeed = dataSourceManager.switchDataSource(type);
+
+        // 重新訂閱市場數據
+        subscribeMarketData();
+
+        // 啟動新數據源
+        dataFeed.start();
+
+        // 更新狀態欄
+        String dataSourceName = type.getDisplayNameZh();
+        statusBar.setText("已切換到: " + dataSourceName);
+
+        JOptionPane.showMessageDialog(this,
+            "已成功切換到 " + dataSourceName,
+            "數據源切換",
+            JOptionPane.INFORMATION_MESSAGE);
+    }
+
     private void setupKeyBindings() {
         JRootPane rootPane = getRootPane();
         InputMap inputMap = rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
         ActionMap actionMap = rootPane.getActionMap();
-        
+
         // Ctrl+L: Toggle Light/Dark
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_L, InputEvent.CTRL_DOWN_MASK), "toggleTheme");
         actionMap.put("toggleTheme", new AbstractAction() {
@@ -788,7 +880,7 @@ public class MainFrameWithDocking extends JFrame {
                 isDark = !isDark;
             }
         });
-        
+
         // Ctrl+=: Zoom In
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
         actionMap.put("zoomIn", new AbstractAction() {
@@ -797,7 +889,7 @@ public class MainFrameWithDocking extends JFrame {
                 chartDock.zoomIn();
             }
         });
-        
+
         // Ctrl+-: Zoom Out
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut");
         actionMap.put("zoomOut", new AbstractAction() {
@@ -806,7 +898,7 @@ public class MainFrameWithDocking extends JFrame {
                 chartDock.zoomOut();
             }
         });
-        
+
         // Ctrl+0: Zoom Reset
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset");
         actionMap.put("zoomReset", new AbstractAction() {
