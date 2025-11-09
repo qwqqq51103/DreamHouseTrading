@@ -27,7 +27,8 @@ public class DrawingManager {
         HORIZONTAL_LINE,// 水平線
         VERTICAL_LINE,  // 垂直線（未來）
         RECTANGLE,      // 矩形（未來）
-        FIBONACCI       // 斐波那契回調（未來）
+        MEASURE,        // 測量工具
+        FIBONACCI       // 斐波那契回調
     }
     
     public DrawingManager() {
@@ -73,12 +74,22 @@ public class DrawingManager {
                 tempObject = new TrendLine(startX, startY, startX, startY);
                 tempObject.setColor(new Color(0, 120, 215));  // 預設藍色
                 break;
-                
+
             case HORIZONTAL_LINE:
                 tempObject = new HorizontalLine(startY);
                 tempObject.setColor(new Color(255, 0, 0));  // 預設紅色
                 break;
-                
+
+            case MEASURE:
+                tempObject = new MeasureTool(startX, startY, startX, startY);
+                tempObject.setColor(new Color(255, 165, 0));  // 橙色
+                break;
+
+            case FIBONACCI:
+                tempObject = new FibonacciRetracement(startX, startY, startX, startY);
+                tempObject.setColor(new Color(128, 128, 128));  // 灰色
+                break;
+
             default:
                 break;
         }
@@ -100,6 +111,14 @@ public class DrawingManager {
         } else if (tempObject instanceof HorizontalLine) {
             HorizontalLine line = (HorizontalLine) tempObject;
             line.setPrice(y);
+        } else if (tempObject instanceof MeasureTool) {
+            MeasureTool measure = (MeasureTool) tempObject;
+            measure.setX2(x);
+            measure.setY2(y);
+        } else if (tempObject instanceof FibonacciRetracement) {
+            FibonacciRetracement fib = (FibonacciRetracement) tempObject;
+            fib.setX2(x);
+            fib.setY2(y);
         }
     }
     

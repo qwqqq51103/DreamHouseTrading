@@ -20,6 +20,8 @@ public class ToolBarFactory {
         public Runnable onCrosshairToggle;
         public Runnable onTrendlineToggle;
         public Runnable onHorizontalLineToggle;
+        public Runnable onMeasureToolToggle;
+        public Runnable onFibonacciToggle;
     }
     
     public static JToolBar createToolBar(ToolBarCallbacks callbacks) {
@@ -106,7 +108,23 @@ public class ToolBarFactory {
             }
         });
         toolBar.add(hlineBtn);
-        
+
+        JToggleButton measureBtn = new JToggleButton("📏 " + I18n.get("toolbar.measure"));
+        measureBtn.addActionListener(e -> {
+            if (callbacks.onMeasureToolToggle != null) {
+                callbacks.onMeasureToolToggle.run();
+            }
+        });
+        toolBar.add(measureBtn);
+
+        JToggleButton fibonacciBtn = new JToggleButton("📊 " + I18n.get("toolbar.fibonacci"));
+        fibonacciBtn.addActionListener(e -> {
+            if (callbacks.onFibonacciToggle != null) {
+                callbacks.onFibonacciToggle.run();
+            }
+        });
+        toolBar.add(fibonacciBtn);
+
         toolBar.addSeparator();
         
         // Zoom 控制
