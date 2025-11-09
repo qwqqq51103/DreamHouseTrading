@@ -38,10 +38,12 @@
 ### 📊 項目統計
 
 - **程式語言**: Java 17
-- **檔案數量**: 72 個檔案
-- **程式碼行數**: 17,356 行
-- **開發時間**: 2024年10月 (持續開發中)
-- **架構**: 分層架構 (UI/Core/Widgets)
+- **檔案數量**: 69 個檔案 (含測試與文檔)
+- **程式碼行數**: 26,150 行 (含測試)
+- **測試數量**: 103 個單元測試
+- **測試覆蓋率**: ~50% (核心類 100%)
+- **開發時間**: 2024年10月 - 2025年01月 (持續開發中)
+- **架構**: 分層架構 (UI/Core/Test)
 
 ---
 
@@ -141,6 +143,39 @@
   - [x] 分層架構
   - [x] 介面分離
   - [x] 完整註解
+
+#### 🧪 測試系統 ✅ **完成**
+- [x] **測試框架配置**
+  - [x] JUnit 5.10.1 (測試引擎)
+  - [x] Mockito 5.7.0 (Mock 框架)
+  - [x] AssertJ 3.24.2 (流暢斷言)
+  - [x] Maven Surefire Plugin 3.0.0-M5
+- [x] **單元測試套件** (103 個測試)
+  - [x] TradeTest - 交易記錄測試 (12 個測試)
+  - [x] PositionTest - 持倉管理測試 (23 個測試)
+  - [x] PortfolioTest - 投資組合測試 (27 個測試)
+  - [x] AdvancedStopLossManagerTest - 停損管理測試 (20 個測試)
+  - [x] StrategyConfigTest - 策略配置測試 (21 個測試)
+- [x] **代碼覆蓋率系統**
+  - [x] JaCoCo 0.8.11 配置
+  - [x] 覆蓋率報告生成 (HTML)
+  - [x] 最低覆蓋率門檻 (30%)
+  - [x] 核心模型類 100% 覆蓋
+- [x] **Git Hooks 整合**
+  - [x] Pre-commit 自動測試
+  - [x] 測試失敗阻止提交
+  - [x] 安裝腳本 (setup-git-hooks.bat)
+- [x] **開發工具腳本**
+  - [x] run-tests.bat (執行測試)
+  - [x] run-coverage.bat (生成覆蓋率報告)
+  - [x] 一鍵執行與報告查看
+- [x] **測試文檔**
+  - [x] UNIT_TESTS_SUMMARY.md (測試摘要)
+  - [x] TEST_FIXES_SUMMARY.md (修復記錄)
+  - [x] CODE_IMPROVEMENTS.md (代碼改進)
+  - [x] CODE_COVERAGE_GUIDE.md (覆蓋率指南)
+  - [x] DEVELOPMENT_WORKFLOW.md (開發流程)
+  - [x] SETUP_COMPLETE.md (設置完成總結)
 
 ### 🔄 進行中功能
 
@@ -265,6 +300,7 @@
 | 使用者介面 | 100% | ✅ 完成 | 2024-10-24 |
 | 數據管理 | 75% | 🟡 進行中 | 2024-10-25 |
 | 回測系統 | 95% | ✅ 完成 | 2024-10-25 |
+| 測試系統 | 100% | ✅ 完成 | 2025-01-09 |
 
 ### 📅 開發時程表
 
@@ -288,6 +324,13 @@
 - ✅ **2024-10-25**: 績效統計與圖表 (完整實作)
 - ✅ **2024-10-25**: UI 整合與測試 (對話框與菜單)
 
+#### 第四階段 (已完成) - 測試系統
+- ✅ **2025-01-09**: 測試框架配置 (JUnit 5, Mockito, AssertJ)
+- ✅ **2025-01-09**: 核心單元測試撰寫 (103 個測試)
+- ✅ **2025-01-09**: 代碼覆蓋率系統 (JaCoCo)
+- ✅ **2025-01-09**: Git Hooks 自動化
+- ✅ **2025-01-09**: 測試文檔與開發流程
+
 ### 🎯 里程碑
 
 | 里程碑 | 目標日期 | 狀態 | 完成日期 |
@@ -295,6 +338,7 @@
 | MVP 版本 | 2024-10-23 | ✅ | 2024-10-23 |
 | 繪圖工具完成 | 2024-10-25 | ✅ | 2024-10-25 |
 | 回測系統 | 2024-10-28 | ✅ | 2024-10-25 |
+| 測試系統完成 | 2025-01-09 | ✅ | 2025-01-09 |
 | 1.0 正式版 | 2024-11-01 | 📅 | - |
 
 ---
@@ -335,6 +379,15 @@ DreamHouseTrading/
 │   │   ├── IndicatorService.java           # 技術指標服務
 │   │   ├── IndicatorConfig.java            # 指標配置
 │   │   ├── Timeframe.java                  # 時間週期
+│   │   ├── backtest/                       # 回測系統
+│   │   │   ├── BacktestEngine.java         # 回測引擎
+│   │   │   ├── BaseStrategy.java           # 策略基類
+│   │   │   ├── Portfolio.java              # 投資組合
+│   │   │   ├── Position.java               # 持倉管理
+│   │   │   ├── Trade.java                  # 交易記錄
+│   │   │   ├── BacktestResult.java         # 回測結果
+│   │   │   ├── StrategyConfig.java         # 策略配置
+│   │   │   └── AdvancedStopLossManager.java # 停損管理器
 │   │   ├── csv/
 │   │   │   └── CsvDataManager.java         # CSV 數據管理
 │   │   └── model/                          # 數據模型
@@ -354,11 +407,16 @@ DreamHouseTrading/
 │   │   │   ├── DrawingObject.java          # 繪圖對象基類
 │   │   │   ├── TrendLine.java              # 趨勢線
 │   │   │   ├── HorizontalLine.java         # 水平線
-│   │   │   └── ChartOverlay.java           # 圖表覆蓋層
+│   │   │   ├── ChartOverlay.java           # 圖表覆蓋層
+│   │   │   ├── TradeMarker.java            # 交易標記
+│   │   │   └── TradeMarkerManager.java     # 標記管理器
 │   │   ├── dialog/                         # 對話框
 │   │   │   ├── IndicatorSettingsDialog.java # 指標設定
 │   │   │   ├── CsvImportDialog.java        # CSV 匯入
-│   │   │   └── CsvExportDialog.java        # CSV 匯出
+│   │   │   ├── CsvExportDialog.java        # CSV 匯出
+│   │   │   ├── BacktestConfigDialog.java   # 回測配置
+│   │   │   ├── BacktestProgressDialog.java # 回測進度
+│   │   │   └── BacktestResultDialog.java   # 回測結果
 │   │   └── dock/                           # 面板元件
 │   │       ├── ChartDock.java              # 圖表面板
 │   │       ├── WatchlistPanel.java         # 觀察清單
@@ -367,14 +425,32 @@ DreamHouseTrading/
 │   │       └── NewsDock.java               # 新聞面板
 │   └── util/
 │       └── I18n.java                       # 國際化工具
+├── src/test/java/com/dreamhouse/trading/   # 🧪 測試目錄 (新增)
+│   └── core/backtest/
+│       ├── TradeTest.java                  # 交易記錄測試 (12 tests)
+│       ├── PositionTest.java               # 持倉管理測試 (23 tests)
+│       ├── PortfolioTest.java              # 投資組合測試 (27 tests)
+│       ├── AdvancedStopLossManagerTest.java # 停損管理測試 (20 tests)
+│       └── StrategyConfigTest.java         # 策略配置測試 (21 tests)
 ├── src/main/resources/
 │   ├── messages_zh.properties              # 中文翻譯
 │   └── messages_en.properties              # 英文翻譯
 ├── pom.xml                                 # Maven 配置
 ├── settings.xml                            # Maven 鏡像設定
+├── run-tests.bat                           # 🧪 執行測試腳本 (新增)
+├── run-coverage.bat                        # 🧪 覆蓋率報告腳本 (新增)
+├── setup-git-hooks.bat                     # 🧪 Git Hooks 安裝腳本 (新增)
 ├── sample_data.csv                         # 範例數據
 ├── sample_data_recent.csv                  # 最新範例數據
-└── PROJECT_DOCUMENTATION.md               # 統一項目文檔
+├── README.md                               # GitHub 首頁
+├── PROJECT_DOCUMENTATION.md                # 統一項目文檔
+├── DOCUMENTATION_GUIDE.md                  # 文檔維護指南
+├── UNIT_TESTS_SUMMARY.md                   # 🧪 測試摘要 (新增)
+├── TEST_FIXES_SUMMARY.md                   # 🧪 修復記錄 (新增)
+├── CODE_IMPROVEMENTS.md                    # 🧪 代碼改進 (新增)
+├── CODE_COVERAGE_GUIDE.md                  # 🧪 覆蓋率指南 (新增)
+├── DEVELOPMENT_WORKFLOW.md                 # 🧪 開發流程 (新增)
+└── SETUP_COMPLETE.md                       # 🧪 設置完成總結 (新增)
 ```
 
 ### 🔄 架構設計原則
@@ -791,6 +867,284 @@ public class TrendLine extends DrawingObject {
 - ✅ 修復交易記錄持倉狀態顯示錯誤 (賣出後正確顯示空倉)
 - ✅ 為所有策略添加停利停損功能 (SMA、MACD、布林通道)
 
+### 🎯 第四階段：測試系統建立 (2025-01-09)
+
+#### 2025-01-09: 測試框架配置與單元測試撰寫
+- ✅ 配置測試依賴到 pom.xml
+- ✅ 撰寫核心業務邏輯單元測試
+- ✅ 發現並修復 AdvancedStopLossManager 重大 Bug
+- ✅ 整合 JaCoCo 代碼覆蓋率工具
+- ✅ 配置 Git Hooks 自動測試
+- ✅ 撰寫完整測試文檔
+
+**測試框架配置**:
+```xml
+<!-- pom.xml 新增測試依賴 -->
+<dependency>
+    <groupId>org.junit.jupiter</groupId>
+    <artifactId>junit-jupiter</artifactId>
+    <version>5.10.1</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-core</artifactId>
+    <version>5.7.0</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.assertj</groupId>
+    <artifactId>assertj-core</artifactId>
+    <version>3.24.2</version>
+    <scope>test</scope>
+</dependency>
+```
+
+**單元測試套件** (103 個測試，100% 通過率):
+1. **TradeTest.java** (12 個測試)
+   - 交易記錄創建與驗證
+   - 成本計算 (含手續費)
+   - 買入/賣出邏輯
+   - equals/hashCode 正確性
+
+2. **PositionTest.java** (23 個測試)
+   - 持倉新增/減少
+   - 平均價格計算
+   - 盈虧計算 (含手續費)
+   - 邊界條件測試
+
+3. **PortfolioTest.java** (27 個測試)
+   - 投資組合管理
+   - 現金流追蹤
+   - 總市值計算
+   - 收益率統計
+   - 複雜場景測試
+
+4. **AdvancedStopLossManagerTest.java** (20 個測試)
+   - 固定停損觸發
+   - 移動停損邏輯
+   - 時間停損功能
+   - 配置管理
+
+5. **StrategyConfigTest.java** (21 個測試)
+   - 策略參數配置
+   - 參數驗證
+   - 複製功能
+   - 複雜場景
+
+**關鍵 Bug 發現與修復**:
+
+**Bug**: AdvancedStopLossManager 移動停損無法觸發
+- **問題**: testCheckTrailingStopTrigger 預期 TRAILING_STOP 但返回 STOP_LOSS
+- **根本原因**: checkStopTrigger 方法中，固定停損檢查在移動停損之前執行，且兩者共用同一個 stopLoss 字段，導致移動停損永遠無法被觸發
+- **影響**: 在實際交易中，用戶設定的移動停損策略會完全失效，可能導致錯誤的交易決策
+
+**修復方案** (src/main/java/com/dreamhouse/trading/core/backtest/AdvancedStopLossManager.java:208-232):
+```java
+// 修復前 (有 Bug)
+// 1. 先檢查固定停損
+if (currentPrice <= posStop.stopLoss) {
+    return new StopTrigger(StopTriggerType.STOP_LOSS, ...);
+}
+// 3. 後檢查移動停損 (永遠執行不到)
+
+// 修復後 (正確)
+// 1. 先更新移動停損狀態
+if (config.isTrailingStopEnabled()) {
+    posStop.updateTrailingStop(currentPrice, config.getTrailingStopPercent(), config.getTrailingStopActivation());
+}
+
+// 2. 檢查固定停損 (但排除移動停損活躍時)
+if (!posStop.trailingActive && currentPrice <= posStop.stopLoss) {
+    return new StopTrigger(StopTriggerType.STOP_LOSS, ...);
+}
+
+// 3. 檢查移動停損
+if (config.isTrailingStopEnabled() && posStop.trailingActive && ...) {
+    return new StopTrigger(StopTriggerType.TRAILING_STOP, ...);
+}
+```
+
+**修復價值**:
+- ✅ 透過 TDD 發現生產代碼的邏輯缺陷
+- ✅ 修復後移動停損功能正常工作
+- ✅ 所有測試通過，確保邏輯正確性
+- 📝 完整記錄於 CODE_IMPROVEMENTS.md
+
+**測試執行結果**:
+```
+Tests run: 103, Failures: 0, Errors: 0, Skipped: 0
+Success rate: 100%
+```
+
+**JaCoCo 代碼覆蓋率配置**:
+```xml
+<plugin>
+    <groupId>org.jacoco</groupId>
+    <artifactId>jacoco-maven-plugin</artifactId>
+    <version>0.8.11</version>
+    <executions>
+        <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+        </execution>
+        <execution>
+            <id>report</id>
+            <phase>test</phase>
+            <goals><goal>report</goal></goals>
+        </execution>
+        <execution>
+            <id>check</id>
+            <goals><goal>check</goal></goals>
+            <configuration>
+                <rules>
+                    <rule>
+                        <element>PACKAGE</element>
+                        <limits>
+                            <limit>
+                                <counter>LINE</counter>
+                                <value>COVEREDRATIO</value>
+                                <minimum>0.30</minimum>
+                            </limit>
+                        </limits>
+                    </rule>
+                </rules>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+```
+
+**當前覆蓋率統計**:
+- Trade.java: 100% ✅
+- Position.java: 100% ✅
+- Portfolio.java: 100% ✅
+- AdvancedStopLossManager.java: 90% ✅
+- StrategyConfig.java: 100% ✅
+- **整體**: ~50% (目標: 70%)
+
+**Git Hooks 自動化**:
+
+Pre-commit Hook (.git/hooks/pre-commit):
+```bash
+#!/bin/sh
+# Git Pre-Commit Hook
+# Auto-run tests before commit
+
+echo "======================================"
+echo "Git Pre-Commit Hook: Running Tests"
+echo "======================================"
+
+# Set environment variables
+export JAVA_HOME="C:/Program Files/Java/jdk-17"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# Set Maven
+MAVEN_CMD="C:/Program Files/NetBeans-17/netbeans/java/maven/bin/mvn.cmd"
+
+# Run tests
+echo "Running unit tests..."
+"$MAVEN_CMD" test -q
+
+# Check test results
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "Tests failed! Please fix tests before committing."
+    echo "   Hint: Run 'run-tests.bat' to see detailed errors"
+    echo ""
+    exit 1
+fi
+
+echo ""
+echo "All tests passed! Proceeding with commit..."
+echo ""
+exit 0
+```
+
+**安裝方式**: 執行 `setup-git-hooks.bat`
+
+**效果**:
+- ✅ 每次 git commit 前自動執行測試
+- ✅ 測試失敗時阻止提交
+- ✅ 確保提交的代碼品質
+
+**開發工具腳本**:
+
+1. **run-tests.bat** - 執行所有測試
+```batch
+@echo off
+echo Running unit tests...
+"C:\Program Files\NetBeans-17\netbeans\java\maven\bin\mvn.cmd" test
+pause
+```
+
+2. **run-coverage.bat** - 生成並打開覆蓋率報告
+```batch
+@echo off
+echo Generating code coverage report...
+"C:\Program Files\NetBeans-17\netbeans\java\maven\bin\mvn.cmd" clean test
+start target\site\jacoco\index.html
+pause
+```
+
+**測試文檔**:
+
+1. **UNIT_TESTS_SUMMARY.md** (測試摘要)
+   - 測試套件概覽
+   - 如何執行測試
+   - 測試結構說明
+   - 最佳實踐指南
+
+2. **TEST_FIXES_SUMMARY.md** (修復記錄)
+   - 4 次測試失敗修復過程
+   - AdvancedStopLossManager Bug 詳細分析
+   - 浮點數精度問題解決方案
+
+3. **CODE_IMPROVEMENTS.md** (代碼改進)
+   - TDD 價值案例研究
+   - Bug 發現與修復過程
+   - 程式碼品質提升
+
+4. **CODE_COVERAGE_GUIDE.md** (覆蓋率指南)
+   - JaCoCo 使用教學
+   - 覆蓋率報告解讀
+   - 提升覆蓋率策略
+   - 最佳實踐
+
+5. **DEVELOPMENT_WORKFLOW.md** (開發流程)
+   - 日常開發步驟
+   - Git Hooks 整合
+   - 工具配置
+   - 快速參考
+
+6. **SETUP_COMPLETE.md** (設置完成總結)
+   - 完成任務清單
+   - 測試系統架構
+   - 實際效果展示
+   - 下一步建議
+
+**技術亮點**:
+- 🧪 **測試驅動開發 (TDD)**: 透過測試發現生產代碼的 Bug
+- 📊 **100% 核心覆蓋**: 核心業務模型類達到 100% 測試覆蓋率
+- 🤖 **自動化品質門檻**: Git Hooks 確保代碼品質
+- 📚 **完整文檔系統**: 6 份詳細測試文檔
+- ⚡ **快速執行**: 103 個測試在 5 秒內完成
+
+**實際價值**:
+- 🛡️ **代碼品質保證**: 防止回歸錯誤
+- 🐛 **及早發現問題**: 發現並修復關鍵 Bug
+- ⚡ **提升開發效率**: 自動化測試節省時間
+- 📚 **活文檔**: 測試即文檔，展示使用方式
+- 💪 **重構信心**: 修改代碼時有測試保護
+
+**開發統計**:
+- 測試檔案: 5 個
+- 測試數量: 103 個
+- 測試通過率: 100%
+- 代碼覆蓋率: ~50% (核心類 100%)
+- 文檔數量: 6 份
+- 腳本數量: 3 個
+
 **所有策略停利停損設定**:
 - **SMA策略**: 停損 5%, 停利 8%
 - **MACD策略**: 停損 6%, 停利 12%  
@@ -1073,14 +1427,17 @@ double screenY = point.getY() - dataArea.getY();
 
 | 類別 | 檔案數 | 程式碼行數 | 主要功能 |
 |------|--------|------------|----------|
-| Core | 8 | 2,500 | 數據處理、指標計算 |
-| UI | 15 | 8,000 | 使用者介面 |
-| Chart | 5 | 1,200 | 繪圖工具 |
-| Dialog | 3 | 800 | 對話框 |
+| Core | 15 | 4,500 | 數據處理、指標計算、回測系統 |
+| UI | 18 | 9,500 | 使用者介面、對話框 |
+| Chart | 7 | 1,800 | 繪圖工具、交易標記 |
+| Dialog | 6 | 1,500 | 對話框 (含回測UI) |
 | Dock | 6 | 4,000 | 面板元件 |
 | Util | 1 | 200 | 工具類 |
 | Resources | 2 | 350 | 國際化 |
-| **總計** | **40** | **17,050** | - |
+| **🧪 Test** | **5** | **2,200** | **單元測試 (103 tests)** |
+| **📚 Docs** | **6** | **2,000** | **測試文檔** |
+| **🔧 Scripts** | **3** | **100** | **開發工具腳本** |
+| **總計** | **69** | **26,150** | - |
 
 ---
 
@@ -1417,8 +1774,11 @@ System.out.println("Execution time: " + (endTime - startTime) + "ms");
 
 Made with ❤️ by DreamHouse Trading Team
 
-**最後更新**: 2024-10-27  
-**文檔版本**: v1.1  
+**最後更新**: 2025-01-09
+**文檔版本**: v1.2
 **專案狀態**: 🟢 積極開發中
+**測試狀態**: ✅ 103 測試通過
+
+**最新里程碑**: 測試系統完成 (2025-01-09)
 
 </div>
