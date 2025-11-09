@@ -233,6 +233,10 @@ public class MainFrameWithDocking extends JFrame {
         switchToAlphaVantage.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.ALPHA_VANTAGE));
         switchMenu.add(switchToAlphaVantage);
 
+        JMenuItem switchToFinnhub = new JMenuItem(I18n.get("menu.data.switch.finnhub"));
+        switchToFinnhub.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.FINNHUB));
+        switchMenu.add(switchToFinnhub);
+
         dataMenu.add(switchMenu);
         menuBar.add(dataMenu);
 

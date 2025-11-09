@@ -61,7 +61,7 @@ public class DataSourceConfigDialog extends JDialog {
         // API密鑰輸入
         apiKeyLabel = new JLabel(I18n.get("dialog.datasource.apikey") + ":");
         apiKeyField = new JTextField(30);
-        apiKeyField.setText(dataSourceManager.getAlphaVantageApiKey());
+        apiKeyField.setText(dataSourceManager.getApiKey(selectedType));
 
         testButton = new JButton(I18n.get("dialog.datasource.test"));
         confirmButton = new JButton(I18n.get("dialog.confirm"));
@@ -138,6 +138,12 @@ public class DataSourceConfigDialog extends JDialog {
         boolean requiresKey = dataSourceManager.requiresApiKey(selectedType);
         apiKeyPanel.setVisible(requiresKey);
         testButton.setVisible(requiresKey);
+
+        // 更新API密鑰欄位顯示當前選擇的數據源的密鑰
+        if (requiresKey) {
+            apiKeyField.setText(dataSourceManager.getApiKey(selectedType));
+        }
+
         pack();
     }
 
@@ -174,6 +180,9 @@ public class DataSourceConfigDialog extends JDialog {
 
             case ALPHA_VANTAGE:
                 return I18n.get("dialog.datasource.desc.alphavantage");
+
+            case FINNHUB:
+                return I18n.get("dialog.datasource.desc.finnhub");
 
             default:
                 return "";
@@ -252,7 +261,7 @@ public class DataSourceConfigDialog extends JDialog {
             }
 
             // 保存API密鑰
-            dataSourceManager.setAlphaVantageApiKey(apiKey);
+            dataSourceManager.setApiKey(selectedType, apiKey);
         }
 
         confirmed = true;

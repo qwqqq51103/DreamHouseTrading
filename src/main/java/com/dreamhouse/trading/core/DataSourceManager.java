@@ -12,7 +12,8 @@ public class DataSourceManager {
     public enum DataSourceType {
         SIMULATOR("模擬數據", "Simulated Data"),
         YAHOO_FINANCE("Yahoo Finance", "Yahoo Finance"),
-        ALPHA_VANTAGE("Alpha Vantage", "Alpha Vantage");
+        ALPHA_VANTAGE("Alpha Vantage", "Alpha Vantage"),
+        FINNHUB("Finnhub", "Finnhub");
 
         private final String displayNameZh;
         private final String displayNameEn;
@@ -33,6 +34,7 @@ public class DataSourceManager {
     private static final String CONFIG_FILE = "datasource.properties";
     private static final String PROP_DATASOURCE_TYPE = "datasource.type";
     private static final String PROP_ALPHAVANTAGE_API_KEY = "alphavantage.apikey";
+    private static final String PROP_FINNHUB_API_KEY = "finnhub.apikey";
 
     private DataSourceType currentType;
     private MarketDataFeed currentFeed;
@@ -91,10 +93,16 @@ public class DataSourceManager {
                 return new YahooFinanceFeed();
 
             case ALPHA_VANTAGE:
-                String apiKey = config.getProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
+                String avApiKey = config.getProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
                 System.out.println("[DataSourceManager] 創建Alpha Vantage數據源 (API Key: "
-                                 + (apiKey.equals("demo") ? "demo" : "***") + ")");
-                return new AlphaVantageFeed(apiKey);
+                                 + (avApiKey.equals("demo") ? "demo" : "***") + ")");
+                return new AlphaVantageFeed(avApiKey);
+
+            case FINNHUB:
+                String fhApiKey = config.getProperty(PROP_FINNHUB_API_KEY, "demo");
+                System.out.println("[DataSourceManager] 創建Finnhub數據源 (API Key: "
+                                 + (fhApiKey.equals("demo") ? "demo" : "***") + ")");
+                return new FinnhubFeed(fhApiKey);
 
             default:
                 System.err.println("[DataSourceManager] 未知數據源類型: " + type);
@@ -131,6 +139,26 @@ public class DataSourceManager {
     }
 
     /**
+     * 設置Finnhub API密鑰
+     */
+    public void setFinnhubApiKey(String apiKey) {
+        config.setProperty(PROP_FINNHUB_API_KEY, apiKey);
+        saveConfig();
+        System.out.println("[DataSourceManager] Finnhub API密鑰已更新");
+
+        if (currentType == DataSourceType.FINNHUB && currentFeed != null) {
+            switchDataSource(DataSourceType.FINNHUB);
+        }
+    }
+
+    /**
+     * 獲取Finnhub API密鑰
+     */
+    public String getFinnhubApiKey() {
+        return config.getProperty(PROP_FINNHUB_API_KEY, "demo");
+    }
+
+    /**
      * 加載配置
      */
     private void loadConfig() {
@@ -148,6 +176,7 @@ public class DataSourceManager {
             // 創建默認配置
             config.setProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name());
             config.setProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
+            config.setProperty(PROP_FINNHUB_API_KEY, "demo");
             saveConfig();
         }
     }
@@ -168,7 +197,7 @@ public class DataSourceManager {
      * 檢查數據源是否需要API密鑰
      */
     public boolean requiresApiKey(DataSourceType type) {
-        return type == DataSourceType.ALPHA_VANTAGE;
+        return type == DataSourceType.ALPHA_VANTAGE || type == DataSourceType.FINNHUB;
     }
 
     /**
@@ -179,7 +208,38 @@ public class DataSourceManager {
             return true;
         }
 
-        String apiKey = getAlphaVantageApiKey();
+        String apiKey;
+        if (type == DataSourceType.ALPHA_VANTAGE) {
+            apiKey = getAlphaVantageApiKey();
+        } else if (type == DataSourceType.FINNHUB) {
+            apiKey = getFinnhubApiKey();
+        } else {
+            return true;
+        }
+
         return apiKey != null && !apiKey.trim().isEmpty() && !apiKey.equals("demo");
+    }
+
+    /**
+     * 根據類型獲取API密鑰
+     */
+    public String getApiKey(DataSourceType type) {
+        if (type == DataSourceType.ALPHA_VANTAGE) {
+            return getAlphaVantageApiKey();
+        } else if (type == DataSourceType.FINNHUB) {
+            return getFinnhubApiKey();
+        }
+        return "";
+    }
+
+    /**
+     * 根據類型設置API密鑰
+     */
+    public void setApiKey(DataSourceType type, String apiKey) {
+        if (type == DataSourceType.ALPHA_VANTAGE) {
+            setAlphaVantageApiKey(apiKey);
+        } else if (type == DataSourceType.FINNHUB) {
+            setFinnhubApiKey(apiKey);
+        }
     }
 }
