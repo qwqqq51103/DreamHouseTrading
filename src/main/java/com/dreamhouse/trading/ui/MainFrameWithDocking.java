@@ -284,6 +284,15 @@ public class MainFrameWithDocking extends JFrame {
         JToggleButton hlineBtn = new JToggleButton("─ 水平線");
         hlineBtn.addActionListener(e -> toggleHorizontalLine());
         toolBar.add(hlineBtn);
+
+        JToggleButton measureBtn = new JToggleButton("📏 測量工具");
+        measureBtn.addActionListener(e -> toggleMeasure());
+        toolBar.add(measureBtn);
+
+        JToggleButton fibonacciBtn = new JToggleButton("📊 斐波那契");
+        fibonacciBtn.addActionListener(e -> toggleFibonacci());
+        toolBar.add(fibonacciBtn);
+
         toolBar.addSeparator();
         
         // Zoom 控制
@@ -409,6 +418,28 @@ public class MainFrameWithDocking extends JFrame {
         } else {
             chartDock.setDrawingTool(DrawingManager.DrawingTool.HORIZONTAL_LINE);
             System.out.println("Horizontal line tool enabled");
+        }
+    }
+
+    private void toggleMeasure() {
+        // 切換測量工具
+        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.MEASURE) {
+            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
+            System.out.println("Measure tool disabled");
+        } else {
+            chartDock.setDrawingTool(DrawingManager.DrawingTool.MEASURE);
+            System.out.println("Measure tool enabled");
+        }
+    }
+
+    private void toggleFibonacci() {
+        // 切換斐波那契回調工具
+        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.FIBONACCI) {
+            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
+            System.out.println("Fibonacci tool disabled");
+        } else {
+            chartDock.setDrawingTool(DrawingManager.DrawingTool.FIBONACCI);
+            System.out.println("Fibonacci tool enabled");
         }
     }
     
