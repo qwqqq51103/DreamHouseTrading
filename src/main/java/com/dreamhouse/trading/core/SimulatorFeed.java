@@ -16,13 +16,59 @@ public class SimulatorFeed implements MarketDataFeed {
     private boolean connected = false;
     private boolean paused = false;  // 新增：暫停狀態
     private ScheduledFuture<?> marketDataTask;  // 新增：任務引用
-    
+
+    /**
+     * 根據商品代號獲取合理的基準價格
+     * @param symbol 商品代號
+     * @return 基準價格
+     */
+    private double getReasonableBasePrice(String symbol) {
+        // 台股（.TW 或 .TWO 結尾）
+        if (symbol.endsWith(".TW") || symbol.endsWith(".TWO")) {
+            String code = symbol.split("\\.")[0];
+            // 高價股（台積電、大立光等）
+            if (code.equals("2330") || code.equals("3008")) {
+                return 800.0 + random.nextDouble() * 400.0;  // 800-1200
+            }
+            // 中高價股
+            else if (code.startsWith("23") || code.startsWith("24")) {
+                return 400.0 + random.nextDouble() * 400.0;  // 400-800
+            }
+            // 一般台股
+            else {
+                return 50.0 + random.nextDouble() * 100.0;  // 50-150
+            }
+        }
+        // 港股（.HK 結尾）
+        else if (symbol.endsWith(".HK")) {
+            return 50.0 + random.nextDouble() * 200.0;  // 50-250
+        }
+        // A股（.SS 上海 或 .SZ 深圳）
+        else if (symbol.endsWith(".SS") || symbol.endsWith(".SZ")) {
+            return 20.0 + random.nextDouble() * 80.0;  // 20-100
+        }
+        // 美股及其他
+        else {
+            // 高價股（如 Amazon, Google, Tesla 等）
+            if (symbol.equals("AMZN") || symbol.equals("GOOGL") ||
+                symbol.equals("TSLA") || symbol.equals("NVDA")) {
+                return 200.0 + random.nextDouble() * 600.0;  // 200-800
+            }
+            // 一般美股
+            else {
+                return 80.0 + random.nextDouble() * 120.0;  // 80-200
+            }
+        }
+    }
+
     @Override
     public void subscribe(String symbol, MarketDataListener listener) {
         listeners.computeIfAbsent(symbol, k -> new CopyOnWriteArrayList<>()).add(listener);
         if (!lastPrices.containsKey(symbol)) {
-            lastPrices.put(symbol, 100.0 + random.nextDouble() * 50);
+            double basePrice = getReasonableBasePrice(symbol);
+            lastPrices.put(symbol, basePrice);
             initializeOrderBook(symbol);
+            System.out.println("[SimulatorFeed] 訂閱商品 " + symbol + "，初始價格: " + basePrice);
         }
     }
     
@@ -70,13 +116,15 @@ public class SimulatorFeed implements MarketDataFeed {
 
         System.out.println("[SimulatorFeed] 找到 " + symbolListeners.size() + " 個監聽器");
 
-        // 為每個商品生成獨立的基準價格（忽略已有的lastPrices）
-        double basePrice = 100.0 + random.nextDouble() * 50;
+        // 為每個商品生成獨立且合理的基準價格
+        double basePrice = getReasonableBasePrice(symbol);
         lastPrices.put(symbol, basePrice);
         System.out.println("[SimulatorFeed] " + symbol + " 基準價格: " + basePrice);
 
         LocalDateTime startTime = LocalDateTime.now().minusMinutes(50);
-        double currentPrice = basePrice - 5.0 + random.nextDouble() * 10.0; // 起始價格
+        // 起始價格在基準價格附近浮動（±5%）
+        double priceVariation = basePrice * 0.05;
+        double currentPrice = basePrice - priceVariation + random.nextDouble() * (priceVariation * 2);
 
         // 生成 50 根歷史 K 線
         for (int i = 0; i < 50; i++) {
@@ -84,12 +132,15 @@ public class SimulatorFeed implements MarketDataFeed {
 
             // 模擬K線的開高低收
             double open = currentPrice;
-            double change = (random.nextDouble() - 0.5) * 2.0; // ±1.0 的變化
+            // 價格變化幅度為當前價格的±1%
+            double maxChange = currentPrice * 0.01;
+            double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
             double close = round(open + change);
 
-            // 高低價
-            double high = round(Math.max(open, close) + random.nextDouble() * 0.5);
-            double low = round(Math.min(open, close) - random.nextDouble() * 0.5);
+            // 高低價（最大波動0.5%）
+            double maxWick = currentPrice * 0.005;
+            double high = round(Math.max(open, close) + random.nextDouble() * maxWick);
+            double low = round(Math.min(open, close) - random.nextDouble() * maxWick);
 
             // 成交量
             long volume = 5000 + random.nextInt(15000);
@@ -154,21 +205,24 @@ public class SimulatorFeed implements MarketDataFeed {
     private void initializeOrderBook(String symbol) {
         List<DepthLevel> depth = new ArrayList<>();
         double midPrice = lastPrices.get(symbol);
-        
+
+        // 檔位間距為價格的0.05%（對於1000元股票約為0.5元）
+        double tickSize = midPrice * 0.0005;
+
         // 5 檔 ASK
         for (int i = 0; i < 5; i++) {
-            double price = round(midPrice + (i + 1) * 0.2);
+            double price = round(midPrice + (i + 1) * tickSize);
             long qty = 1000 + random.nextInt(4000);
             depth.add(new DepthLevel(DepthLevel.Side.ASK, price, qty, i));
         }
-        
+
         // 5 檔 BID
         for (int i = 0; i < 5; i++) {
-            double price = round(midPrice - (i + 1) * 0.2);
+            double price = round(midPrice - (i + 1) * tickSize);
             long qty = 1000 + random.nextInt(4000);
             depth.add(new DepthLevel(DepthLevel.Side.BID, price, qty, i));
         }
-        
+
         orderBooks.put(symbol, depth);
     }
     
@@ -177,12 +231,13 @@ public class SimulatorFeed implements MarketDataFeed {
         if (paused) {
             return;
         }
-        
+
         for (String symbol : listeners.keySet()) {
             double lastPrice = lastPrices.get(symbol);
-            
-            // 生成新價格（隨機遊走）
-            double change = (random.nextDouble() - 0.5) * 0.5;
+
+            // 生成新價格（隨機遊走）- 變化幅度為當前價格的±0.2%
+            double maxChange = lastPrice * 0.002;
+            double change = (random.nextDouble() - 0.5) * maxChange;
             double newPrice = round(Math.max(1.0, lastPrice + change));
             lastPrices.put(symbol, newPrice);
             
