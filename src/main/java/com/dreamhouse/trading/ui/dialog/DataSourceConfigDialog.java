@@ -184,6 +184,12 @@ public class DataSourceConfigDialog extends JDialog {
             case FINNHUB:
                 return I18n.get("dialog.datasource.desc.finnhub");
 
+            case IEX_CLOUD:
+                return I18n.get("dialog.datasource.desc.iexcloud");
+
+            case POLYGON:
+                return I18n.get("dialog.datasource.desc.polygon");
+
             default:
                 return "";
         }

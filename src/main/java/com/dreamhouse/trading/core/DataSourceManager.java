@@ -13,7 +13,9 @@ public class DataSourceManager {
         SIMULATOR("模擬數據", "Simulated Data"),
         YAHOO_FINANCE("Yahoo Finance", "Yahoo Finance"),
         ALPHA_VANTAGE("Alpha Vantage", "Alpha Vantage"),
-        FINNHUB("Finnhub", "Finnhub");
+        FINNHUB("Finnhub", "Finnhub"),
+        IEX_CLOUD("IEX Cloud", "IEX Cloud"),
+        POLYGON("Polygon.io", "Polygon.io");
 
         private final String displayNameZh;
         private final String displayNameEn;
@@ -35,6 +37,8 @@ public class DataSourceManager {
     private static final String PROP_DATASOURCE_TYPE = "datasource.type";
     private static final String PROP_ALPHAVANTAGE_API_KEY = "alphavantage.apikey";
     private static final String PROP_FINNHUB_API_KEY = "finnhub.apikey";
+    private static final String PROP_IEXCLOUD_API_KEY = "iexcloud.apikey";
+    private static final String PROP_POLYGON_API_KEY = "polygon.apikey";
 
     private DataSourceType currentType;
     private MarketDataFeed currentFeed;
@@ -104,6 +108,18 @@ public class DataSourceManager {
                                  + (fhApiKey.equals("demo") ? "demo" : "***") + ")");
                 return new FinnhubFeed(fhApiKey);
 
+            case IEX_CLOUD:
+                String iexApiKey = config.getProperty(PROP_IEXCLOUD_API_KEY, "demo");
+                System.out.println("[DataSourceManager] 創建IEX Cloud數據源 (API Key: "
+                                 + (iexApiKey.equals("demo") ? "demo" : "***") + ")");
+                return new IEXCloudFeed(iexApiKey);
+
+            case POLYGON:
+                String polyApiKey = config.getProperty(PROP_POLYGON_API_KEY, "demo");
+                System.out.println("[DataSourceManager] 創建Polygon.io數據源 (API Key: "
+                                 + (polyApiKey.equals("demo") ? "demo" : "***") + ")");
+                return new PolygonFeed(polyApiKey);
+
             default:
                 System.err.println("[DataSourceManager] 未知數據源類型: " + type);
                 return new SimulatorFeed();
@@ -159,6 +175,46 @@ public class DataSourceManager {
     }
 
     /**
+     * 設置IEX Cloud API密鑰
+     */
+    public void setIEXCloudApiKey(String apiKey) {
+        config.setProperty(PROP_IEXCLOUD_API_KEY, apiKey);
+        saveConfig();
+        System.out.println("[DataSourceManager] IEX Cloud API密鑰已更新");
+
+        if (currentType == DataSourceType.IEX_CLOUD && currentFeed != null) {
+            switchDataSource(DataSourceType.IEX_CLOUD);
+        }
+    }
+
+    /**
+     * 獲取IEX Cloud API密鑰
+     */
+    public String getIEXCloudApiKey() {
+        return config.getProperty(PROP_IEXCLOUD_API_KEY, "demo");
+    }
+
+    /**
+     * 設置Polygon API密鑰
+     */
+    public void setPolygonApiKey(String apiKey) {
+        config.setProperty(PROP_POLYGON_API_KEY, apiKey);
+        saveConfig();
+        System.out.println("[DataSourceManager] Polygon API密鑰已更新");
+
+        if (currentType == DataSourceType.POLYGON && currentFeed != null) {
+            switchDataSource(DataSourceType.POLYGON);
+        }
+    }
+
+    /**
+     * 獲取Polygon API密鑰
+     */
+    public String getPolygonApiKey() {
+        return config.getProperty(PROP_POLYGON_API_KEY, "demo");
+    }
+
+    /**
      * 加載配置
      */
     private void loadConfig() {
@@ -177,6 +233,8 @@ public class DataSourceManager {
             config.setProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name());
             config.setProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
             config.setProperty(PROP_FINNHUB_API_KEY, "demo");
+            config.setProperty(PROP_IEXCLOUD_API_KEY, "demo");
+            config.setProperty(PROP_POLYGON_API_KEY, "demo");
             saveConfig();
         }
     }
@@ -197,7 +255,10 @@ public class DataSourceManager {
      * 檢查數據源是否需要API密鑰
      */
     public boolean requiresApiKey(DataSourceType type) {
-        return type == DataSourceType.ALPHA_VANTAGE || type == DataSourceType.FINNHUB;
+        return type == DataSourceType.ALPHA_VANTAGE ||
+               type == DataSourceType.FINNHUB ||
+               type == DataSourceType.IEX_CLOUD ||
+               type == DataSourceType.POLYGON;
     }
 
     /**
@@ -208,15 +269,7 @@ public class DataSourceManager {
             return true;
         }
 
-        String apiKey;
-        if (type == DataSourceType.ALPHA_VANTAGE) {
-            apiKey = getAlphaVantageApiKey();
-        } else if (type == DataSourceType.FINNHUB) {
-            apiKey = getFinnhubApiKey();
-        } else {
-            return true;
-        }
-
+        String apiKey = getApiKey(type);
         return apiKey != null && !apiKey.trim().isEmpty() && !apiKey.equals("demo");
     }
 
@@ -224,22 +277,24 @@ public class DataSourceManager {
      * 根據類型獲取API密鑰
      */
     public String getApiKey(DataSourceType type) {
-        if (type == DataSourceType.ALPHA_VANTAGE) {
-            return getAlphaVantageApiKey();
-        } else if (type == DataSourceType.FINNHUB) {
-            return getFinnhubApiKey();
-        }
-        return "";
+        return switch (type) {
+            case ALPHA_VANTAGE -> getAlphaVantageApiKey();
+            case FINNHUB -> getFinnhubApiKey();
+            case IEX_CLOUD -> getIEXCloudApiKey();
+            case POLYGON -> getPolygonApiKey();
+            default -> "";
+        };
     }
 
     /**
      * 根據類型設置API密鑰
      */
     public void setApiKey(DataSourceType type, String apiKey) {
-        if (type == DataSourceType.ALPHA_VANTAGE) {
-            setAlphaVantageApiKey(apiKey);
-        } else if (type == DataSourceType.FINNHUB) {
-            setFinnhubApiKey(apiKey);
+        switch (type) {
+            case ALPHA_VANTAGE -> setAlphaVantageApiKey(apiKey);
+            case FINNHUB -> setFinnhubApiKey(apiKey);
+            case IEX_CLOUD -> setIEXCloudApiKey(apiKey);
+            case POLYGON -> setPolygonApiKey(apiKey);
         }
     }
 }

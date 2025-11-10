@@ -237,6 +237,14 @@ public class MainFrameWithDocking extends JFrame {
         switchToFinnhub.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.FINNHUB));
         switchMenu.add(switchToFinnhub);
 
+        JMenuItem switchToIEXCloud = new JMenuItem(I18n.get("menu.data.switch.iexcloud"));
+        switchToIEXCloud.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.IEX_CLOUD));
+        switchMenu.add(switchToIEXCloud);
+
+        JMenuItem switchToPolygon = new JMenuItem(I18n.get("menu.data.switch.polygon"));
+        switchToPolygon.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.POLYGON));
+        switchMenu.add(switchToPolygon);
+
         dataMenu.add(switchMenu);
         menuBar.add(dataMenu);
 
