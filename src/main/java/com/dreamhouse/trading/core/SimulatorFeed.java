@@ -103,10 +103,18 @@ public class SimulatorFeed implements MarketDataFeed {
     }
 
     /**
-     * 為特定商品生成歷史數據
+     * 為特定商品生成歷史數據（預設使用1分鐘週期）
      */
     public void generateHistoricalDataForSymbol(String symbol) {
-        System.out.println("[SimulatorFeed] 開始為商品 " + symbol + " 生成歷史數據");
+        loadHistoricalData(symbol, Timeframe.M1);
+    }
+
+    /**
+     * 根據週期生成歷史數據
+     */
+    @Override
+    public void loadHistoricalData(String symbol, Timeframe timeframe) {
+        System.out.println("[SimulatorFeed] 開始為商品 " + symbol + " 生成 " + timeframe.getLabel() + " 歷史數據");
 
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null || symbolListeners.isEmpty()) {
@@ -121,46 +129,80 @@ public class SimulatorFeed implements MarketDataFeed {
         lastPrices.put(symbol, basePrice);
         System.out.println("[SimulatorFeed] " + symbol + " 基準價格: " + basePrice);
 
-        LocalDateTime startTime = LocalDateTime.now().minusMinutes(50);
+        // 根據週期決定生成的K線數量和時間間隔
+        int barCount;
+        switch (timeframe) {
+            case M1:
+                barCount = 50;  // 50分鐘
+                break;
+            case M5:
+                barCount = 100; // 500分鐘 ≈ 8小時
+                break;
+            case M15:
+                barCount = 100; // 1500分鐘 ≈ 1天
+                break;
+            case M30:
+                barCount = 100; // 3000分鐘 ≈ 2天
+                break;
+            case H1:
+                barCount = 120; // 120小時 ≈ 5天
+                break;
+            case D1:
+                barCount = 200; // 200天
+                break;
+            case W1:
+                barCount = 100; // 100週 ≈ 2年
+                break;
+            default:
+                barCount = 50;
+        }
+
+        int intervalMinutes = timeframe.getMinutes();
+        LocalDateTime startTime = LocalDateTime.now().minusMinutes((long) barCount * intervalMinutes);
+
         // 起始價格在基準價格附近浮動（±5%）
         double priceVariation = basePrice * 0.05;
         double currentPrice = basePrice - priceVariation + random.nextDouble() * (priceVariation * 2);
 
-        // 生成 50 根歷史 K 線
-        for (int i = 0; i < 50; i++) {
-            LocalDateTime barTime = startTime.plusMinutes(i);
+        // 生成歷史K線
+        for (int i = 0; i < barCount; i++) {
+            LocalDateTime barTime = startTime.plusMinutes((long) i * intervalMinutes);
 
             // 模擬K線的開高低收
             double open = currentPrice;
-            // 價格變化幅度為當前價格的±1%
-            double maxChange = currentPrice * 0.01;
+            // 價格變化幅度根據週期調整
+            double maxChange = currentPrice * 0.01 * Math.sqrt(intervalMinutes / 60.0);
             double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
             double close = round(open + change);
 
-            // 高低價（最大波動0.5%）
-            double maxWick = currentPrice * 0.005;
+            // 高低價（最大波動根據週期調整）
+            double maxWick = currentPrice * 0.005 * Math.sqrt(intervalMinutes / 60.0);
             double high = round(Math.max(open, close) + random.nextDouble() * maxWick);
             double low = round(Math.min(open, close) - random.nextDouble() * maxWick);
 
-            // 成交量
-            long volume = 5000 + random.nextInt(15000);
+            // 成交量（根據週期調整）
+            long baseVolume = 5000 + random.nextInt(15000);
+            long volume = (long) (baseVolume * (intervalMinutes / 1.0));
 
-            // 生成這一分鐘內的 Tick 數據
-            // 為了模擬K線，我們在每分鐘發送 4 個 tick
-            for (int j = 0; j < 4; j++) {
-                LocalDateTime tickTime = barTime.plusSeconds(j * 15);
+            // 根據週期決定發送的tick數量
+            int ticksPerBar = Math.max(1, Math.min(4, 4 / (intervalMinutes / 60 + 1)));
+
+            // 生成這個週期內的 Tick 數據
+            for (int j = 0; j < ticksPerBar; j++) {
+                long secondsInterval = (intervalMinutes * 60L) / ticksPerBar;
+                LocalDateTime tickTime = barTime.plusSeconds(j * secondsInterval);
                 double tickPrice;
 
                 if (j == 0) {
                     tickPrice = open;
-                } else if (j == 3) {
+                } else if (j == ticksPerBar - 1) {
                     tickPrice = close;
                 } else {
                     // 中間的 tick 在 low 和 high 之間
                     tickPrice = round(low + random.nextDouble() * (high - low));
                 }
 
-                long tickVolume = volume / 4;
+                long tickVolume = volume / ticksPerBar;
                 Tick tick = new Tick(symbol, tickTime, tickPrice, tickVolume);
 
                 // 在 Swing 執行緒中通知
@@ -171,9 +213,9 @@ public class SimulatorFeed implements MarketDataFeed {
                 });
 
                 // 每個 tick 之間暫停一小段時間，讓UI有時間更新
-                if (i < 49 || j < 3) { // 最後一個不暫停
+                if (i < barCount - 1 || j < ticksPerBar - 1) {
                     try {
-                        Thread.sleep(10); // 10ms，總共約 2 秒完成
+                        Thread.sleep(5); // 5ms
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         return;
@@ -188,7 +230,7 @@ public class SimulatorFeed implements MarketDataFeed {
         // 更新最後價格
         lastPrices.put(symbol, currentPrice);
 
-        System.out.println("[SimulatorFeed] " + symbol + " 歷史數據生成完成，共 50 根K線，最終價格: " + currentPrice);
+        System.out.println("[SimulatorFeed] " + symbol + " " + timeframe.getLabel() + " 歷史數據生成完成，共 " + barCount + " 根K線，最終價格: " + currentPrice);
     }
     
     @Override

@@ -111,8 +111,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private long lastVolume = 0;
     private LocalDateTime lastBarTime = null;
 
-    // 保存原始的1分鐘K線數據，用於週期聚合
-    private final List<Bar> rawMinuteBars = new ArrayList<>();
     
     // 時間週期類型（根據數據自動檢測）
     private enum TimeFrame {
@@ -619,10 +617,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private void addNewBar() {
         RegularTimePeriod period = createTimePeriod(lastBarTime);
 
-        // 保存原始的1分鐘K線數據（用於週期聚合）
-        Bar rawBar = new Bar(lastBarTime, lastOpen, lastHigh, lastLow, lastClose, lastVolume);
-        rawMinuteBars.add(rawBar);
-
         // 檢查是否已存在相同時間的數據點，使用 addOrUpdate 避免衝突
         try {
             // 嘗試直接添加
@@ -1002,85 +996,14 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     /**
-     * 設定時間週期並重新聚合數據
+     * 設定時間週期
+     * 注意：現在切換週期時會由MainFrame重新加載對應週期的數據
      * @param timeframe 目標時間週期
      */
     public void setTimeframe(Timeframe timeframe) {
-        System.out.println("[ChartDock] 切換週期: " + currentTimeframe + " -> " + timeframe);
-
+        System.out.println("[ChartDock] 設定週期: " + currentTimeframe + " -> " + timeframe);
         this.currentTimeframe = timeframe;
-
-        // 如果沒有原始數據，直接返回
-        if (rawMinuteBars.isEmpty()) {
-            System.out.println("[ChartDock] 無原始數據，跳過週期聚合");
-            return;
-        }
-
-        SwingUtilities.invokeLater(() -> {
-            try {
-                // 1. 清除圖表數據（但不清除rawMinuteBars）
-                ohlcSeries.clear();
-                volumeSeries.clear();
-                indicatorService.clearAllData();
-
-                // 清空所有指標系列
-                smaSeries.clear();
-                emaSeries.clear();
-                rsiSeries.clear();
-                macdSeries.clear();
-                signalSeries.clear();
-                histogramSeries.clear();
-                bollUpperSeries.clear();
-                bollMiddleSeries.clear();
-                bollLowerSeries.clear();
-                kdKSeries.clear();
-                kdDSeries.clear();
-                obvSeries.clear();
-                adxSeries.clear();
-                plusDISeries.clear();
-                minusDISeries.clear();
-                cciSeries.clear();
-                wrSeries.clear();
-
-                // 2. 聚合K線數據
-                List<Bar> aggregatedBars = BarAggregator.aggregate(rawMinuteBars, timeframe);
-                System.out.println("[ChartDock] 聚合完成: " + rawMinuteBars.size() + " -> " + aggregatedBars.size() + " 根K線");
-
-                // 3. 重新載入聚合後的數據
-                for (Bar bar : aggregatedBars) {
-                    RegularTimePeriod period = createTimePeriod(bar.getTimestamp());
-
-                    // 添加到OHLC系列
-                    ohlcSeries.add(period, bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose());
-                    volumeSeries.add(period, bar.getVolume());
-
-                    // 添加到ta4j BarSeries
-                    ZonedDateTime zdt = bar.getTimestamp().atZone(ZoneId.systemDefault());
-                    indicatorService.addBar(
-                        zdt,
-                        bar.getOpen(),
-                        bar.getHigh(),
-                        bar.getLow(),
-                        bar.getClose(),
-                        bar.getVolume()
-                    );
-                }
-
-                // 4. 重新計算所有指標
-                updateIndicators();
-
-                // 5. 刷新圖表
-                if (chartPanel != null) {
-                    chartPanel.repaint();
-                }
-
-                System.out.println("[ChartDock] 週期切換完成: " + timeframe.getLabel());
-
-            } catch (Exception e) {
-                System.err.println("[ChartDock] 週期切換失敗: " + e.getMessage());
-                e.printStackTrace();
-            }
-        });
+        System.out.println("[ChartDock] 週期已更新，等待數據重新載入");
     }
     
     public void zoomIn() {
@@ -1197,9 +1120,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
 
             cciSeries.clear();
             wrSeries.clear();
-
-            // 清除原始K線數據
-            rawMinuteBars.clear();
 
             // 重置狀態
             lastBarTime = null;
