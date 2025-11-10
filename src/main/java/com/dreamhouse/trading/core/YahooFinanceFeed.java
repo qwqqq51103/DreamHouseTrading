@@ -116,35 +116,44 @@ public class YahooFinanceFeed implements MarketDataFeed {
      */
     private void loadHistoricalData() {
         for (String symbol : listeners.keySet()) {
-            try {
-                System.out.println("[YahooFinanceFeed] 正在加載 " + symbol + " 的歷史數據...");
+            loadHistoricalDataForSymbol(symbol);
+        }
+    }
 
-                // 請求最近30天的日線數據
-                String url = BASE_URL + URLEncoder.encode(symbol, StandardCharsets.UTF_8)
-                           + "?interval=1d&range=1mo";
+    /**
+     * 為特定商品加載歷史數據（公共方法，可由外部調用）
+     * @param symbol 商品代號
+     */
+    public void loadHistoricalDataForSymbol(String symbol) {
+        try {
+            System.out.println("[YahooFinanceFeed] 正在加載 " + symbol + " 的歷史數據...");
 
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("User-Agent", "Mozilla/5.0")
-                        .GET()
-                        .build();
+            // 請求最近50根K線的分鐘數據（約50分鐘）
+            String url = BASE_URL + URLEncoder.encode(symbol, StandardCharsets.UTF_8)
+                       + "?interval=1m&range=1d";
 
-                HttpResponse<String> response = httpClient.send(request,
-                        HttpResponse.BodyHandlers.ofString());
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("User-Agent", "Mozilla/5.0")
+                    .GET()
+                    .build();
 
-                if (response.statusCode() == 200) {
-                    parseAndNotifyHistoricalData(symbol, response.body());
-                } else {
-                    System.err.println("[YahooFinanceFeed] HTTP錯誤: " + response.statusCode());
-                    // 如果失敗，生成模擬數據
-                    generateFallbackHistoricalData(symbol);
-                }
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
 
-            } catch (Exception e) {
-                System.err.println("[YahooFinanceFeed] 加載歷史數據失敗: " + e.getMessage());
-                // 發生異常時使用模擬數據
+            if (response.statusCode() == 200) {
+                parseAndNotifyHistoricalData(symbol, response.body());
+            } else {
+                System.err.println("[YahooFinanceFeed] HTTP錯誤: " + response.statusCode());
+                // 如果失敗，生成模擬數據
                 generateFallbackHistoricalData(symbol);
             }
+
+        } catch (Exception e) {
+            System.err.println("[YahooFinanceFeed] 加載歷史數據失敗: " + e.getMessage());
+            e.printStackTrace();
+            // 發生異常時使用模擬數據
+            generateFallbackHistoricalData(symbol);
         }
     }
 
@@ -327,6 +336,48 @@ public class YahooFinanceFeed implements MarketDataFeed {
     }
 
     /**
+     * 根據商品代號獲取合理的基準價格
+     */
+    private double getReasonableBasePrice(String symbol) {
+        // 台股（.TW 或 .TWO 結尾）
+        if (symbol.endsWith(".TW") || symbol.endsWith(".TWO")) {
+            String code = symbol.split("\\.")[0];
+            // 高價股（台積電、大立光等）
+            if (code.equals("2330") || code.equals("3008")) {
+                return 800.0 + random.nextDouble() * 400.0;  // 800-1200
+            }
+            // 中高價股
+            else if (code.startsWith("23") || code.startsWith("24")) {
+                return 400.0 + random.nextDouble() * 400.0;  // 400-800
+            }
+            // 一般台股
+            else {
+                return 50.0 + random.nextDouble() * 100.0;  // 50-150
+            }
+        }
+        // 港股（.HK 結尾）
+        else if (symbol.endsWith(".HK")) {
+            return 50.0 + random.nextDouble() * 200.0;  // 50-250
+        }
+        // A股（.SS 上海 或 .SZ 深圳）
+        else if (symbol.endsWith(".SS") || symbol.endsWith(".SZ")) {
+            return 20.0 + random.nextDouble() * 80.0;  // 20-100
+        }
+        // 美股及其他
+        else {
+            // 高價股（如 Amazon, Google, Tesla 等）
+            if (symbol.equals("AMZN") || symbol.equals("GOOGL") ||
+                symbol.equals("TSLA") || symbol.equals("NVDA")) {
+                return 200.0 + random.nextDouble() * 600.0;  // 200-800
+            }
+            // 一般美股
+            else {
+                return 80.0 + random.nextDouble() * 120.0;  // 80-200
+            }
+        }
+    }
+
+    /**
      * 生成備用歷史數據（當API失敗時）
      */
     private void generateFallbackHistoricalData(String symbol) {
@@ -335,23 +386,32 @@ public class YahooFinanceFeed implements MarketDataFeed {
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null) return;
 
-        double basePrice = 100.0 + random.nextDouble() * 50;
+        double basePrice = getReasonableBasePrice(symbol);
         lastPrices.put(symbol, basePrice);
-        LocalDateTime startTime = LocalDateTime.now().minusDays(30);
+        System.out.println("[YahooFinanceFeed] " + symbol + " 備用數據基準價格: " + basePrice);
+
+        LocalDateTime startTime = LocalDateTime.now().minusMinutes(50);
+        double currentPrice = basePrice;
 
         for (int i = 0; i < 50; i++) {
-            LocalDateTime barTime = startTime.plusDays(i);
+            LocalDateTime barTime = startTime.plusMinutes(i);
 
-            double open = basePrice + (random.nextDouble() - 0.5) * 10;
-            double change = (random.nextDouble() - 0.5) * 5;
+            // 價格變化幅度為當前價格的±1%
+            double maxChange = currentPrice * 0.01;
+            double open = currentPrice;
+            double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
             double close = open + change;
-            double high = Math.max(open, close) + random.nextDouble() * 2;
-            double low = Math.min(open, close) - random.nextDouble() * 2;
+
+            // 高低價（最大波動0.5%）
+            double maxWick = currentPrice * 0.005;
+            double high = Math.max(open, close) + random.nextDouble() * maxWick;
+            double low = Math.min(open, close) - random.nextDouble() * maxWick;
+
             long volume = 1000000 + random.nextInt(5000000);
 
             generateTicksFromBar(symbol, barTime, open, high, low, close, volume, symbolListeners);
 
-            basePrice = close;
+            currentPrice = close;
 
             try {
                 Thread.sleep(20);
@@ -360,6 +420,8 @@ public class YahooFinanceFeed implements MarketDataFeed {
                 return;
             }
         }
+
+        System.out.println("[YahooFinanceFeed] " + symbol + " 備用數據生成完成");
     }
 
     /**

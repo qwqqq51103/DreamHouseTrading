@@ -416,7 +416,7 @@ public class MainFrameWithDocking extends JFrame {
         // 訂閱新商品
         subscribeMarketData();
 
-        // 如果是SimulatorFeed，觸發歷史數據生成
+        // 根據數據源類型加載歷史數據
         if (dataFeed instanceof SimulatorFeed) {
             final SimulatorFeed simulatorFeed = (SimulatorFeed) dataFeed;
             // 在背景執行緒中生成歷史數據，避免阻塞UI
@@ -437,6 +437,26 @@ public class MainFrameWithDocking extends JFrame {
                     System.err.println("[MainFrame] 歷史數據載入被中斷");
                 }
             }, "HistoricalDataLoader-" + symbol).start();
+        } else if (dataFeed instanceof YahooFinanceFeed) {
+            final YahooFinanceFeed yahooFeed = (YahooFinanceFeed) dataFeed;
+            // 在背景執行緒中從Yahoo Finance加載實際歷史數據
+            new Thread(() -> {
+                try {
+                    // 確保subscribe完成後再加載歷史數據
+                    Thread.sleep(100);
+
+                    System.out.println("[MainFrame] 開始從Yahoo Finance加載 " + symbol + " 的歷史數據");
+                    yahooFeed.loadHistoricalDataForSymbol(symbol);
+                    System.out.println("[MainFrame] " + symbol + " Yahoo Finance歷史數據載入完成");
+
+                    SwingUtilities.invokeLater(() -> {
+                        statusBar.setText(symbol + " 實際數據載入完成");
+                    });
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("[MainFrame] 歷史數據載入被中斷");
+                }
+            }, "YahooHistoricalDataLoader-" + symbol).start();
         } else {
             statusBar.setText(symbol + " 已切換");
         }
