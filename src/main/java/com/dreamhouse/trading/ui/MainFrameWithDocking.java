@@ -48,6 +48,9 @@ public class MainFrameWithDocking extends JFrame {
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
 
+    // 保存當前的市場數據監聽器引用，用於取消訂閱
+    private MarketDataListener currentMarketDataListener;
+
     public MainFrameWithDocking() {
         setTitle(I18n.get("app.title"));
         setDefaultCloseOperation(EXIT_ON_CLOSE);
@@ -368,7 +371,8 @@ public class MainFrameWithDocking extends JFrame {
     }
     
     private void subscribeMarketData() {
-        dataFeed.subscribe(currentSymbol, new MarketDataListener() {
+        // 創建新的監聽器
+        currentMarketDataListener = new MarketDataListener() {
             @Override
             public void onTick(Tick tick) {
                 lastPrice = tick.getPrice();
@@ -376,23 +380,68 @@ public class MainFrameWithDocking extends JFrame {
                 frameCount++;
                 chartDock.onTick(tick);
             }
-            
+
             @Override
             public void onDepthUpdate(List<DepthLevel> depth) {
                 orderBookDock.updateDepth(depth);
             }
-            
+
             @Override
             public void onTrade(com.dreamhouse.trading.core.model.Trade trade) {
                 timeSalesDock.addTrade(trade);
             }
-        });
+        };
+
+        // 訂閱當前商品
+        dataFeed.subscribe(currentSymbol, currentMarketDataListener);
     }
-    
+
     private void changeSymbol(String symbol) {
+        System.out.println("[MainFrame] 切換商品: " + currentSymbol + " -> " + symbol);
+
+        // 取消舊商品的訂閱
+        if (currentMarketDataListener != null) {
+            dataFeed.unsubscribe(currentSymbol, currentMarketDataListener);
+            System.out.println("[MainFrame] 取消訂閱: " + currentSymbol);
+        }
+
+        // 清除圖表數據
+        chartDock.clearAllData();
+
+        // 更新當前商品
         currentSymbol = symbol;
         statusBar.setSymbol(symbol);
+        statusBar.setText("正在載入 " + symbol + " 的歷史數據...");
+
+        // 訂閱新商品
         subscribeMarketData();
+
+        // 如果是SimulatorFeed，觸發歷史數據生成
+        if (dataFeed instanceof SimulatorFeed) {
+            final SimulatorFeed simulatorFeed = (SimulatorFeed) dataFeed;
+            // 在背景執行緒中生成歷史數據，避免阻塞UI
+            new Thread(() -> {
+                try {
+                    // 確保subscribe完成後再生成歷史數據
+                    Thread.sleep(50);
+
+                    System.out.println("[MainFrame] 開始生成 " + symbol + " 的歷史數據");
+                    simulatorFeed.generateHistoricalDataForSymbol(symbol);
+                    System.out.println("[MainFrame] " + symbol + " 歷史數據生成完成");
+
+                    SwingUtilities.invokeLater(() -> {
+                        statusBar.setText(symbol + " 數據載入完成");
+                    });
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("[MainFrame] 歷史數據載入被中斷");
+                }
+            }, "HistoricalDataLoader-" + symbol).start();
+        } else {
+            statusBar.setText(symbol + " 已切換");
+        }
+
+        System.out.println("[MainFrame] 商品切換完成: " + symbol);
     }
     
     private void changeTimeframe(Timeframe tf) {

@@ -52,73 +52,92 @@ public class SimulatorFeed implements MarketDataFeed {
      */
     private void generateHistoricalData() {
         for (String symbol : listeners.keySet()) {
-            double basePrice = lastPrices.get(symbol);
-            LocalDateTime startTime = LocalDateTime.now().minusMinutes(0);
-            
-            double currentPrice = basePrice - 5.0 + random.nextDouble() * 10.0; // 起始價格
-            
-            List<MarketDataListener> symbolListeners = listeners.get(symbol);
-            if (symbolListeners == null) continue;
-            
-            // 生成 50 根歷史 K 線
-            for (int i = 0; i < 0; i++) {
-                LocalDateTime barTime = startTime.plusMinutes(i);
-                
-                // 模擬K線的開高低收
-                double open = currentPrice;
-                double change = (random.nextDouble() - 0.5) * 2.0; // ±1.0 的變化
-                double close = round(open + change);
-                
-                // 高低價
-                double high = round(Math.max(open, close) + random.nextDouble() * 0.5);
-                double low = round(Math.min(open, close) - random.nextDouble() * 0.5);
-                
-                // 成交量
-                long volume = 5000 + random.nextInt(15000);
-                
-                // 生成這一分鐘內的 Tick 數據
-                // 為了模擬K線，我們在每分鐘發送 4 個 tick
-                for (int j = 0; j < 4; j++) {
-                    LocalDateTime tickTime = barTime.plusSeconds(j * 15);
-                    double tickPrice;
-                    
-                    if (j == 0) {
-                        tickPrice = open;
-                    } else if (j == 3) {
-                        tickPrice = close;
-                    } else {
-                        // 中間的 tick 在 low 和 high 之間
-                        tickPrice = round(low + random.nextDouble() * (high - low));
+            generateHistoricalDataForSymbol(symbol);
+        }
+    }
+
+    /**
+     * 為特定商品生成歷史數據
+     */
+    public void generateHistoricalDataForSymbol(String symbol) {
+        System.out.println("[SimulatorFeed] 開始為商品 " + symbol + " 生成歷史數據");
+
+        List<MarketDataListener> symbolListeners = listeners.get(symbol);
+        if (symbolListeners == null || symbolListeners.isEmpty()) {
+            System.err.println("[SimulatorFeed] 錯誤：找不到商品 " + symbol + " 的監聽器");
+            return;
+        }
+
+        System.out.println("[SimulatorFeed] 找到 " + symbolListeners.size() + " 個監聽器");
+
+        // 為每個商品生成獨立的基準價格（忽略已有的lastPrices）
+        double basePrice = 100.0 + random.nextDouble() * 50;
+        lastPrices.put(symbol, basePrice);
+        System.out.println("[SimulatorFeed] " + symbol + " 基準價格: " + basePrice);
+
+        LocalDateTime startTime = LocalDateTime.now().minusMinutes(50);
+        double currentPrice = basePrice - 5.0 + random.nextDouble() * 10.0; // 起始價格
+
+        // 生成 50 根歷史 K 線
+        for (int i = 0; i < 50; i++) {
+            LocalDateTime barTime = startTime.plusMinutes(i);
+
+            // 模擬K線的開高低收
+            double open = currentPrice;
+            double change = (random.nextDouble() - 0.5) * 2.0; // ±1.0 的變化
+            double close = round(open + change);
+
+            // 高低價
+            double high = round(Math.max(open, close) + random.nextDouble() * 0.5);
+            double low = round(Math.min(open, close) - random.nextDouble() * 0.5);
+
+            // 成交量
+            long volume = 5000 + random.nextInt(15000);
+
+            // 生成這一分鐘內的 Tick 數據
+            // 為了模擬K線，我們在每分鐘發送 4 個 tick
+            for (int j = 0; j < 4; j++) {
+                LocalDateTime tickTime = barTime.plusSeconds(j * 15);
+                double tickPrice;
+
+                if (j == 0) {
+                    tickPrice = open;
+                } else if (j == 3) {
+                    tickPrice = close;
+                } else {
+                    // 中間的 tick 在 low 和 high 之間
+                    tickPrice = round(low + random.nextDouble() * (high - low));
+                }
+
+                long tickVolume = volume / 4;
+                Tick tick = new Tick(symbol, tickTime, tickPrice, tickVolume);
+
+                // 在 Swing 執行緒中通知
+                SwingUtilities.invokeLater(() -> {
+                    for (MarketDataListener listener : symbolListeners) {
+                        listener.onTick(tick);
                     }
-                    
-                    long tickVolume = volume / 4;
-                    Tick tick = new Tick(symbol, tickTime, tickPrice, tickVolume);
-                    
-                    // 在 Swing 執行緒中通知
-                    SwingUtilities.invokeLater(() -> {
-                        for (MarketDataListener listener : symbolListeners) {
-                            listener.onTick(tick);
-                        }
-                    });
-                    
-                    // 每個 tick 之間暫停一小段時間，讓UI有時間更新
-                    if (i < 49 || j < 3) { // 最後一個不暫停
-                        try {
-                            Thread.sleep(10); // 10ms，總共約 2 秒完成
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            return;
-                        }
+                });
+
+                // 每個 tick 之間暫停一小段時間，讓UI有時間更新
+                if (i < 49 || j < 3) { // 最後一個不暫停
+                    try {
+                        Thread.sleep(10); // 10ms，總共約 2 秒完成
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
                     }
                 }
-                
-                // 更新當前價格為本K線的收盤價
-                currentPrice = close;
             }
-            
-            // 更新最後價格
-            lastPrices.put(symbol, currentPrice);
+
+            // 更新當前價格為本K線的收盤價
+            currentPrice = close;
         }
+
+        // 更新最後價格
+        lastPrices.put(symbol, currentPrice);
+
+        System.out.println("[SimulatorFeed] " + symbol + " 歷史數據生成完成，共 50 根K線，最終價格: " + currentPrice);
     }
     
     @Override

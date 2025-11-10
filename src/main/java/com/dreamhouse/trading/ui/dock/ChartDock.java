@@ -1080,6 +1080,52 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     /**
+     * 清除所有圖表數據
+     */
+    public void clearAllData() {
+        SwingUtilities.invokeLater(() -> {
+            // 清空現有數據
+            ohlcSeries.clear();
+            volumeSeries.clear();
+            indicatorService.clearAllData();
+
+            // 清空所有指標系列
+            smaSeries.clear();
+            emaSeries.clear();
+            rsiSeries.clear();
+            macdSeries.clear();
+            signalSeries.clear();
+            histogramSeries.clear();
+
+            bollUpperSeries.clear();
+            bollMiddleSeries.clear();
+            bollLowerSeries.clear();
+
+            kdKSeries.clear();
+            kdDSeries.clear();
+
+            obvSeries.clear();
+
+            adxSeries.clear();
+            plusDISeries.clear();
+            minusDISeries.clear();
+
+            cciSeries.clear();
+            wrSeries.clear();
+
+            // 重置狀態
+            lastBarTime = null;
+
+            // 刷新圖表
+            if (chartPanel != null) {
+                chartPanel.repaint();
+            }
+
+            System.out.println("[ChartDock] 清除所有圖表數據");
+        });
+    }
+
+    /**
      * 載入歷史數據到圖表
      * @param bars 歷史 K 線數據
      */
