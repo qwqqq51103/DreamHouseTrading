@@ -328,17 +328,20 @@ public class MarketDataCache {
 
     /**
      * 清理過期數據
+     * @return 刪除的記錄數
      */
-    public void cleanupOldData(int daysToKeep) {
+    public int cleanupOldData(int daysToKeep) {
         String sql = "DELETE FROM bars WHERE timestamp < DATEADD('DAY', ?, CURRENT_TIMESTAMP)";
 
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
             pstmt.setInt(1, -daysToKeep);
             int deleted = pstmt.executeUpdate();
             logger.info("Cleaned up {} old bars (older than {} days)", deleted, daysToKeep);
+            return deleted;
 
         } catch (SQLException e) {
             logger.error("Failed to cleanup old data", e);
+            return 0;
         }
     }
 

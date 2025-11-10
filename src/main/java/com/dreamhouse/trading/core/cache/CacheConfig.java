@@ -31,48 +31,54 @@ public class CacheConfig {
         return maxCacheSize;
     }
 
-    public void setMaxCacheSize(int maxCacheSize) {
+    public CacheConfig setMaxCacheSize(int maxCacheSize) {
         this.maxCacheSize = maxCacheSize;
+        return this;
     }
 
     public long getTtlSeconds() {
         return ttlSeconds;
     }
 
-    public void setTtlSeconds(long ttlSeconds) {
+    public CacheConfig setTtlSeconds(long ttlSeconds) {
         this.ttlSeconds = ttlSeconds;
+        return this;
     }
 
     public boolean isLruEnabled() {
         return lruEnabled;
     }
 
-    public void setLruEnabled(boolean lruEnabled) {
+    public CacheConfig setLruEnabled(boolean lruEnabled) {
         this.lruEnabled = lruEnabled;
+        return this;
     }
 
     public boolean isTtlEnabled() {
         return ttlEnabled;
     }
 
-    public void setTtlEnabled(boolean ttlEnabled) {
+    public CacheConfig setTtlEnabled(boolean ttlEnabled) {
         this.ttlEnabled = ttlEnabled;
+        return this;
     }
 
     public long getCleanupIntervalSeconds() {
         return cleanupIntervalSeconds;
     }
 
-    public void setCleanupIntervalSeconds(long cleanupIntervalSeconds) {
+    public CacheConfig setCleanupIntervalSeconds(long cleanupIntervalSeconds) {
         this.cleanupIntervalSeconds = cleanupIntervalSeconds;
+        return this;
     }
 
     public int getRetentionDays() {
         return retentionDays;
     }
 
-    public void setRetentionDays(int retentionDays) {
+    public CacheConfig setRetentionDays(int retentionDays) {
         this.retentionDays = retentionDays;
+        return this;
     }
 
     @Override
@@ -95,13 +101,14 @@ public class CacheConfig {
     }
 
     /**
-     * 創建高性能配置（較短TTL，較大緩存）
+     * 創建高性能配置（較長TTL，較大緩存）
      */
     public static CacheConfig highPerformanceConfig() {
         CacheConfig config = new CacheConfig();
         config.setMaxCacheSize(50000);
-        config.setTtlSeconds(1800); // 30分鐘
-        config.setCleanupIntervalSeconds(300); // 5分鐘清理
+        config.setTtlSeconds(7200); // 2小時
+        config.setCleanupIntervalSeconds(1800); // 30分鐘清理
+        config.setRetentionDays(180); // 保留180天
         return config;
     }
 
@@ -110,8 +117,9 @@ public class CacheConfig {
      */
     public static CacheConfig lowMemoryConfig() {
         CacheConfig config = new CacheConfig();
-        config.setMaxCacheSize(5000);
+        config.setMaxCacheSize(1000);
         config.setTtlSeconds(1800); // 30分鐘
+        config.setCleanupIntervalSeconds(300); // 5分鐘清理
         config.setRetentionDays(30); // 只保留30天
         return config;
     }
