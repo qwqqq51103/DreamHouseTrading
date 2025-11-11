@@ -110,11 +110,46 @@ public class SimulatorFeed implements MarketDataFeed {
     }
 
     /**
-     * 根據週期生成歷史數據
+     * 根據週期生成歷史數據（使用預設K線數量）
      */
     @Override
     public void loadHistoricalData(String symbol, Timeframe timeframe) {
-        System.out.println("[SimulatorFeed] 開始為商品 " + symbol + " 生成 " + timeframe.getLabel() + " 歷史數據");
+        // 根據週期決定預設的K線數量
+        int defaultBarCount;
+        switch (timeframe) {
+            case M1:
+                defaultBarCount = 50;  // 50分鐘
+                break;
+            case M5:
+                defaultBarCount = 100; // 500分鐘 ≈ 8小時
+                break;
+            case M15:
+                defaultBarCount = 100; // 1500分鐘 ≈ 1天
+                break;
+            case M30:
+                defaultBarCount = 100; // 3000分鐘 ≈ 2天
+                break;
+            case H1:
+                defaultBarCount = 120; // 120小時 ≈ 5天
+                break;
+            case D1:
+                defaultBarCount = 200; // 200天
+                break;
+            case W1:
+                defaultBarCount = 100; // 100週 ≈ 2年
+                break;
+            default:
+                defaultBarCount = 50;
+        }
+        loadHistoricalData(symbol, timeframe, defaultBarCount);
+    }
+
+    /**
+     * 根據週期和K線數量生成歷史數據
+     */
+    @Override
+    public void loadHistoricalData(String symbol, Timeframe timeframe, int barCount) {
+        System.out.println("[SimulatorFeed] 開始為商品 " + symbol + " 生成 " + barCount + " 根 " + timeframe.getLabel() + " 歷史數據");
 
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null || symbolListeners.isEmpty()) {
@@ -128,34 +163,6 @@ public class SimulatorFeed implements MarketDataFeed {
         double basePrice = getReasonableBasePrice(symbol);
         lastPrices.put(symbol, basePrice);
         System.out.println("[SimulatorFeed] " + symbol + " 基準價格: " + basePrice);
-
-        // 根據週期決定生成的K線數量和時間間隔
-        int barCount;
-        switch (timeframe) {
-            case M1:
-                barCount = 50;  // 50分鐘
-                break;
-            case M5:
-                barCount = 100; // 500分鐘 ≈ 8小時
-                break;
-            case M15:
-                barCount = 100; // 1500分鐘 ≈ 1天
-                break;
-            case M30:
-                barCount = 100; // 3000分鐘 ≈ 2天
-                break;
-            case H1:
-                barCount = 120; // 120小時 ≈ 5天
-                break;
-            case D1:
-                barCount = 200; // 200天
-                break;
-            case W1:
-                barCount = 100; // 100週 ≈ 2年
-                break;
-            default:
-                barCount = 50;
-        }
 
         int intervalMinutes = timeframe.getMinutes();
         LocalDateTime startTime = LocalDateTime.now().minusMinutes((long) barCount * intervalMinutes);

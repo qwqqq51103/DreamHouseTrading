@@ -44,6 +44,7 @@ public class MainFrameWithDocking extends JFrame {
 
     private String currentSymbol = "AAPL";
     private Timeframe currentTimeframe = Timeframe.M1;
+    private int customBarCount = 100;  // 用戶自定義的K線數量，預設100根
     private double lastPrice = 0;
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
@@ -306,6 +307,20 @@ public class MainFrameWithDocking extends JFrame {
         timeframeCombo.addActionListener(e -> changeTimeframe((Timeframe) timeframeCombo.getSelectedItem()));
         toolBar.add(timeframeCombo);
         toolBar.addSeparator();
+
+        // K線數量輸入
+        toolBar.add(new JLabel(" K線數量 "));
+        SpinnerNumberModel barCountModel = new SpinnerNumberModel(customBarCount, 10, 1000, 10);
+        JSpinner barCountSpinner = new JSpinner(barCountModel);
+        barCountSpinner.setMaximumSize(new Dimension(80, 25));
+        barCountSpinner.addChangeListener(e -> {
+            customBarCount = (Integer) barCountSpinner.getValue();
+            System.out.println("[MainFrame] K線數量設定為: " + customBarCount);
+            // 重新載入數據
+            reloadDataWithCustomBarCount();
+        });
+        toolBar.add(barCountSpinner);
+        toolBar.addSeparator();
         
         // 指標選擇
         toolBar.add(new JLabel(" 指標 "));
@@ -422,8 +437,8 @@ public class MainFrameWithDocking extends JFrame {
                 // 確保subscribe完成後再加載歷史數據
                 Thread.sleep(50);
 
-                System.out.println("[MainFrame] 開始加載 " + symbol + " " + currentTimeframe.getLabel() + " 歷史數據");
-                dataFeed.loadHistoricalData(symbol, currentTimeframe);
+                System.out.println("[MainFrame] 開始加載 " + symbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 歷史數據");
+                dataFeed.loadHistoricalData(symbol, currentTimeframe, customBarCount);
                 System.out.println("[MainFrame] " + symbol + " 歷史數據載入完成");
 
                 SwingUtilities.invokeLater(() -> {
@@ -453,8 +468,8 @@ public class MainFrameWithDocking extends JFrame {
             try {
                 Thread.sleep(50);
 
-                System.out.println("[MainFrame] 開始重新加載 " + currentSymbol + " " + tf.getLabel() + " 歷史數據");
-                dataFeed.loadHistoricalData(currentSymbol, tf);
+                System.out.println("[MainFrame] 開始重新加載 " + currentSymbol + " " + customBarCount + " 根 " + tf.getLabel() + " 歷史數據");
+                dataFeed.loadHistoricalData(currentSymbol, tf, customBarCount);
                 System.out.println("[MainFrame] " + currentSymbol + " " + tf.getLabel() + " 歷史數據重新載入完成");
 
                 SwingUtilities.invokeLater(() -> {
@@ -467,6 +482,36 @@ public class MainFrameWithDocking extends JFrame {
         }, "TimeframeChanger-" + tf).start();
     }
     
+    /**
+     * 當用戶修改K線數量時，重新載入數據
+     */
+    private void reloadDataWithCustomBarCount() {
+        System.out.println("[MainFrame] 重新載入數據，使用自定義K線數量: " + customBarCount);
+
+        // 清除圖表數據
+        chartDock.clearAllData();
+
+        statusBar.setText("正在載入 " + currentSymbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 數據...");
+
+        // 在背景執行緒中重新加載數據
+        new Thread(() -> {
+            try {
+                Thread.sleep(50);
+
+                System.out.println("[MainFrame] 開始加載 " + currentSymbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 歷史數據");
+                dataFeed.loadHistoricalData(currentSymbol, currentTimeframe, customBarCount);
+                System.out.println("[MainFrame] " + currentSymbol + " 歷史數據重新載入完成");
+
+                SwingUtilities.invokeLater(() -> {
+                    statusBar.setText(currentSymbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 數據載入完成");
+                });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("[MainFrame] 歷史數據重新載入被中斷");
+            }
+        }, "CustomBarCountLoader").start();
+    }
+
     private void changeIndicator(String indicator) {
         // 根據工具列選擇的指標，控制 ChartDock 的疊線指標和副圖指標
         // 工具列使用的是英文字符串，直接匹配

@@ -129,45 +129,95 @@ public class YahooFinanceFeed implements MarketDataFeed {
     }
 
     /**
-     * 根據週期加載歷史數據
+     * 根據週期加載歷史數據（使用預設K線數量）
      */
     @Override
     public void loadHistoricalData(String symbol, Timeframe timeframe) {
-        try {
-            System.out.println("[YahooFinanceFeed] 正在加載 " + symbol + " 的 " + timeframe.getLabel() + " 歷史數據...");
+        // 根據週期決定預設的K線數量
+        int defaultBarCount;
+        switch (timeframe) {
+            case M1:
+                defaultBarCount = 50;
+                break;
+            case M5:
+                defaultBarCount = 100;
+                break;
+            case M15:
+                defaultBarCount = 100;
+                break;
+            case M30:
+                defaultBarCount = 100;
+                break;
+            case H1:
+                defaultBarCount = 120;
+                break;
+            case D1:
+                defaultBarCount = 200;
+                break;
+            case W1:
+                defaultBarCount = 100;
+                break;
+            default:
+                defaultBarCount = 50;
+        }
+        loadHistoricalData(symbol, timeframe, defaultBarCount);
+    }
 
-            // 根據週期選擇Yahoo Finance的interval和range參數
+    /**
+     * 根據週期和K線數量加載歷史數據
+     */
+    @Override
+    public void loadHistoricalData(String symbol, Timeframe timeframe, int barCount) {
+        try {
+            System.out.println("[YahooFinanceFeed] 正在加載 " + symbol + " 的 " + barCount + " 根 " + timeframe.getLabel() + " 歷史數據...");
+
+            // 根據週期選擇Yahoo Finance的interval參數
             String interval;
             String range;
 
             switch (timeframe) {
                 case M1:
                     interval = "1m";
-                    range = "1d";  // 1天的1分鐘數據
+                    // Yahoo Finance限制：1m只能取7天內數據
+                    range = Math.min(barCount / (60 * 24), 7) + "d";
                     break;
                 case M5:
                     interval = "5m";
-                    range = "5d";  // 5天的5分鐘數據
+                    // 5m可以取60天內數據
+                    range = Math.min(barCount / (12 * 24), 60) + "d";
                     break;
                 case M15:
                     interval = "15m";
-                    range = "5d";  // 5天的15分鐘數據
+                    range = Math.min(barCount / (4 * 24), 60) + "d";
                     break;
                 case M30:
                     interval = "30m";
-                    range = "1mo"; // 1個月的30分鐘數據
+                    range = Math.min(barCount / (2 * 24), 60) + "d";
                     break;
                 case H1:
                     interval = "1h";
-                    range = "3mo"; // 3個月的1小時數據
+                    // 1h可以取730天內數據
+                    int hDays = Math.min(barCount / 24, 730);
+                    range = hDays > 365 ? (hDays / 365) + "y" : hDays + "d";
                     break;
                 case D1:
                     interval = "1d";
-                    range = "1y";  // 1年的日線數據
+                    // 日線可以取更長時間
+                    int dDays = barCount;
+                    if (dDays > 1825) {
+                        range = "10y";
+                    } else if (dDays > 730) {
+                        range = (dDays / 365) + "y";
+                    } else {
+                        range = dDays + "d";
+                    }
                     break;
                 case W1:
                     interval = "1wk";
-                    range = "5y";  // 5年的週線數據
+                    // 週線
+                    int weeks = barCount;
+                    int wYears = weeks / 52;
+                    range = Math.min(wYears + 1, 10) + "y";
                     break;
                 default:
                     interval = "1m";
@@ -189,18 +239,18 @@ public class YahooFinanceFeed implements MarketDataFeed {
                     HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                parseAndNotifyHistoricalData(symbol, response.body(), timeframe);
+                parseAndNotifyHistoricalData(symbol, response.body(), timeframe, barCount);
             } else {
                 System.err.println("[YahooFinanceFeed] HTTP錯誤: " + response.statusCode());
                 // 如果失敗，生成模擬數據
-                generateFallbackHistoricalData(symbol, timeframe);
+                generateFallbackHistoricalData(symbol, timeframe, barCount);
             }
 
         } catch (Exception e) {
             System.err.println("[YahooFinanceFeed] 加載歷史數據失敗: " + e.getMessage());
             e.printStackTrace();
             // 發生異常時使用模擬數據
-            generateFallbackHistoricalData(symbol, timeframe);
+            generateFallbackHistoricalData(symbol, timeframe, barCount);
         }
     }
 
@@ -246,7 +296,7 @@ public class YahooFinanceFeed implements MarketDataFeed {
     /**
      * 解析並通知歷史數據
      */
-    private void parseAndNotifyHistoricalData(String symbol, String jsonResponse, Timeframe timeframe) {
+    private void parseAndNotifyHistoricalData(String symbol, String jsonResponse, Timeframe timeframe, int barCount) {
         try {
             List<MarketDataListener> symbolListeners = listeners.get(symbol);
             if (symbolListeners == null) return;
@@ -266,7 +316,7 @@ public class YahooFinanceFeed implements MarketDataFeed {
 
             if (timestamps.isEmpty() || closes.isEmpty()) {
                 System.err.println("[YahooFinanceFeed] 無法解析數據，使用備用方案");
-                generateFallbackHistoricalData(symbol, timeframe);
+                generateFallbackHistoricalData(symbol, timeframe, barCount);
                 return;
             }
 
@@ -310,7 +360,7 @@ public class YahooFinanceFeed implements MarketDataFeed {
 
         } catch (Exception e) {
             System.err.println("[YahooFinanceFeed] 解析歷史數據失敗: " + e.getMessage());
-            generateFallbackHistoricalData(symbol, timeframe);
+            generateFallbackHistoricalData(symbol, timeframe, barCount);
         }
     }
 
@@ -427,8 +477,8 @@ public class YahooFinanceFeed implements MarketDataFeed {
     /**
      * 生成備用歷史數據（當API失敗時）
      */
-    private void generateFallbackHistoricalData(String symbol, Timeframe timeframe) {
-        System.out.println("[YahooFinanceFeed] 使用模擬數據作為備用方案，週期: " + timeframe.getLabel());
+    private void generateFallbackHistoricalData(String symbol, Timeframe timeframe, int barCount) {
+        System.out.println("[YahooFinanceFeed] 使用模擬數據作為備用方案，週期: " + timeframe.getLabel() + "，數量: " + barCount);
 
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null) return;
@@ -436,34 +486,6 @@ public class YahooFinanceFeed implements MarketDataFeed {
         double basePrice = getReasonableBasePrice(symbol);
         lastPrices.put(symbol, basePrice);
         System.out.println("[YahooFinanceFeed] " + symbol + " 備用數據基準價格: " + basePrice);
-
-        // 根據週期決定生成的K線數量
-        int barCount;
-        switch (timeframe) {
-            case M1:
-                barCount = 50;
-                break;
-            case M5:
-                barCount = 100;
-                break;
-            case M15:
-                barCount = 100;
-                break;
-            case M30:
-                barCount = 100;
-                break;
-            case H1:
-                barCount = 120;
-                break;
-            case D1:
-                barCount = 200;
-                break;
-            case W1:
-                barCount = 100;
-                break;
-            default:
-                barCount = 50;
-        }
 
         int intervalMinutes = timeframe.getMinutes();
         LocalDateTime startTime = LocalDateTime.now().minusMinutes((long) barCount * intervalMinutes);
