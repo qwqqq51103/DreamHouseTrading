@@ -325,8 +325,8 @@ public class YahooFinanceFeed implements MarketDataFeed {
                 lastPrices.put(symbol, closes.get(closes.size() - 1));
             }
 
-            // 發送歷史K線數據
-            int dataSize = Math.min(timestamps.size(), 50); // 最多50根K線
+            // 發送歷史K線數據（使用用戶指定的K線數量）
+            int dataSize = Math.min(timestamps.size(), barCount);
             for (int i = Math.max(0, timestamps.size() - dataSize); i < timestamps.size(); i++) {
                 if (i >= opens.size() || i >= highs.size() || i >= lows.size()
                     || i >= closes.size() || i >= volumes.size()) {
