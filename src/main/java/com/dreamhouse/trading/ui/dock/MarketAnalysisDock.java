@@ -479,4 +479,30 @@ public class MarketAnalysisDock extends JPanel {
             return new Color(255, 100, 0);  // 橘色
         }
     }
+
+    // ==================== 數據源整合方法 ====================
+
+    /**
+     * 從 DecisionEngine 更新所有市場分析數據
+     * @param decisionEngine 決策引擎實例
+     */
+    public void updateFromDecisionEngine(com.dreamhouse.trading.core.decision.DecisionEngine decisionEngine) {
+        if (decisionEngine == null) {
+            return;
+        }
+
+        // 更新週線環境分析
+        com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regimeAnalysis =
+            decisionEngine.getLastRegimeAnalysis();
+        updateRegimeAnalysis(regimeAnalysis);
+
+        // 更新日線趨勢分析
+        com.dreamhouse.trading.core.decision.trend.TrendAnalysis trendAnalysis =
+            decisionEngine.getLastTrendAnalysis();
+        updateTrendAnalysis(trendAnalysis);
+
+        // 更新分鐘線盤中分析（如果有）
+        // IntradayAnalysis 目前從 DecisionEngine 沒有直接獲取方法，暫時跳過
+        // 可以在未來添加 getLastIntradayAnalysis() 方法
+    }
 }

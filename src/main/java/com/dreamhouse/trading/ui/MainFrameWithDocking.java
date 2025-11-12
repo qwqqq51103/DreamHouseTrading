@@ -844,7 +844,71 @@ public class MainFrameWithDocking extends JFrame {
         if (strategy != null) {
             engine.addStrategy(strategy);
         }
-        
+
+        // 5.5. 添加回測監聽器以更新 UI 面板
+        engine.addListener(new BacktestListener() {
+            private int updateCounter = 0;  // 計數器，避免過於頻繁更新
+
+            @Override
+            public void onBacktestStarted() {
+                System.out.println("[UI] 回測開始");
+            }
+
+            @Override
+            public void onProgressUpdate(double progress) {
+                // 進度更新已由 BacktestProgressDialog 處理
+            }
+
+            @Override
+            public void onBarProcessed(int barIndex, org.ta4j.core.Bar bar) {
+                // 每 10 根 K 線更新一次 UI，避免過於頻繁
+                updateCounter++;
+                if (updateCounter % 10 != 0) {
+                    return;
+                }
+
+                // 檢查策略是否為 MultiTimeframeDecisionStrategy
+                if (strategy instanceof com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy) {
+                    com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy mtStrategy =
+                        (com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy) strategy;
+
+                    com.dreamhouse.trading.core.decision.DecisionEngine decisionEngine = mtStrategy.getDecisionEngine();
+
+                    if (decisionEngine != null) {
+                        // 更新市場分析面板
+                        marketAnalysisDock.updateFromDecisionEngine(decisionEngine);
+
+                        // 更新模式建議面板
+                        modeRecommendationDock.updateFromDecisionEngine(decisionEngine);
+                    }
+                }
+            }
+
+            @Override
+            public void onTradeExecuted(String symbol, TradeType type, int quantity, double price) {
+                System.out.println(String.format("[UI] 交易執行: %s %s %d @ %.2f",
+                    symbol, type, quantity, price));
+            }
+
+            @Override
+            public void onBacktestCompleted(BacktestResult result) {
+                System.out.println("[UI] 回測完成，交易數: " + result.getTrades().size());
+
+                // 最後更新一次 UI 面板
+                if (strategy instanceof com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy) {
+                    com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy mtStrategy =
+                        (com.dreamhouse.trading.core.decision.strategies.MultiTimeframeDecisionStrategy) strategy;
+
+                    com.dreamhouse.trading.core.decision.DecisionEngine decisionEngine = mtStrategy.getDecisionEngine();
+
+                    if (decisionEngine != null) {
+                        marketAnalysisDock.updateFromDecisionEngine(decisionEngine);
+                        modeRecommendationDock.updateFromDecisionEngine(decisionEngine);
+                    }
+                }
+            }
+        });
+
         // 6. 創建 SwingWorker
         SwingWorker<BacktestResult, Void> worker = new SwingWorker<BacktestResult, Void>() {
             @Override

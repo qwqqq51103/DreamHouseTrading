@@ -466,4 +466,244 @@ public class ModeRecommendationDock extends JPanel {
             return new Color(255, 100, 0);  // 深橘色
         }
     }
+
+    // ==================== 數據源整合方法 ====================
+
+    /**
+     * 從 DecisionEngine 更新模式建議
+     * @param decisionEngine 決策引擎實例
+     */
+    public void updateFromDecisionEngine(com.dreamhouse.trading.core.decision.DecisionEngine decisionEngine) {
+        if (decisionEngine == null) {
+            updateRecommendation(null);
+            return;
+        }
+
+        // 獲取市場環境和趨勢分析
+        com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime =
+            decisionEngine.getLastRegimeAnalysis();
+        com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend =
+            decisionEngine.getLastTrendAnalysis();
+
+        // 構造 ClassificationResult
+        ClassificationResult result = buildClassificationFromAnalysis(regime, trend);
+
+        // 更新顯示
+        updateRecommendation(result);
+    }
+
+    /**
+     * 根據市場環境和趨勢分析構造分類結果
+     */
+    private ClassificationResult buildClassificationFromAnalysis(
+            com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime,
+            com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend) {
+
+        ClassificationResult.Builder builder = new ClassificationResult.Builder();
+
+        if (regime == null || trend == null) {
+            return builder
+                .primaryMode(TradeMode.NO_TRADE)
+                .confidence(0.0)
+                .addReason("市場環境分析數據不足")
+                .build();
+        }
+
+        // 判斷主要模式
+        TradeMode primaryMode = determinePrimaryMode(regime, trend);
+        TradeMode secondaryMode = determineSecondaryMode(regime, trend, primaryMode);
+        double confidence = calculateConfidence(regime, trend, primaryMode);
+
+        builder.primaryMode(primaryMode)
+               .secondaryMode(secondaryMode)
+               .confidence(confidence);
+
+        // 添加理由
+        addReasons(builder, regime, trend, primaryMode);
+
+        return builder.build();
+    }
+
+    /**
+     * 判斷主要交易模式
+     */
+    private TradeMode determinePrimaryMode(
+            com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime,
+            com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend) {
+
+        double volatility = regime.getVolatility();
+        double trendStrength = regime.getTrendStrength();  // ADX 值
+        com.dreamhouse.trading.core.decision.trend.TrendStrength strength = trend.getStrength();
+
+        // 強趨勢環境 -> 波段交易
+        if (trendStrength >= 25.0 && strength == com.dreamhouse.trading.core.decision.trend.TrendStrength.STRONG) {
+            return TradeMode.SWING_TRADE;
+        }
+
+        // 高波動 + 明確趨勢 -> 短線交易
+        if (volatility > 0.015 && trendStrength > 20.0) {
+            return TradeMode.SHORT_SWING;
+        }
+
+        // 高波動 -> 當沖交易
+        if (volatility > 0.01) {
+            return TradeMode.DAY_TRADE;
+        }
+
+        // 盤整或低波動 -> 不建議交易
+        if (volatility < 0.005 || trendStrength < 15.0) {
+            return TradeMode.NO_TRADE;
+        }
+
+        // 預設：短線交易
+        return TradeMode.SHORT_SWING;
+    }
+
+    /**
+     * 判斷次要交易模式
+     */
+    private TradeMode determineSecondaryMode(
+            com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime,
+            com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend,
+            TradeMode primaryMode) {
+
+        double volatility = regime.getVolatility();
+        double trendStrength = regime.getTrendStrength();
+
+        // 根據主要模式決定次要模式
+        switch (primaryMode) {
+            case SWING_TRADE:
+                // 波段交易的次要選擇：短線
+                if (volatility > 0.01) {
+                    return TradeMode.SHORT_SWING;
+                }
+                break;
+
+            case SHORT_SWING:
+                // 短線交易的次要選擇：當沖或波段
+                if (volatility > 0.02) {
+                    return TradeMode.DAY_TRADE;
+                } else if (trendStrength > 25.0) {
+                    return TradeMode.SWING_TRADE;
+                }
+                break;
+
+            case DAY_TRADE:
+                // 當沖的次要選擇：短線
+                if (trendStrength > 20.0) {
+                    return TradeMode.SHORT_SWING;
+                }
+                break;
+
+            case NO_TRADE:
+                // 不建議交易沒有次要選擇
+                return null;
+        }
+
+        return null;
+    }
+
+    /**
+     * 計算信心度
+     */
+    private double calculateConfidence(
+            com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime,
+            com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend,
+            TradeMode primaryMode) {
+
+        double baseConfidence = 0.5;
+        double regimeConfidence = regime.getConfidence();
+        double trendConfidence = trend.getConfidence();
+
+        // 綜合環境和趨勢的信心度
+        double envConfidence = (regimeConfidence + trendConfidence) / 2.0;
+
+        // 根據模式特性調整
+        switch (primaryMode) {
+            case SWING_TRADE:
+                // 波段交易需要高信心度
+                if (regime.getTrendStrength() >= 30.0) {
+                    baseConfidence += 0.3;
+                }
+                break;
+
+            case SHORT_SWING:
+                // 短線交易中等信心度
+                if (regime.getVolatility() > 0.015) {
+                    baseConfidence += 0.2;
+                }
+                break;
+
+            case DAY_TRADE:
+                // 當沖交易需要高波動
+                if (regime.getVolatility() > 0.02) {
+                    baseConfidence += 0.3;
+                }
+                break;
+
+            case NO_TRADE:
+                // 不交易時信心度較高（避免錯誤交易）
+                baseConfidence += 0.2;
+                break;
+        }
+
+        // 結合環境信心度
+        double finalConfidence = (baseConfidence + envConfidence) / 2.0;
+
+        return Math.min(1.0, Math.max(0.0, finalConfidence));
+    }
+
+    /**
+     * 添加決策理由
+     */
+    private void addReasons(
+            ClassificationResult.Builder builder,
+            com.dreamhouse.trading.core.decision.regime.RegimeAnalysis regime,
+            com.dreamhouse.trading.core.decision.trend.TrendAnalysis trend,
+            TradeMode primaryMode) {
+
+        double volatility = regime.getVolatility();
+        double trendStrength = regime.getTrendStrength();
+        com.dreamhouse.trading.core.decision.regime.MarketRegime marketRegime = regime.getMarketRegime();
+        com.dreamhouse.trading.core.decision.trend.TrendDirection direction = trend.getDirection();
+
+        builder.addReason(String.format("市場環境：%s", getRegimeDisplayText(marketRegime)));
+        builder.addReason(String.format("趨勢方向：%s", getTrendDirectionText(direction)));
+        builder.addReason(String.format("趨勢強度（ADX）：%.1f", trendStrength));
+        builder.addReason(String.format("波動率：%.2f%%", volatility * 100));
+
+        // 根據模式添加具體建議
+        switch (primaryMode) {
+            case SWING_TRADE:
+                builder.addReason("建議：跟隨主趨勢，設定較寬停損，持倉數日至數週");
+                break;
+            case SHORT_SWING:
+                builder.addReason("建議：關注日內波動，1-3天持倉，及時獲利了結");
+                break;
+            case DAY_TRADE:
+                builder.addReason("建議：快進快出，嚴格止損，當日平倉");
+                break;
+            case NO_TRADE:
+                builder.addReason("建議：等待更好的交易機會，避免盤整行情");
+                break;
+        }
+    }
+
+    private String getRegimeDisplayText(com.dreamhouse.trading.core.decision.regime.MarketRegime regime) {
+        switch (regime) {
+            case BULL: return "多頭市場";
+            case BEAR: return "空頭市場";
+            case NEUTRAL: return "中性市場";
+            default: return "未知";
+        }
+    }
+
+    private String getTrendDirectionText(com.dreamhouse.trading.core.decision.trend.TrendDirection direction) {
+        switch (direction) {
+            case UP: return "上升";
+            case DOWN: return "下降";
+            case SIDEWAY: return "盤整";
+            default: return "未知";
+        }
+    }
 }
