@@ -2,6 +2,8 @@ package com.dreamhouse.trading.ui.dialog;
 
 import com.dreamhouse.trading.core.backtest.*;
 import com.dreamhouse.trading.core.backtest.strategies.*;
+import com.dreamhouse.trading.core.decision.DecisionConfig;
+import com.dreamhouse.trading.core.decision.strategies.*;
 import com.dreamhouse.trading.util.I18n;
 import net.miginfocom.swing.MigLayout;
 
@@ -60,6 +62,11 @@ public class BacktestConfigDialog extends JDialog {
         
         // 策略選擇
         strategyComboBox = new JComboBox<>();
+        strategyComboBox.addItem(new StrategyItem("MultiTimeframeDecisionStrategy", "⭐ 多週期決策策略 (新)"));
+        strategyComboBox.addItem(new StrategyItem("DayTradingStrategy", "🔸 當沖交易策略"));
+        strategyComboBox.addItem(new StrategyItem("SwingTradingStrategy", "🔹 短線交易策略"));
+        strategyComboBox.addItem(new StrategyItem("PositionTradingStrategy", "🔺 波段交易策略"));
+        strategyComboBox.addItem(new StrategyItem("MultiStyleStrategyManager", "🎯 多風格策略組合"));
         strategyComboBox.addItem(new StrategyItem("SimpleMovingAverageStrategy", "雙移動平均線策略"));
         strategyComboBox.addItem(new StrategyItem("RSIStrategy", "RSI 策略"));
         strategyComboBox.addItem(new StrategyItem("MACDStrategy", "MACD 策略"));
@@ -157,6 +164,20 @@ public class BacktestConfigDialog extends JDialog {
                 
                 // 根據策略類型添加參數配置
                 switch (selectedItem.getClassName()) {
+                    case "MultiTimeframeDecisionStrategy":
+                        addStringParameter("configType", "配置類型", "default",
+                                        new String[]{"default", "conservative", "aggressive"});
+                        addDoubleParameter("maxDailyLoss", "每日最大虧損(%)", 5.0, 1.0, 10.0);
+                        addDoubleParameter("maxPositionSize", "最大倉位(%)", 50.0, 10.0, 100.0);
+                        addDoubleParameter("longEntryThreshold", "做多進場閾值", 0.3, 0.0, 1.0);
+                        addDoubleParameter("exitThreshold", "出場閾值", 0.6, 0.0, 1.0);
+                        addIntegerParameter("rsiPeriod", "RSI週期", 14, 5, 30);
+                        addDoubleParameter("rsiOversold", "RSI超賣閾值", 40.0, 20.0, 50.0);
+                        addDoubleParameter("rsiOverbought", "RSI超買閾值", 60.0, 50.0, 80.0);
+                        addBooleanParameter("verboseLogging", "詳細日誌", true);
+                        addBooleanParameter("disableFilters", "關閉過濾器(測試)", false);
+                        break;
+
                     case "SimpleMovingAverageStrategy":
                         addIntegerParameter("shortPeriod", "短期週期", config.getIntParameter("shortPeriod", 10), 1, 100);
                         addIntegerParameter("longPeriod", "長期週期", config.getIntParameter("longPeriod", 20), 1, 200);
@@ -251,28 +272,124 @@ public class BacktestConfigDialog extends JDialog {
      */
     private void applyConfiguration() {
         if (selectedStrategy != null) {
-            StrategyConfig config = selectedStrategy.getConfig();
-            
-            // 應用參數配置
-            for (Map.Entry<String, JComponent> entry : parameterComponents.entrySet()) {
-                String key = entry.getKey();
-                JComponent component = entry.getValue();
-                
-                if (component instanceof JSpinner) {
-                    Object value = ((JSpinner) component).getValue();
-                    config.setParameter(key, value);
-                } else if (component instanceof JTextField) {
-                    String value = ((JTextField) component).getText();
-                    config.setParameter(key, value);
-                } else if (component instanceof JComboBox) {
-                    Object value = ((JComboBox<?>) component).getSelectedItem();
-                    config.setParameter(key, value);
-                } else if (component instanceof JCheckBox) {
-                    boolean value = ((JCheckBox) component).isSelected();
-                    config.setParameter(key, value);
+            // 特殊處理多週期決策策略
+            if (selectedStrategy instanceof MultiTimeframeDecisionStrategy) {
+                applyMultiTimeframeConfig((MultiTimeframeDecisionStrategy) selectedStrategy);
+            } else {
+                // 一般策略使用 StrategyConfig
+                StrategyConfig config = selectedStrategy.getConfig();
+
+                // 應用參數配置
+                for (Map.Entry<String, JComponent> entry : parameterComponents.entrySet()) {
+                    String key = entry.getKey();
+                    JComponent component = entry.getValue();
+
+                    if (component instanceof JSpinner) {
+                        Object value = ((JSpinner) component).getValue();
+                        config.setParameter(key, value);
+                    } else if (component instanceof JTextField) {
+                        String value = ((JTextField) component).getText();
+                        config.setParameter(key, value);
+                    } else if (component instanceof JComboBox) {
+                        Object value = ((JComboBox<?>) component).getSelectedItem();
+                        config.setParameter(key, value);
+                    } else if (component instanceof JCheckBox) {
+                        boolean value = ((JCheckBox) component).isSelected();
+                        config.setParameter(key, value);
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * 應用多週期決策策略配置
+     */
+    private void applyMultiTimeframeConfig(MultiTimeframeDecisionStrategy strategy) {
+        DecisionConfig config = strategy.getDecisionConfig();
+
+        // 獲取用戶設定的值
+        String configType = getStringValue("configType", "default");
+        double maxDailyLoss = getDoubleValue("maxDailyLoss", 5.0) / 100.0;
+        double maxPositionSize = getDoubleValue("maxPositionSize", 50.0) / 100.0;
+        double longEntryThreshold = getDoubleValue("longEntryThreshold", 0.3);
+        double exitThreshold = getDoubleValue("exitThreshold", 0.6);
+        int rsiPeriod = getIntValue("rsiPeriod", 14);
+        double rsiOversold = getDoubleValue("rsiOversold", 40.0);
+        double rsiOverbought = getDoubleValue("rsiOverbought", 60.0);
+        boolean verboseLogging = getBooleanValue("verboseLogging", true);
+        boolean disableFilters = getBooleanValue("disableFilters", false);
+
+        // 應用風險配置
+        config.getRiskConfig().setMaxDailyLossPercent(maxDailyLoss);
+        config.getRiskConfig().setMaxPositionSizePercent(maxPositionSize);
+
+        // 應用投票配置
+        config.getVotingConfig().setLongEntryThreshold(longEntryThreshold);
+        config.getVotingConfig().setShortEntryThreshold(longEntryThreshold);
+        config.getVotingConfig().setExitThreshold(exitThreshold);
+
+        // 應用日誌配置
+        config.setVerboseLogging(verboseLogging);
+
+        // 關閉過濾器（測試模式）
+        if (disableFilters) {
+            config.setRegimeDetectionEnabled(false);
+            config.setTrendAnalysisEnabled(false);
+            System.out.println("[配置] 已關閉週線/日線過濾器（測試模式）");
+        }
+
+        // 配置 RSI 策略
+        if (!strategy.getStrategies().isEmpty()) {
+            SignalRSIStrategy rsiStrategy = (SignalRSIStrategy) strategy.getStrategies().get(0);
+            rsiStrategy.setRsiPeriod(rsiPeriod);
+            rsiStrategy.setOversoldThreshold(rsiOversold);
+            rsiStrategy.setOverboughtThreshold(rsiOverbought);
+            System.out.println("[配置] RSI策略: 週期=" + rsiPeriod +
+                    ", 超賣=" + rsiOversold + ", 超買=" + rsiOverbought);
+        }
+
+        System.out.println("[配置] 多週期決策策略配置完成:");
+        System.out.println("  - 進場閾值: " + longEntryThreshold);
+        System.out.println("  - 出場閾值: " + exitThreshold);
+        System.out.println("  - 每日最大虧損: " + (maxDailyLoss * 100) + "%");
+        System.out.println("  - 最大倉位: " + (maxPositionSize * 100) + "%");
+    }
+
+    // 輔助方法獲取參數值
+    private String getStringValue(String key, String defaultValue) {
+        JComponent component = parameterComponents.get(key);
+        if (component instanceof JComboBox) {
+            Object value = ((JComboBox<?>) component).getSelectedItem();
+            return value != null ? value.toString() : defaultValue;
+        } else if (component instanceof JTextField) {
+            return ((JTextField) component).getText();
+        }
+        return defaultValue;
+    }
+
+    private double getDoubleValue(String key, double defaultValue) {
+        JComponent component = parameterComponents.get(key);
+        if (component instanceof JSpinner) {
+            return ((Number) ((JSpinner) component).getValue()).doubleValue();
+        }
+        return defaultValue;
+    }
+
+    private int getIntValue(String key, int defaultValue) {
+        JComponent component = parameterComponents.get(key);
+        if (component instanceof JSpinner) {
+            return ((Number) ((JSpinner) component).getValue()).intValue();
+        }
+        return defaultValue;
+    }
+
+    private boolean getBooleanValue(String key, boolean defaultValue) {
+        JComponent component = parameterComponents.get(key);
+        if (component instanceof JCheckBox) {
+            return ((JCheckBox) component).isSelected();
+        }
+        return defaultValue;
     }
     
     /**
@@ -281,6 +398,16 @@ public class BacktestConfigDialog extends JDialog {
     private Strategy createStrategy(String className) {
         try {
             switch (className) {
+                case "MultiTimeframeDecisionStrategy":
+                    return createMultiTimeframeStrategy();
+                case "DayTradingStrategy":
+                    return new DayTradingStrategy();
+                case "SwingTradingStrategy":
+                    return new SwingTradingStrategy();
+                case "PositionTradingStrategy":
+                    return new PositionTradingStrategy();
+                case "MultiStyleStrategyManager":
+                    return MultiStyleStrategyManager.createBalancedManager();
                 case "SimpleMovingAverageStrategy":
                     return new SimpleMovingAverageStrategy();
                 case "RSIStrategy":
@@ -296,6 +423,22 @@ public class BacktestConfigDialog extends JDialog {
             e.printStackTrace();
             return null;
         }
+    }
+
+    /**
+     * 創建多週期決策策略
+     */
+    private MultiTimeframeDecisionStrategy createMultiTimeframeStrategy() {
+        // 使用預設配置
+        DecisionConfig config = DecisionConfig.createDefault();
+        MultiTimeframeDecisionStrategy strategy = new MultiTimeframeDecisionStrategy(config);
+
+        // 添加 RSI 子策略
+        SignalRSIStrategy rsiStrategy = new SignalRSIStrategy();
+        rsiStrategy.setWeight(1.0);
+        strategy.addStrategy(rsiStrategy);
+
+        return strategy;
     }
     
     // Getters
