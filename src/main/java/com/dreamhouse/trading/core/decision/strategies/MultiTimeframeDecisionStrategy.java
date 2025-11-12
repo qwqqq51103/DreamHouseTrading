@@ -61,9 +61,10 @@ public class MultiTimeframeDecisionStrategy extends BaseStrategy {
             decisionEngine = new DecisionEngine(decisionConfig, engine.getPortfolio());
             decisionEngine.setSymbol(barSeries.getName());
 
-            // 設定數據
-            decisionEngine.setBarSeries(barSeries, Timeframe.M5);  // 假設傳入的是 M5 數據
-
+            // 設定數據（使用配置中的主迴圈時間週期）
+            Timeframe sourceTimeframe = decisionConfig.getMainLoopTimeframe();
+            decisionEngine.setBarSeries(barSeries, sourceTimeframe);
+            log(String.format("  - 數據週期: %s", sourceTimeframe.getLabel()));
             log("  - DecisionEngine 初始化完成");
         }
 

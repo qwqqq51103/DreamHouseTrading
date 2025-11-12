@@ -431,6 +431,11 @@ public class BacktestConfigDialog extends JDialog {
     private MultiTimeframeDecisionStrategy createMultiTimeframeStrategy() {
         // 使用預設配置
         DecisionConfig config = DecisionConfig.createDefault();
+
+        // 設定主迴圈時間週期為日線（D1）
+        // 注意：如果您的數據是其他週期（如 M5, M15, H1 等），請修改此處
+        config.setMainLoopTimeframe(com.dreamhouse.trading.core.Timeframe.D1);
+
         MultiTimeframeDecisionStrategy strategy = new MultiTimeframeDecisionStrategy(config);
 
         // 添加 RSI 子策略
