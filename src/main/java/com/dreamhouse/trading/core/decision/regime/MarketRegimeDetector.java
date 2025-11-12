@@ -57,6 +57,10 @@ public class MarketRegimeDetector {
         // 3. 計算波動率（使用價格標準差）
         double volatility = calculateVolatility(weeklyBars, 20);
 
+        // Debug: 輸出週線數量和計算結果
+        System.out.println(String.format("[MarketRegimeDetector] 週線數量: %d, ADX: %.2f, 波動率: %.4f%%",
+            weeklyBars.getBarCount(), adxValue, volatility));
+
         // 4. 判斷趨勢方向
         boolean maAlignedUp = shortValue > mediumValue && mediumValue > longValue;
         boolean maAlignedDown = shortValue < mediumValue && mediumValue < longValue;

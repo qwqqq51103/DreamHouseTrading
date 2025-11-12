@@ -513,11 +513,16 @@ public class ModeRecommendationDock extends JPanel {
         double volatility = regime.getVolatility();
         double trendStrength = regime.getTrendStrength();
 
+        // 添加調試輸出
+        System.out.println(String.format("[ModeRecommendation] 波動率: %.4f%%, ADX: %.2f, 環境: %s",
+            volatility, trendStrength, regime.getMarketRegime()));
+
         if (volatility <= 0.0 && trendStrength <= 0.0) {
             return builder
                 .primaryMode(TradeMode.NO_TRADE)
                 .confidence(0.3)
                 .addReason("回測初始階段，數據累積中")
+                .addReason(String.format("當前數據：波動率 %.2f%%, ADX %.2f", volatility, trendStrength))
                 .addReason("建議：等待更多 K 線數據後再進行分析")
                 .build();
         }
