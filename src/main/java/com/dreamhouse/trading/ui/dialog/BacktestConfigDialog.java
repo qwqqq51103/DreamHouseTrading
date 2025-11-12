@@ -178,6 +178,93 @@ public class BacktestConfigDialog extends JDialog {
                         addBooleanParameter("disableFilters", "關閉過濾器(測試)", false);
                         break;
 
+                    case "DayTradingStrategy":
+                        // 時間週期配置
+                        addStringParameter("mainTimeframe", "主週期", "M5",
+                                        new String[]{"M1", "M5", "M15"});
+                        addStringParameter("riskTimeframe", "風控週期", "M1",
+                                        new String[]{"M1", "M5"});
+
+                        // RSI 參數
+                        addIntegerParameter("rsiPeriod", "RSI週期", 5, 3, 14);
+                        addDoubleParameter("rsiOversold", "RSI超賣閾值", 40.0, 20.0, 50.0);
+                        addDoubleParameter("rsiOverbought", "RSI超買閾值", 60.0, 50.0, 80.0);
+
+                        // 風險管理參數
+                        addDoubleParameter("maxDailyLoss", "每日最大虧損(%)", 1.0, 0.5, 5.0);
+                        addDoubleParameter("maxPositionSize", "最大倉位(%)", 20.0, 10.0, 50.0);
+
+                        // 進出場閾值
+                        addDoubleParameter("entryThreshold", "進場閾值", 0.3, 0.1, 0.7);
+                        addDoubleParameter("exitThreshold", "出場閾值", 0.3, 0.1, 0.7);
+
+                        // 持倉時間限制
+                        addIntegerParameter("maxHoldingBars", "最大持倉K線數", 78, 30, 200);
+                        addBooleanParameter("forceCloseEOD", "收盤強制平倉", true);
+
+                        // 過濾器開關
+                        addBooleanParameter("enableRegimeFilter", "啟用週線環境過濾", false);
+                        addBooleanParameter("enableTrendFilter", "啟用日線趨勢過濾", false);
+                        break;
+
+                    case "SwingTradingStrategy":
+                        // 時間週期配置
+                        addStringParameter("mainTimeframe", "主週期", "M15",
+                                        new String[]{"M5", "M15", "M30", "H1"});
+                        addStringParameter("riskTimeframe", "風控週期", "M5",
+                                        new String[]{"M1", "M5", "M15"});
+
+                        // RSI 參數
+                        addIntegerParameter("rsiPeriod", "RSI週期", 14, 7, 21);
+                        addDoubleParameter("rsiOversold", "RSI超賣閾值", 30.0, 20.0, 40.0);
+                        addDoubleParameter("rsiOverbought", "RSI超買閾值", 70.0, 60.0, 80.0);
+
+                        // 風險管理參數
+                        addDoubleParameter("maxDailyLoss", "每日最大虧損(%)", 3.0, 1.0, 10.0);
+                        addDoubleParameter("maxPositionSize", "最大倉位(%)", 30.0, 10.0, 70.0);
+
+                        // 進出場閾值
+                        addDoubleParameter("entryThreshold", "進場閾值", 0.5, 0.3, 0.8);
+                        addDoubleParameter("exitThreshold", "出場閾值", 0.5, 0.3, 0.8);
+
+                        // 持倉時間限制
+                        addIntegerParameter("maxHoldingBars", "最大持倉K線數", 288, 100, 500);
+                        addBooleanParameter("forceCloseEOD", "收盤強制平倉", false);
+
+                        // 過濾器開關
+                        addBooleanParameter("enableRegimeFilter", "啟用週線環境過濾", false);
+                        addBooleanParameter("enableTrendFilter", "啟用日線趨勢過濾", true);
+                        break;
+
+                    case "PositionTradingStrategy":
+                        // 時間週期配置
+                        addStringParameter("mainTimeframe", "主週期", "H1",
+                                        new String[]{"M30", "H1", "D1"});
+                        addStringParameter("riskTimeframe", "風控週期", "M15",
+                                        new String[]{"M5", "M15", "M30"});
+
+                        // RSI 參數
+                        addIntegerParameter("rsiPeriod", "RSI週期", 21, 14, 30);
+                        addDoubleParameter("rsiOversold", "RSI超賣閾值", 25.0, 15.0, 35.0);
+                        addDoubleParameter("rsiOverbought", "RSI超買閾值", 75.0, 65.0, 85.0);
+
+                        // 風險管理參數
+                        addDoubleParameter("maxDailyLoss", "每日最大虧損(%)", 5.0, 2.0, 10.0);
+                        addDoubleParameter("maxPositionSize", "最大倉位(%)", 50.0, 20.0, 100.0);
+
+                        // 進出場閾值
+                        addDoubleParameter("entryThreshold", "進場閾值", 0.7, 0.5, 0.9);
+                        addDoubleParameter("exitThreshold", "出場閾值", 0.4, 0.2, 0.7);
+
+                        // 持倉時間限制
+                        addIntegerParameter("maxHoldingBars", "最大持倉K線數", 672, 300, 1000);
+                        addBooleanParameter("forceCloseEOD", "收盤強制平倉", false);
+
+                        // 過濾器開關
+                        addBooleanParameter("enableRegimeFilter", "啟用週線環境過濾", true);
+                        addBooleanParameter("enableTrendFilter", "啟用日線趨勢過濾", true);
+                        break;
+
                     case "SimpleMovingAverageStrategy":
                         addIntegerParameter("shortPeriod", "短期週期", config.getIntParameter("shortPeriod", 10), 1, 100);
                         addIntegerParameter("longPeriod", "長期週期", config.getIntParameter("longPeriod", 20), 1, 200);
@@ -401,11 +488,11 @@ public class BacktestConfigDialog extends JDialog {
                 case "MultiTimeframeDecisionStrategy":
                     return createMultiTimeframeStrategy();
                 case "DayTradingStrategy":
-                    return new DayTradingStrategy();
+                    return createDayTradingStrategy();
                 case "SwingTradingStrategy":
-                    return new SwingTradingStrategy();
+                    return createSwingTradingStrategy();
                 case "PositionTradingStrategy":
-                    return new PositionTradingStrategy();
+                    return createPositionTradingStrategy();
                 case "MultiStyleStrategyManager":
                     return MultiStyleStrategyManager.createBalancedManager();
                 case "SimpleMovingAverageStrategy":
@@ -445,7 +532,149 @@ public class BacktestConfigDialog extends JDialog {
 
         return strategy;
     }
-    
+
+    /**
+     * 創建當沖交易策略（使用 UI 參數）
+     */
+    private DayTradingStrategy createDayTradingStrategy() {
+        // 創建配置
+        DecisionConfig config = DayTradingStrategy.createDayTradingConfig();
+
+        // 從 UI 讀取參數並應用
+        applyDecisionStrategyConfig(config, "DayTradingStrategy");
+
+        // 創建策略
+        DayTradingStrategy strategy = new DayTradingStrategy(config);
+
+        // 應用 RSI 參數
+        applyRSIParameters(strategy);
+
+        return strategy;
+    }
+
+    /**
+     * 創建短線交易策略（使用 UI 參數）
+     */
+    private SwingTradingStrategy createSwingTradingStrategy() {
+        // 創建配置
+        DecisionConfig config = SwingTradingStrategy.createSwingTradingConfig();
+
+        // 從 UI 讀取參數並應用
+        applyDecisionStrategyConfig(config, "SwingTradingStrategy");
+
+        // 創建策略
+        SwingTradingStrategy strategy = new SwingTradingStrategy(config);
+
+        // 應用 RSI 參數
+        applyRSIParameters(strategy);
+
+        return strategy;
+    }
+
+    /**
+     * 創建波段交易策略（使用 UI 參數）
+     */
+    private PositionTradingStrategy createPositionTradingStrategy() {
+        // 創建配置
+        DecisionConfig config = PositionTradingStrategy.createPositionTradingConfig();
+
+        // 從 UI 讀取參數並應用
+        applyDecisionStrategyConfig(config, "PositionTradingStrategy");
+
+        // 創建策略
+        PositionTradingStrategy strategy = new PositionTradingStrategy(config);
+
+        // 應用 RSI 參數
+        applyRSIParameters(strategy);
+
+        return strategy;
+    }
+
+    /**
+     * 應用決策策略配置（通用方法）
+     */
+    private void applyDecisionStrategyConfig(DecisionConfig config, String strategyName) {
+        // 時間週期配置
+        String mainTimeframeStr = getStringValue("mainTimeframe", "M5");
+        String riskTimeframeStr = getStringValue("riskTimeframe", "M1");
+        config.setMainLoopTimeframe(parseTimeframe(mainTimeframeStr));
+        config.setRiskMonitorTimeframe(parseTimeframe(riskTimeframeStr));
+
+        // 風險管理參數
+        double maxDailyLoss = getDoubleValue("maxDailyLoss", 3.0) / 100.0;
+        double maxPositionSize = getDoubleValue("maxPositionSize", 30.0) / 100.0;
+        config.getRiskConfig().setMaxDailyLossPercent(maxDailyLoss);
+        config.getRiskConfig().setMaxPositionSizePercent(maxPositionSize);
+
+        // 進出場閾值
+        double entryThreshold = getDoubleValue("entryThreshold", 0.5);
+        double exitThreshold = getDoubleValue("exitThreshold", 0.5);
+        config.getVotingConfig().setLongEntryThreshold(entryThreshold);
+        config.getVotingConfig().setShortEntryThreshold(entryThreshold);
+        config.getVotingConfig().setExitThreshold(exitThreshold);
+
+        // 持倉時間限制
+        int maxHoldingBars = getIntValue("maxHoldingBars", 288);
+        boolean forceCloseEOD = getBooleanValue("forceCloseEOD", false);
+        config.getRiskConfig().setMaxHoldingBars(maxHoldingBars);
+        config.getRiskConfig().setForceCloseAtEndOfDay(forceCloseEOD);
+
+        // 過濾器開關
+        boolean enableRegimeFilter = getBooleanValue("enableRegimeFilter", false);
+        boolean enableTrendFilter = getBooleanValue("enableTrendFilter", true);
+        config.setRegimeDetectionEnabled(enableRegimeFilter);
+        config.setTrendAnalysisEnabled(enableTrendFilter);
+
+        System.out.println(String.format("[配置] %s 配置完成:", strategyName));
+        System.out.println("  - 主週期: " + mainTimeframeStr);
+        System.out.println("  - 風控週期: " + riskTimeframeStr);
+        System.out.println("  - 進場閾值: " + entryThreshold);
+        System.out.println("  - 出場閾值: " + exitThreshold);
+        System.out.println("  - 每日最大虧損: " + (maxDailyLoss * 100) + "%");
+        System.out.println("  - 最大倉位: " + (maxPositionSize * 100) + "%");
+        System.out.println("  - 最大持倉K線數: " + maxHoldingBars);
+        System.out.println("  - 週線環境過濾: " + (enableRegimeFilter ? "啟用" : "關閉"));
+        System.out.println("  - 日線趨勢過濾: " + (enableTrendFilter ? "啟用" : "關閉"));
+    }
+
+    /**
+     * 應用 RSI 參數到策略
+     */
+    private void applyRSIParameters(MultiTimeframeDecisionStrategy strategy) {
+        int rsiPeriod = getIntValue("rsiPeriod", 14);
+        double rsiOversold = getDoubleValue("rsiOversold", 30.0);
+        double rsiOverbought = getDoubleValue("rsiOverbought", 70.0);
+
+        // 配置第一個策略（RSI 策略）
+        if (!strategy.getStrategies().isEmpty()) {
+            DecisionBaseStrategy firstStrategy = strategy.getStrategies().get(0);
+            if (firstStrategy instanceof SignalRSIStrategy) {
+                SignalRSIStrategy rsiStrategy = (SignalRSIStrategy) firstStrategy;
+                rsiStrategy.setRsiPeriod(rsiPeriod);
+                rsiStrategy.setOversoldThreshold(rsiOversold);
+                rsiStrategy.setOverboughtThreshold(rsiOverbought);
+                System.out.println("[配置] RSI策略: 週期=" + rsiPeriod +
+                        ", 超賣=" + rsiOversold + ", 超買=" + rsiOverbought);
+            }
+        }
+    }
+
+    /**
+     * 解析時間週期字串
+     */
+    private com.dreamhouse.trading.core.Timeframe parseTimeframe(String timeframeStr) {
+        switch (timeframeStr) {
+            case "M1": return com.dreamhouse.trading.core.Timeframe.M1;
+            case "M5": return com.dreamhouse.trading.core.Timeframe.M5;
+            case "M15": return com.dreamhouse.trading.core.Timeframe.M15;
+            case "M30": return com.dreamhouse.trading.core.Timeframe.M30;
+            case "H1": return com.dreamhouse.trading.core.Timeframe.H1;
+            case "D1": return com.dreamhouse.trading.core.Timeframe.D1;
+            case "W1": return com.dreamhouse.trading.core.Timeframe.W1;
+            default: return com.dreamhouse.trading.core.Timeframe.M5;
+        }
+    }
+
     // Getters
     public boolean isConfirmed() { return confirmed; }
     
