@@ -89,17 +89,23 @@ public class RSIStrategy extends BaseStrategy {
      * 判斷是否應該買入
      */
     private boolean shouldBuy(double currentRSI, int barIndex) {
-        // RSI 從超賣區域回升且沒有持倉
-        if (!hasPosition(symbol) && currentRSI > oversoldThreshold) {
-            // 檢查前一根K線的 RSI 是否在超賣區域
-            if (barIndex > 0) {
+        // 沒有持倉時檢查買入條件
+        if (!hasPosition(symbol)) {
+            // 方式1：RSI 從超賣區域回升（精確穿越）
+            if (currentRSI > oversoldThreshold && barIndex > 0) {
                 double prevRSI = rsi.getValue(barIndex - 1).doubleValue();
-                boolean signal = prevRSI <= oversoldThreshold;
-                if (signal) {
-                    System.out.printf("[RSI] 買入信號 - Bar %d: RSI %.2f -> %.2f (超賣閾值: %.1f)%n", 
+                if (prevRSI <= oversoldThreshold) {
+                    System.out.printf("[RSI] 買入信號(穿越) - Bar %d: RSI %.2f -> %.2f (超賣閾值: %.1f)%n",
                                      barIndex, prevRSI, currentRSI, oversoldThreshold);
+                    return true;
                 }
-                return signal;
+            }
+
+            // 方式2：RSI 在超賣區域（更寬鬆，便於測試）
+            if (currentRSI <= oversoldThreshold) {
+                System.out.printf("[RSI] 買入信號(超賣) - Bar %d: RSI %.2f <= %.1f%n",
+                                 barIndex, currentRSI, oversoldThreshold);
+                return true;
             }
         }
         return false;
@@ -109,27 +115,41 @@ public class RSIStrategy extends BaseStrategy {
      * 判斷是否應該賣出
      */
     private boolean shouldSell(double currentRSI, int barIndex) {
-        // 有持倉且 RSI 進入超買區域
+        // 有持倉時檢查賣出條件
         if (hasPosition(symbol)) {
-            // RSI 超買信號
+            // 方式1：RSI 超買信號（直接賣出）
             if (currentRSI >= overboughtThreshold) {
-                System.out.printf("[RSI] 賣出信號 - Bar %d: RSI %.2f (超買閾值: %.1f)%n", 
+                System.out.printf("[RSI] 賣出信號(超買) - Bar %d: RSI %.2f >= %.1f%n",
                                  barIndex, currentRSI, overboughtThreshold);
                 return true;
             }
-            
-            // 止損：RSI 重新跌破 50（中性線）
-            if (currentRSI < 50.0) {
+
+            // 方式2：RSI 回到中性區域（50 附近）- 寬鬆條件
+            if (currentRSI > 50.0 && currentRSI < 60.0) {
                 Position position = getPortfolio().getPosition(symbol);
                 if (position != null) {
                     double currentPrice = getCurrentPrice();
-                    // 如果虧損超過 5% 則止損
-                    boolean stopLoss = position.getReturnRate(currentPrice) < -0.05;
-                    if (stopLoss) {
-                        System.out.printf("[RSI] 止損賣出 - Bar %d: RSI %.2f, 虧損: %.2f%%%n", 
+                    // 如果已經獲利就賣出（獲利了結）
+                    boolean takeProfit = position.getReturnRate(currentPrice) > 0.02; // 2% 以上就賣
+                    if (takeProfit) {
+                        System.out.printf("[RSI] 賣出信號(獲利) - Bar %d: RSI %.2f, 獲利: %.2f%%%n",
                                          barIndex, currentRSI, position.getReturnRate(currentPrice) * 100);
+                        return true;
                     }
-                    return stopLoss;
+                }
+            }
+
+            // 方式3：止損 - RSI 跌破 45 且虧損
+            if (currentRSI < 45.0) {
+                Position position = getPortfolio().getPosition(symbol);
+                if (position != null) {
+                    double currentPrice = getCurrentPrice();
+                    boolean stopLoss = position.getReturnRate(currentPrice) < -0.03; // 虧損 3% 止損
+                    if (stopLoss) {
+                        System.out.printf("[RSI] 賣出信號(止損) - Bar %d: RSI %.2f, 虧損: %.2f%%%n",
+                                         barIndex, currentRSI, position.getReturnRate(currentPrice) * 100);
+                        return true;
+                    }
                 }
             }
         }

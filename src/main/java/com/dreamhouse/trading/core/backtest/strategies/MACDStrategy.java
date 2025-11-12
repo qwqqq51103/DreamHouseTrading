@@ -97,13 +97,30 @@ public class MACDStrategy extends BaseStrategy {
      * 判斷是否應該買入
      */
     private boolean shouldBuy(double currentMACD, double currentSignal) {
-        // MACD 金叉：MACD 線從下方穿越信號線
-        boolean goldenCross = prevMACD <= prevSignal && currentMACD > currentSignal;
-        
-        // 額外條件：MACD 在零軸附近或以上（趨勢較強）
-        boolean trendStrong = currentMACD > -0.001;
-        
-        return goldenCross && trendStrong && !hasPosition(symbol);
+        if (!hasPosition(symbol)) {
+            // 方式1：MACD 金叉（精確穿越）
+            if (prevMACD <= prevSignal && currentMACD > currentSignal) {
+                boolean trendStrong = currentMACD > -0.001;
+                if (trendStrong) {
+                    System.out.printf("[MACD] 買入信號(金叉) - MACD: %.4f > Signal: %.4f%n",
+                                     currentMACD, currentSignal);
+                    return true;
+                }
+            }
+
+            // 方式2：MACD 在信號線上方且柱狀圖擴大（寬鬆條件）
+            if (currentMACD > currentSignal) {
+                double histogram = currentMACD - currentSignal;
+                double prevHistogram = prevMACD - prevSignal;
+                // 柱狀圖擴大且為正值
+                if (histogram > 0 && histogram > prevHistogram && histogram > 0.0001) {
+                    System.out.printf("[MACD] 買入信號(趨勢) - MACD: %.4f, Signal: %.4f, Histogram: %.4f%n",
+                                     currentMACD, currentSignal, histogram);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
     
     /**
@@ -113,29 +130,49 @@ public class MACDStrategy extends BaseStrategy {
         if (!hasPosition(symbol)) {
             return false;
         }
-        
-        // MACD 死叉：MACD 線從上方穿越信號線
-        boolean deathCross = prevMACD >= prevSignal && currentMACD < currentSignal;
-        
-        if (deathCross) {
+
+        // 方式1：MACD 死叉（精確穿越）
+        if (prevMACD >= prevSignal && currentMACD < currentSignal) {
+            System.out.printf("[MACD] 賣出信號(死叉) - MACD: %.4f < Signal: %.4f%n",
+                             currentMACD, currentSignal);
             return true;
         }
-        
-        // 止損條件：持倉虧損超過 3% 且 MACD 轉負
+
+        // 方式2：MACD 在信號線下方（趨勢反轉）
+        if (currentMACD < currentSignal) {
+            double histogram = currentMACD - currentSignal;
+            if (histogram < -0.0001) { // 柱狀圖為負
+                System.out.printf("[MACD] 賣出信號(反轉) - MACD: %.4f, Signal: %.4f, Histogram: %.4f%n",
+                                 currentMACD, currentSignal, histogram);
+                return true;
+            }
+        }
+
+        // 方式3：獲利了結 - 持倉獲利且 MACD 開始收斂
         Portfolio portfolio = getPortfolio();
         if (portfolio != null) {
             Position position = portfolio.getPosition(symbol);
             if (position != null) {
                 double currentPrice = getCurrentPrice();
                 double returnRate = position.getReturnRate(currentPrice);
-                
-                // 虧損超過 3% 且 MACD 轉負
-                if (returnRate < -0.03 && currentMACD < 0) {
+                double histogram = currentMACD - currentSignal;
+                double prevHistogram = prevMACD - prevSignal;
+
+                // 獲利 2% 以上且柱狀圖開始縮小
+                if (returnRate > 0.02 && histogram < prevHistogram && histogram > 0) {
+                    System.out.printf("[MACD] 賣出信號(獲利) - 獲利: %.2f%%, Histogram縮小: %.4f -> %.4f%n",
+                                     returnRate * 100, prevHistogram, histogram);
+                    return true;
+                }
+
+                // 止損：虧損超過 3%
+                if (returnRate < -0.03) {
+                    System.out.printf("[MACD] 賣出信號(止損) - 虧損: %.2f%%%n", returnRate * 100);
                     return true;
                 }
             }
         }
-        
+
         return false;
     }
     

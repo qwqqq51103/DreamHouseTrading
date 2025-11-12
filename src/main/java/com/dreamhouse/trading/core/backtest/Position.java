@@ -14,7 +14,10 @@ public class Position {
     private double totalCost;
     private final LocalDateTime openTime;
     private LocalDateTime lastUpdateTime;
-    
+
+    // K 線索引追蹤（用於回測）
+    private int entryBarIndex = -1;  // 進場時的 K 線索引
+
     // 統計數據
     private double realizedPnL = 0.0;
     private double totalCommission = 0.0;
@@ -134,7 +137,19 @@ public class Position {
     public long getHoldingHours() {
         return java.time.temporal.ChronoUnit.HOURS.between(openTime, LocalDateTime.now());
     }
-    
+
+    /**
+     * 計算持倉 K 線數量（用於回測）
+     * @param currentBarIndex 當前 K 線索引
+     * @return 持倉 K 線數量，如果未設置則返回 -1
+     */
+    public int getHoldingBars(int currentBarIndex) {
+        if (entryBarIndex < 0) {
+            return -1;  // 未設置進場索引
+        }
+        return currentBarIndex - entryBarIndex;
+    }
+
     // Getters
     public String getSymbol() { return symbol; }
     public int getQuantity() { return quantity; }
@@ -144,6 +159,12 @@ public class Position {
     public LocalDateTime getLastUpdateTime() { return lastUpdateTime; }
     public double getRealizedPnL() { return realizedPnL; }
     public double getTotalCommission() { return totalCommission; }
+    public int getEntryBarIndex() { return entryBarIndex; }
+
+    // Setters
+    public void setEntryBarIndex(int entryBarIndex) {
+        this.entryBarIndex = entryBarIndex;
+    }
     
     @Override
     public String toString() {

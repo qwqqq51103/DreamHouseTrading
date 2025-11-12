@@ -89,16 +89,50 @@ public class SimpleMovingAverageStrategy extends BaseStrategy {
      * 判斷是否應該買入
      */
     private boolean shouldBuy(double shortMA, double longMA, double prevShortMA, double prevLongMA) {
-        // 金叉：短期均線從下方穿越長期均線
-        return prevShortMA <= prevLongMA && shortMA > longMA && !hasPosition(symbol);
+        if (!hasPosition(symbol)) {
+            // 方式1：金叉（精確穿越）
+            if (prevShortMA <= prevLongMA && shortMA > longMA) {
+                System.out.printf("[SMA] 買入信號(金叉) - 短MA: %.2f > 長MA: %.2f%n", shortMA, longMA);
+                return true;
+            }
+
+            // 方式2：短期均線在長期均線上方且距離擴大（趨勢確認）
+            if (shortMA > longMA && prevShortMA > prevLongMA) {
+                double currentGap = (shortMA - longMA) / longMA;
+                double prevGap = (prevShortMA - prevLongMA) / prevLongMA;
+                // 如果距離擴大超過 0.5% 也視為買入信號
+                if (currentGap > prevGap && currentGap > 0.005) {
+                    System.out.printf("[SMA] 買入信號(趨勢) - 短MA: %.2f, 長MA: %.2f, 距離: %.2f%%%n",
+                                     shortMA, longMA, currentGap * 100);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
-    
+
     /**
      * 判斷是否應該賣出
      */
     private boolean shouldSell(double shortMA, double longMA, double prevShortMA, double prevLongMA) {
-        // 死叉：短期均線從上方穿越長期均線
-        return prevShortMA >= prevLongMA && shortMA < longMA && hasPosition(symbol);
+        if (hasPosition(symbol)) {
+            // 方式1：死叉（精確穿越）
+            if (prevShortMA >= prevLongMA && shortMA < longMA) {
+                System.out.printf("[SMA] 賣出信號(死叉) - 短MA: %.2f < 長MA: %.2f%n", shortMA, longMA);
+                return true;
+            }
+
+            // 方式2：短期均線在長期均線下方（趨勢反轉）
+            if (shortMA < longMA) {
+                double gap = (longMA - shortMA) / longMA;
+                if (gap > 0.003) { // 距離超過 0.3% 就賣出
+                    System.out.printf("[SMA] 賣出信號(反轉) - 短MA: %.2f, 長MA: %.2f, 距離: %.2f%%%n",
+                                     shortMA, longMA, gap * 100);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
     
     /**

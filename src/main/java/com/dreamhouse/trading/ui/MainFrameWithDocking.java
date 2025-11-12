@@ -42,6 +42,11 @@ public class MainFrameWithDocking extends JFrame {
     private TimeSalesDock timeSalesDock;
     private NewsDock newsDock;
 
+    // 新增的分析與執行面板
+    private MarketAnalysisDock marketAnalysisDock;
+    private ModeRecommendationDock modeRecommendationDock;
+    private ExecutionStatusDock executionStatusDock;
+
     private String currentSymbol = "AAPL";
     private Timeframe currentTimeframe = Timeframe.M1;
     private int customBarCount = 100;  // 用戶自定義的K線數量，預設100根
@@ -156,6 +161,27 @@ public class MainFrameWithDocking extends JFrame {
         DockableWrapper newsWrapper = new DockableWrapper("news", I18n.get("dock.news"), newsDock);
         Docking.registerDockable(newsWrapper);
         Docking.dock(newsWrapper, timeSalesWrapper, DockingRegion.EAST);
+
+        // 市場分析面板
+        marketAnalysisDock = new MarketAnalysisDock();
+        DockableWrapper marketAnalysisWrapper = new DockableWrapper(
+            "marketAnalysis", "市場分析", marketAnalysisDock);
+        Docking.registerDockable(marketAnalysisWrapper);
+        Docking.dock(marketAnalysisWrapper, watchlistWrapper, DockingRegion.SOUTH);
+
+        // 模式建議面板
+        modeRecommendationDock = new ModeRecommendationDock();
+        DockableWrapper modeRecommendationWrapper = new DockableWrapper(
+            "modeRecommendation", "模式建議", modeRecommendationDock);
+        Docking.registerDockable(modeRecommendationWrapper);
+        Docking.dock(modeRecommendationWrapper, marketAnalysisWrapper, DockingRegion.SOUTH);
+
+        // 執行狀態面板
+        executionStatusDock = new ExecutionStatusDock();
+        DockableWrapper executionStatusWrapper = new DockableWrapper(
+            "executionStatus", "執行狀態", executionStatusDock);
+        Docking.registerDockable(executionStatusWrapper);
+        Docking.dock(executionStatusWrapper, modeRecommendationWrapper, DockingRegion.SOUTH);
     }
     
     private JMenuBar createMenuBar() {

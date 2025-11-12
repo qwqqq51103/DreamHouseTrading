@@ -134,28 +134,75 @@ public class BollingerBandsStrategy extends BaseStrategy {
      * 突破策略買入條件
      */
     private boolean shouldBuyBreakout(double price, double upper, double bandPosition) {
-        return !hasPosition(symbol) && price > upper && bandPosition > 1.02;
+        if (!hasPosition(symbol)) {
+            // 方式1：突破上軌（精確條件）
+            if (price > upper && bandPosition > 1.02) {
+                System.out.printf("[BB] 買入信號(突破上軌) - Price: %.2f > Upper: %.2f, Position: %.2f%n",
+                                 price, upper, bandPosition);
+                return true;
+            }
+            // 方式2：接近上軌（寬鬆條件）
+            if (bandPosition > 0.85) {
+                System.out.printf("[BB] 買入信號(接近上軌) - Position: %.2f%n", bandPosition);
+                return true;
+            }
+        }
+        return false;
     }
-    
+
     /**
      * 突破策略賣出條件
      */
     private boolean shouldSellBreakout(double price, double lower, double bandPosition) {
-        return hasPosition(symbol) && (price < lower || bandPosition < -0.02);
+        if (hasPosition(symbol)) {
+            // 跌破下軌或回到通道內
+            if (price < lower || bandPosition < 0.5) {
+                System.out.printf("[BB] 賣出信號(突破策略) - Price: %.2f, Position: %.2f%n",
+                                 price, bandPosition);
+                return true;
+            }
+        }
+        return false;
     }
-    
+
     /**
      * 均值回歸策略買入條件
      */
     private boolean shouldBuyReversion(double price, double lower, double bandPosition) {
-        return !hasPosition(symbol) && bandPosition < 0.1 && price <= lower * 1.005;
+        if (!hasPosition(symbol)) {
+            // 方式1：觸及下軌（精確條件）
+            if (bandPosition < 0.1 && price <= lower * 1.005) {
+                System.out.printf("[BB] 買入信號(下軌反彈) - Price: %.2f <= Lower: %.2f, Position: %.2f%n",
+                                 price, lower, bandPosition);
+                return true;
+            }
+            // 方式2：接近下軌（寬鬆條件）
+            if (bandPosition < 0.25) {
+                System.out.printf("[BB] 買入信號(接近下軌) - Position: %.2f%n", bandPosition);
+                return true;
+            }
+        }
+        return false;
     }
-    
+
     /**
      * 均值回歸策略賣出條件
      */
     private boolean shouldSellReversion(double price, double upper, double bandPosition) {
-        return hasPosition(symbol) && (bandPosition > 0.9 || price >= upper * 0.995);
+        if (hasPosition(symbol)) {
+            // 方式1：觸及上軌
+            if (bandPosition > 0.9 || price >= upper * 0.995) {
+                System.out.printf("[BB] 賣出信號(上軌回調) - Price: %.2f, Upper: %.2f, Position: %.2f%n",
+                                 price, upper, bandPosition);
+                return true;
+            }
+            // 方式2：回到中軌以上
+            if (bandPosition > 0.6) {
+                System.out.printf("[BB] 賣出信號(回歸中軌) - Position: %.2f%n", bandPosition);
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
