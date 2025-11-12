@@ -165,19 +165,19 @@ public class AdvancedStopLossManager {
     /**
      * 開倉時計算停損停利價格
      */
-    public StopLossPrices calculateStopLossPrices(String strategyName, String symbol, 
+    public StopLossPrices calculateStopLossPrices(String strategyName, String symbol,
                                                    double entryPrice, LocalDateTime entryTime,
                                                    BarSeries barSeries) {
         StopLossConfig config = getConfig(strategyName);
-        
+
         double stopLoss;
         double takeProfit;
-        
+
         if (config.isVolatilityAdjustedEnabled() && barSeries != null && barSeries.getBarCount() > config.getAtrPeriod()) {
             // 使用 ATR 計算波動率調整停損
             ATRIndicator atr = new ATRIndicator(barSeries, config.getAtrPeriod());
             double atrValue = atr.getValue(barSeries.getBarCount() - 1).doubleValue();
-            
+
             stopLoss = entryPrice - (atrValue * config.getAtrMultiplier());
             takeProfit = entryPrice + (atrValue * config.getAtrMultiplier() * 2); // 停利為停損的兩倍
         } else {
@@ -185,12 +185,28 @@ public class AdvancedStopLossManager {
             stopLoss = entryPrice * (1 - config.getFixedStopLossPercent());
             takeProfit = entryPrice * (1 + config.getTakeProfitPercent());
         }
-        
+
         // 創建持倉停損狀態
         String key = strategyName + "_" + symbol;
         activeStops.put(key, new PositionStopLoss(symbol, entryPrice, entryTime, stopLoss, takeProfit));
-        
+
         return new StopLossPrices(stopLoss, takeProfit);
+    }
+
+    /**
+     * 手動設定持倉的停損停利（供外部調用）
+     * 用於當停損停利已由外部計算好時，直接設定到管理器中
+     */
+    public void setPositionStop(String strategyName, String symbol,
+                               double entryPrice, LocalDateTime entryTime,
+                               double stopLoss, double takeProfit) {
+        String key = strategyName + "_" + symbol;
+        PositionStopLoss posStop = new PositionStopLoss(symbol, entryPrice, entryTime,
+                                                        stopLoss, takeProfit);
+        activeStops.put(key, posStop);
+
+        System.out.println(String.format("[StopManager] 設定停損停利：%s, 進場:%.2f, 停損:%.2f, 停利:%.2f",
+                symbol, entryPrice, stopLoss, takeProfit));
     }
     
     /**

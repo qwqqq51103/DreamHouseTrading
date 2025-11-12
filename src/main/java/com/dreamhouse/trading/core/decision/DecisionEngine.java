@@ -454,9 +454,15 @@ public class DecisionEngine {
         this.entryPrice = entryPrice;
         this.positionQuantity = quantity;
 
-        // 使用 AdvancedStopLossManager 計算停損停利
-        // 注意：此處已經有外部計算的停損停利，直接記錄即可
-        // stopManager 會在 checkStopTrigger 時使用傳入的 currentPrice 進行檢查
+        // 取得當前時間（從最新的 Bar 中獲取）
+        LocalDateTime entryTime = LocalDateTime.now();
+        if (primarySeries != null && primarySeries.getBarCount() > 0) {
+            entryTime = primarySeries.getLastBar().getBeginTime().toLocalDateTime();
+        }
+
+        // ✅ 修復：實際設定停損停利到 stopManager
+        stopManager.setPositionStop("DecisionStrategy", symbol, entryPrice, entryTime,
+                                    stopLoss, takeProfit);
 
         System.out.println(String.format("[DecisionEngine] 開倉記錄：%s, 價格:%.2f, 數量:%d, 停損:%.2f, 停利:%.2f",
                 symbol, entryPrice, quantity, stopLoss, takeProfit));
