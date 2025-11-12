@@ -408,26 +408,50 @@ public class DecisionEngine {
      * 計算停損價格
      */
     private double calculateStopLoss(double entryPrice, boolean isLong, TrendAnalysis trend) {
+        double stopLoss;
+
         if (trend != null) {
-            return trend.calculateStopLoss(entryPrice, isLong);
+            stopLoss = trend.calculateStopLoss(entryPrice, isLong);
+            if (config.isVerboseLogging()) {
+                System.out.println(String.format("[停損計算] 使用趨勢分析: 進場價%.2f, 停損價%.2f, 方向:%s",
+                    entryPrice, stopLoss, isLong ? "做多" : "做空"));
+            }
+        } else {
+            // 預設 2% 停損
+            double stopDistance = entryPrice * 0.02;
+            stopLoss = isLong ? entryPrice - stopDistance : entryPrice + stopDistance;
+            if (config.isVerboseLogging()) {
+                System.out.println(String.format("[停損計算] 使用預設2%%: 進場價%.2f, 停損距離%.2f, 停損價%.2f, 方向:%s",
+                    entryPrice, stopDistance, stopLoss, isLong ? "做多" : "做空"));
+            }
         }
 
-        // 預設 2% 停損
-        double stopDistance = entryPrice * 0.02;
-        return isLong ? entryPrice - stopDistance : entryPrice + stopDistance;
+        return stopLoss;
     }
 
     /**
      * 計算停利價格
      */
     private double calculateTakeProfit(double entryPrice, boolean isLong, TrendAnalysis trend) {
+        double takeProfit;
+
         if (trend != null) {
-            return trend.calculateTakeProfit(entryPrice, isLong);
+            takeProfit = trend.calculateTakeProfit(entryPrice, isLong);
+            if (config.isVerboseLogging()) {
+                System.out.println(String.format("[停利計算] 使用趨勢分析: 進場價%.2f, 停利價%.2f, 方向:%s",
+                    entryPrice, takeProfit, isLong ? "做多" : "做空"));
+            }
+        } else {
+            // 預設 4% 停利（2:1 風險報酬比）
+            double profitDistance = entryPrice * 0.04;
+            takeProfit = isLong ? entryPrice + profitDistance : entryPrice - profitDistance;
+            if (config.isVerboseLogging()) {
+                System.out.println(String.format("[停利計算] 使用預設4%%: 進場價%.2f, 停利距離%.2f, 停利價%.2f, 方向:%s",
+                    entryPrice, profitDistance, takeProfit, isLong ? "做多" : "做空"));
+            }
         }
 
-        // 預設 4% 停利（2:1 風險報酬比）
-        double profitDistance = entryPrice * 0.04;
-        return isLong ? entryPrice + profitDistance : entryPrice - profitDistance;
+        return takeProfit;
     }
 
     /**

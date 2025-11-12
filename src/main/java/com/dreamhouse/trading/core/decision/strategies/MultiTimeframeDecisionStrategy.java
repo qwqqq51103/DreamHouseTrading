@@ -119,6 +119,10 @@ public class MultiTimeframeDecisionStrategy extends BaseStrategy {
                     double stopLoss = result.getSuggestedStopLoss();
                     double takeProfit = result.getSuggestedTakeProfit();
 
+                    // 調試輸出
+                    System.out.println(String.format("[策略執行] 當前價格: %.2f", currentPrice));
+                    System.out.println(String.format("[策略執行] 從DecisionResult獲取: 停損=%.2f, 停利=%.2f", stopLoss, takeProfit));
+
                     buyWithStops(currentSymbol, quantity, stopLoss, takeProfit,
                             "多週期決策：" + result.getReason());
 

@@ -266,24 +266,30 @@ public class BacktestEngine {
     /**
      * 執行買入訂單 (帶停利停損)
      */
-    public boolean buyWithStops(String symbol, int quantity, OrderType orderType, 
+    public boolean buyWithStops(String symbol, int quantity, OrderType orderType,
                                Double stopLoss, Double takeProfit, String reason) {
         if (!isRunning) return false;
-        
+
         double price = getCurrentPrice();
         double totalCost = price * quantity * (1 + commission + slippage);
-        
+
+        // 調試輸出
+        System.out.println(String.format("[BacktestEngine.buyWithStops] 買入價格: %.2f, 停損: %s, 停利: %s",
+            price,
+            stopLoss != null ? String.format("%.2f", stopLoss) : "null",
+            takeProfit != null ? String.format("%.2f", takeProfit) : "null"));
+
         if (portfolio.getCash() >= totalCost) {
             portfolio.addPosition(symbol, quantity, price, commission + slippage);
-            
+
             // 記錄交易 (帶停利停損資訊)
-            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY, 
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY,
                            quantity, price, commission + slippage, stopLoss, takeProfit, reason));
-            
+
             notifyTradeExecuted(symbol, TradeType.BUY, quantity, price);
             return true;
         }
-        
+
         return false;
     }
     
