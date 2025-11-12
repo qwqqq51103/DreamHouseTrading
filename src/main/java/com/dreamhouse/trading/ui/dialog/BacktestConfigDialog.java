@@ -537,11 +537,11 @@ public class BacktestConfigDialog extends JDialog {
      * 創建當沖交易策略（使用 UI 參數）
      */
     private DayTradingStrategy createDayTradingStrategy() {
-        // 創建配置
-        DecisionConfig config = DayTradingStrategy.createDayTradingConfig();
+        // 創建基礎配置
+        DecisionConfig config = DecisionConfig.createAggressive();
 
-        // 從 UI 讀取參數並應用
-        applyDecisionStrategyConfig(config, "DayTradingStrategy");
+        // 從 UI 讀取參數並應用（當沖策略專用）
+        applyDayTradingConfig(config);
 
         // 創建策略
         DayTradingStrategy strategy = new DayTradingStrategy(config);
@@ -556,11 +556,11 @@ public class BacktestConfigDialog extends JDialog {
      * 創建短線交易策略（使用 UI 參數）
      */
     private SwingTradingStrategy createSwingTradingStrategy() {
-        // 創建配置
-        DecisionConfig config = SwingTradingStrategy.createSwingTradingConfig();
+        // 創建基礎配置
+        DecisionConfig config = DecisionConfig.createDefault();
 
-        // 從 UI 讀取參數並應用
-        applyDecisionStrategyConfig(config, "SwingTradingStrategy");
+        // 從 UI 讀取參數並應用（短線策略專用）
+        applySwingTradingConfig(config);
 
         // 創建策略
         SwingTradingStrategy strategy = new SwingTradingStrategy(config);
@@ -575,11 +575,11 @@ public class BacktestConfigDialog extends JDialog {
      * 創建波段交易策略（使用 UI 參數）
      */
     private PositionTradingStrategy createPositionTradingStrategy() {
-        // 創建配置
-        DecisionConfig config = PositionTradingStrategy.createPositionTradingConfig();
+        // 創建基礎配置
+        DecisionConfig config = DecisionConfig.createConservative();
 
-        // 從 UI 讀取參數並應用
-        applyDecisionStrategyConfig(config, "PositionTradingStrategy");
+        // 從 UI 讀取參數並應用（波段策略專用）
+        applyPositionTradingConfig(config);
 
         // 創建策略
         PositionTradingStrategy strategy = new PositionTradingStrategy(config);
@@ -591,8 +591,169 @@ public class BacktestConfigDialog extends JDialog {
     }
 
     /**
-     * 應用決策策略配置（通用方法）
+     * 應用當沖交易策略配置
      */
+    private void applyDayTradingConfig(DecisionConfig config) {
+        // 時間週期配置
+        String mainTimeframeStr = getStringValue("mainTimeframe", "M5");
+        String riskTimeframeStr = getStringValue("riskTimeframe", "M1");
+        config.setMainLoopTimeframe(parseTimeframe(mainTimeframeStr));
+        config.setRiskMonitorTimeframe(parseTimeframe(riskTimeframeStr));
+
+        // 風險管理參數
+        double maxDailyLoss = getDoubleValue("maxDailyLoss", 1.0) / 100.0;
+        double maxPositionSize = getDoubleValue("maxPositionSize", 20.0) / 100.0;
+        config.getRiskConfig().setMaxDailyLossPercent(maxDailyLoss);
+        config.getRiskConfig().setMaxPositionSizePercent(maxPositionSize);
+
+        // 進出場閾值
+        double entryThreshold = getDoubleValue("entryThreshold", 0.3);
+        double exitThreshold = getDoubleValue("exitThreshold", 0.3);
+        config.getVotingConfig().setLongEntryThreshold(entryThreshold);
+        config.getVotingConfig().setShortEntryThreshold(entryThreshold);
+        config.getVotingConfig().setExitThreshold(exitThreshold);
+        config.getVotingConfig().setMinVotingStrategies(1);
+
+        // 持倉時間限制
+        int maxHoldingBars = getIntValue("maxHoldingBars", 78);
+        boolean forceCloseEOD = getBooleanValue("forceCloseEOD", true);
+        config.getRiskConfig().setMaxHoldingBars(maxHoldingBars);
+        config.getRiskConfig().setForceCloseAtEndOfDay(forceCloseEOD);
+
+        // 過濾器開關（當沖策略預設關閉所有過濾器）
+        boolean enableRegimeFilter = getBooleanValue("enableRegimeFilter", false);
+        boolean enableTrendFilter = getBooleanValue("enableTrendFilter", false);
+        config.setRegimeDetectionEnabled(enableRegimeFilter);
+        config.setTrendAnalysisEnabled(enableTrendFilter);
+
+        // 啟用詳細日誌
+        config.setVerboseLogging(true);
+        config.setLogLevel(2);
+
+        System.out.println("[配置] DayTradingStrategy 配置完成:");
+        System.out.println("  - 主週期: " + mainTimeframeStr);
+        System.out.println("  - 風控週期: " + riskTimeframeStr);
+        System.out.println("  - 進場閾值: " + entryThreshold);
+        System.out.println("  - 出場閾值: " + exitThreshold);
+        System.out.println("  - 每日最大虧損: " + (maxDailyLoss * 100) + "%");
+        System.out.println("  - 最大倉位: " + (maxPositionSize * 100) + "%");
+        System.out.println("  - 最大持倉K線數: " + maxHoldingBars);
+        System.out.println("  - 收盤強制平倉: " + (forceCloseEOD ? "是" : "否"));
+        System.out.println("  - 週線環境過濾: " + (enableRegimeFilter ? "啟用" : "關閉"));
+        System.out.println("  - 日線趨勢過濾: " + (enableTrendFilter ? "啟用" : "關閉"));
+    }
+
+    /**
+     * 應用短線交易策略配置
+     */
+    private void applySwingTradingConfig(DecisionConfig config) {
+        // 時間週期配置
+        String mainTimeframeStr = getStringValue("mainTimeframe", "M15");
+        String riskTimeframeStr = getStringValue("riskTimeframe", "M5");
+        config.setMainLoopTimeframe(parseTimeframe(mainTimeframeStr));
+        config.setRiskMonitorTimeframe(parseTimeframe(riskTimeframeStr));
+
+        // 風險管理參數
+        double maxDailyLoss = getDoubleValue("maxDailyLoss", 3.0) / 100.0;
+        double maxPositionSize = getDoubleValue("maxPositionSize", 30.0) / 100.0;
+        config.getRiskConfig().setMaxDailyLossPercent(maxDailyLoss);
+        config.getRiskConfig().setMaxPositionSizePercent(maxPositionSize);
+
+        // 進出場閾值
+        double entryThreshold = getDoubleValue("entryThreshold", 0.5);
+        double exitThreshold = getDoubleValue("exitThreshold", 0.5);
+        config.getVotingConfig().setLongEntryThreshold(entryThreshold);
+        config.getVotingConfig().setShortEntryThreshold(entryThreshold);
+        config.getVotingConfig().setExitThreshold(exitThreshold);
+        config.getVotingConfig().setMinVotingStrategies(1);
+
+        // 持倉時間限制
+        int maxHoldingBars = getIntValue("maxHoldingBars", 288);
+        boolean forceCloseEOD = getBooleanValue("forceCloseEOD", false);
+        config.getRiskConfig().setMaxHoldingBars(maxHoldingBars);
+        config.getRiskConfig().setForceCloseAtEndOfDay(forceCloseEOD);
+
+        // 過濾器開關（短線策略預設關閉週線，開啟日線）
+        boolean enableRegimeFilter = getBooleanValue("enableRegimeFilter", false);
+        boolean enableTrendFilter = getBooleanValue("enableTrendFilter", false);
+        config.setRegimeDetectionEnabled(enableRegimeFilter);
+        config.setTrendAnalysisEnabled(enableTrendFilter);
+
+        // 啟用詳細日誌
+        config.setVerboseLogging(true);
+        config.setLogLevel(2);
+
+        System.out.println("[配置] SwingTradingStrategy 配置完成:");
+        System.out.println("  - 主週期: " + mainTimeframeStr);
+        System.out.println("  - 風控週期: " + riskTimeframeStr);
+        System.out.println("  - 進場閾值: " + entryThreshold);
+        System.out.println("  - 出場閾值: " + exitThreshold);
+        System.out.println("  - 每日最大虧損: " + (maxDailyLoss * 100) + "%");
+        System.out.println("  - 最大倉位: " + (maxPositionSize * 100) + "%");
+        System.out.println("  - 最大持倉K線數: " + maxHoldingBars);
+        System.out.println("  - 收盤強制平倉: " + (forceCloseEOD ? "是" : "否"));
+        System.out.println("  - 週線環境過濾: " + (enableRegimeFilter ? "啟用" : "關閉"));
+        System.out.println("  - 日線趨勢過濾: " + (enableTrendFilter ? "啟用" : "關閉"));
+    }
+
+    /**
+     * 應用波段交易策略配置
+     */
+    private void applyPositionTradingConfig(DecisionConfig config) {
+        // 時間週期配置
+        String mainTimeframeStr = getStringValue("mainTimeframe", "H1");
+        String riskTimeframeStr = getStringValue("riskTimeframe", "M15");
+        config.setMainLoopTimeframe(parseTimeframe(mainTimeframeStr));
+        config.setRiskMonitorTimeframe(parseTimeframe(riskTimeframeStr));
+
+        // 風險管理參數
+        double maxDailyLoss = getDoubleValue("maxDailyLoss", 5.0) / 100.0;
+        double maxPositionSize = getDoubleValue("maxPositionSize", 50.0) / 100.0;
+        config.getRiskConfig().setMaxDailyLossPercent(maxDailyLoss);
+        config.getRiskConfig().setMaxPositionSizePercent(maxPositionSize);
+
+        // 進出場閾值
+        double entryThreshold = getDoubleValue("entryThreshold", 0.7);
+        double exitThreshold = getDoubleValue("exitThreshold", 0.4);
+        config.getVotingConfig().setLongEntryThreshold(entryThreshold);
+        config.getVotingConfig().setShortEntryThreshold(entryThreshold);
+        config.getVotingConfig().setExitThreshold(exitThreshold);
+        config.getVotingConfig().setMinVotingStrategies(1);
+
+        // 持倉時間限制
+        int maxHoldingBars = getIntValue("maxHoldingBars", 672);
+        boolean forceCloseEOD = getBooleanValue("forceCloseEOD", false);
+        config.getRiskConfig().setMaxHoldingBars(maxHoldingBars);
+        config.getRiskConfig().setForceCloseAtEndOfDay(forceCloseEOD);
+
+        // 過濾器開關（波段策略預設開啟所有過濾器）
+        boolean enableRegimeFilter = getBooleanValue("enableRegimeFilter", false);
+        boolean enableTrendFilter = getBooleanValue("enableTrendFilter", false);
+        config.setRegimeDetectionEnabled(enableRegimeFilter);
+        config.setTrendAnalysisEnabled(enableTrendFilter);
+
+        // 啟用詳細日誌
+        config.setVerboseLogging(true);
+        config.setLogLevel(2);
+
+        System.out.println("[配置] PositionTradingStrategy 配置完成:");
+        System.out.println("  - 主週期: " + mainTimeframeStr);
+        System.out.println("  - 風控週期: " + riskTimeframeStr);
+        System.out.println("  - 進場閾值: " + entryThreshold);
+        System.out.println("  - 出場閾值: " + exitThreshold);
+        System.out.println("  - 每日最大虧損: " + (maxDailyLoss * 100) + "%");
+        System.out.println("  - 最大倉位: " + (maxPositionSize * 100) + "%");
+        System.out.println("  - 最大持倉K線數: " + maxHoldingBars);
+        System.out.println("  - 收盤強制平倉: " + (forceCloseEOD ? "是" : "否"));
+        System.out.println("  - 週線環境過濾: " + (enableRegimeFilter ? "啟用" : "關閉"));
+        System.out.println("  - 日線趨勢過濾: " + (enableTrendFilter ? "啟用" : "關閉"));
+    }
+
+    /**
+     * 應用決策策略配置（通用方法 - 已廢棄，保留以防舊代碼使用）
+     * @deprecated 使用 applyDayTradingConfig, applySwingTradingConfig, applyPositionTradingConfig 代替
+     */
+    @Deprecated
     private void applyDecisionStrategyConfig(DecisionConfig config, String strategyName) {
         // 時間週期配置
         String mainTimeframeStr = getStringValue("mainTimeframe", "M5");
