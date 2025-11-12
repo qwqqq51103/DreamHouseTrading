@@ -11,6 +11,9 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -21,17 +24,23 @@ import java.util.Map;
 public class BacktestConfigDialog extends JDialog {
     
     private boolean confirmed = false;
-    
+
     // 基本配置
     private JSpinner initialCapitalSpinner;
     private JSpinner commissionSpinner;
     private JSpinner slippageSpinner;
-    
+
+    // 日期過濾
+    private JCheckBox enableDateFilterCheckBox;
+    private JSpinner startDateSpinner;
+    private JSpinner endDateSpinner;
+    private JButton todayOnlyButton;
+
     // 策略選擇
     private JComboBox<StrategyItem> strategyComboBox;
     private JPanel strategyConfigPanel;
     private Map<String, JComponent> parameterComponents;
-    
+
     // 當前選中的策略
     private Strategy selectedStrategy;
     
@@ -47,7 +56,7 @@ public class BacktestConfigDialog extends JDialog {
         setupEventHandlers();
         
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
-        setSize(500, 600);
+        setSize(500, 800);
         setLocationRelativeTo(parent);
     }
     
@@ -59,7 +68,62 @@ public class BacktestConfigDialog extends JDialog {
         initialCapitalSpinner = new JSpinner(new SpinnerNumberModel(100000.0, 1000.0, 10000000.0, 1000.0));
         commissionSpinner = new JSpinner(new SpinnerNumberModel(0.001, 0.0, 0.01, 0.0001));
         slippageSpinner = new JSpinner(new SpinnerNumberModel(0.0005, 0.0, 0.01, 0.0001));
-        
+
+        // 日期過濾配置
+        enableDateFilterCheckBox = new JCheckBox("啟用日期過濾", false);
+
+        // 使用 SpinnerDateModel 來選擇日期
+        Date today = new Date();
+        Date oneMonthAgo = new Date(today.getTime() - 30L * 24 * 60 * 60 * 1000);
+
+        SpinnerDateModel startDateModel = new SpinnerDateModel(oneMonthAgo, null, today, java.util.Calendar.DAY_OF_MONTH);
+        SpinnerDateModel endDateModel = new SpinnerDateModel(today, null, null, java.util.Calendar.DAY_OF_MONTH);
+
+        startDateSpinner = new JSpinner(startDateModel);
+        endDateSpinner = new JSpinner(endDateModel);
+
+        // 設定日期格式
+        JSpinner.DateEditor startEditor = new JSpinner.DateEditor(startDateSpinner, "yyyy-MM-dd");
+        JSpinner.DateEditor endEditor = new JSpinner.DateEditor(endDateSpinner, "yyyy-MM-dd");
+        startDateSpinner.setEditor(startEditor);
+        endDateSpinner.setEditor(endEditor);
+
+        // 「僅今日」快捷按鈕
+        todayOnlyButton = new JButton("僅今日");
+        todayOnlyButton.addActionListener(e -> {
+            Date now = new Date();
+            // 設定開始日期為今天00:00
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.setTime(now);
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0);
+            cal.set(java.util.Calendar.MINUTE, 0);
+            cal.set(java.util.Calendar.SECOND, 0);
+            cal.set(java.util.Calendar.MILLISECOND, 0);
+            startDateSpinner.setValue(cal.getTime());
+
+            // 設定結束日期為今天23:59
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 23);
+            cal.set(java.util.Calendar.MINUTE, 59);
+            cal.set(java.util.Calendar.SECOND, 59);
+            endDateSpinner.setValue(cal.getTime());
+
+            // 自動啟用日期過濾
+            enableDateFilterCheckBox.setSelected(true);
+        });
+
+        // 初始狀態下禁用日期選擇器
+        startDateSpinner.setEnabled(false);
+        endDateSpinner.setEnabled(false);
+        todayOnlyButton.setEnabled(false);
+
+        // 監聽 checkbox 變化
+        enableDateFilterCheckBox.addActionListener(e -> {
+            boolean enabled = enableDateFilterCheckBox.isSelected();
+            startDateSpinner.setEnabled(enabled);
+            endDateSpinner.setEnabled(enabled);
+            todayOnlyButton.setEnabled(enabled);
+        });
+
         // 策略選擇
         strategyComboBox = new JComboBox<>();
         strategyComboBox.addItem(new StrategyItem("MultiTimeframeDecisionStrategy", "⭐ 多週期決策策略 (新)"));
@@ -98,13 +162,24 @@ public class BacktestConfigDialog extends JDialog {
         
         basicConfigPanel.add(new JLabel("初始資金:"), "");
         basicConfigPanel.add(initialCapitalSpinner, "wrap");
-        
+
         basicConfigPanel.add(new JLabel("手續費率:"), "");
         basicConfigPanel.add(commissionSpinner, "wrap");
-        
+
         basicConfigPanel.add(new JLabel("滑點率:"), "");
         basicConfigPanel.add(slippageSpinner, "wrap");
-        
+
+        // 日期過濾面板
+        JPanel dateFilterPanel = new JPanel(new MigLayout("fillx", "[right][fill][100]", ""));
+        dateFilterPanel.setBorder(BorderFactory.createTitledBorder("日期範圍"));
+
+        dateFilterPanel.add(enableDateFilterCheckBox, "span 3, wrap");
+        dateFilterPanel.add(new JLabel("開始日期:"), "");
+        dateFilterPanel.add(startDateSpinner, "growx");
+        dateFilterPanel.add(todayOnlyButton, "wrap");
+        dateFilterPanel.add(new JLabel("結束日期:"), "");
+        dateFilterPanel.add(endDateSpinner, "growx, span 2, wrap");
+
         // 策略選擇
         JPanel strategySelectionPanel = new JPanel(new MigLayout("fillx", "[right][fill]", ""));
         strategySelectionPanel.setBorder(BorderFactory.createTitledBorder("策略選擇"));
@@ -114,6 +189,7 @@ public class BacktestConfigDialog extends JDialog {
         
         // 組合面板
         mainPanel.add(basicConfigPanel, "wrap, growx");
+        mainPanel.add(dateFilterPanel, "wrap, growx");
         mainPanel.add(strategySelectionPanel, "wrap, growx");
         mainPanel.add(strategyConfigPanel, "wrap, growx");
         
@@ -850,8 +926,31 @@ public class BacktestConfigDialog extends JDialog {
     public double getSlippage() {
         return ((Number) slippageSpinner.getValue()).doubleValue();
     }
-    
+
     public Strategy getSelectedStrategy() { return selectedStrategy; }
+
+    /**
+     * 是否啟用日期過濾
+     */
+    public boolean isDateFilterEnabled() {
+        return enableDateFilterCheckBox.isSelected();
+    }
+
+    /**
+     * 獲取開始日期（LocalDate）
+     */
+    public LocalDate getStartDate() {
+        Date date = (Date) startDateSpinner.getValue();
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /**
+     * 獲取結束日期（LocalDate）
+     */
+    public LocalDate getEndDate() {
+        Date date = (Date) endDateSpinner.getValue();
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
     
     /**
      * 策略項目類

@@ -811,18 +811,43 @@ public class MainFrameWithDocking extends JFrame {
         // 2. 獲取當前圖表數據
         List<org.ta4j.core.Bar> ta4jBars = chartDock.getCurrentBars();
         if (ta4jBars == null || ta4jBars.isEmpty()) {
-            JOptionPane.showMessageDialog(this, 
-                "沒有可用的歷史數據進行回測！\n請先載入 CSV 數據或等待實時數據累積。", 
-                "數據不足", 
+            JOptionPane.showMessageDialog(this,
+                "沒有可用的歷史數據進行回測！\n請先載入 CSV 數據或等待實時數據累積。",
+                "數據不足",
                 JOptionPane.WARNING_MESSAGE);
             return;
         }
-        
-        // 3. 轉換數據格式
+
+        // 3. 轉換數據格式並應用日期過濾
         List<com.dreamhouse.trading.core.model.Bar> bars = new ArrayList<>();
+        boolean dateFilterEnabled = configDialog.isDateFilterEnabled();
+        java.time.LocalDate startDate = dateFilterEnabled ? configDialog.getStartDate() : null;
+        java.time.LocalDate endDate = dateFilterEnabled ? configDialog.getEndDate() : null;
+
+        System.out.println(String.format("日期過濾: %s, 開始: %s, 結束: %s",
+            dateFilterEnabled ? "啟用" : "停用",
+            startDate != null ? startDate.toString() : "無",
+            endDate != null ? endDate.toString() : "無"));
+
+        int totalBars = 0;
+        int filteredBars = 0;
+
         for (org.ta4j.core.Bar ta4jBar : ta4jBars) {
+            totalBars++;
+            java.time.LocalDateTime barDateTime = ta4jBar.getBeginTime().toLocalDateTime();
+            java.time.LocalDate barDate = barDateTime.toLocalDate();
+
+            // 應用日期過濾
+            if (dateFilterEnabled) {
+                // 檢查是否在日期範圍內
+                if (barDate.isBefore(startDate) || barDate.isAfter(endDate)) {
+                    continue;  // 跳過不在範圍內的K線
+                }
+            }
+
+            filteredBars++;
             com.dreamhouse.trading.core.model.Bar bar = new com.dreamhouse.trading.core.model.Bar(
-                ta4jBar.getBeginTime().toLocalDateTime(),
+                barDateTime,
                 ta4jBar.getOpenPrice().doubleValue(),
                 ta4jBar.getHighPrice().doubleValue(),
                 ta4jBar.getLowPrice().doubleValue(),
@@ -830,6 +855,18 @@ public class MainFrameWithDocking extends JFrame {
                 ta4jBar.getVolume().longValue()
             );
             bars.add(bar);
+        }
+
+        System.out.println(String.format("數據過濾結果: 總共 %d 根K線，過濾後 %d 根K線",
+            totalBars, filteredBars));
+
+        // 檢查過濾後是否還有足夠的數據
+        if (bars.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                "過濾後沒有可用的K線數據！\n請調整日期範圍。",
+                "數據不足",
+                JOptionPane.WARNING_MESSAGE);
+            return;
         }
         
         // 4. 創建回測引擎
