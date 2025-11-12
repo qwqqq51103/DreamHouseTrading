@@ -16,7 +16,16 @@ public interface BacktestListener {
      * @param progress 進度百分比 (0.0 - 1.0)
      */
     void onProgressUpdate(double progress);
-    
+
+    /**
+     * K線處理完成時調用（每根K線處理後觸發）
+     * @param barIndex 當前K線索引
+     * @param bar 當前K線數據
+     */
+    default void onBarProcessed(int barIndex, org.ta4j.core.Bar bar) {
+        // 默認實現：空操作
+    }
+
     /**
      * 交易執行時調用
      */

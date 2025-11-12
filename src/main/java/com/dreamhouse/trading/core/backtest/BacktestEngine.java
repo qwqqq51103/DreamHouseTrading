@@ -170,10 +170,10 @@ public class BacktestEngine {
     private void processBar(int barIndex) {
         org.ta4j.core.Bar currentBar = barSeries.getBar(barIndex);
         LocalDateTime timestamp = currentBar.getBeginTime().toLocalDateTime();
-        
+
         // 更新投資組合市值
         portfolio.updateMarketValue(currentBar.getClosePrice().doubleValue());
-        
+
         // 執行策略邏輯
         for (Strategy strategy : strategies) {
             try {
@@ -182,10 +182,13 @@ public class BacktestEngine {
                 System.err.println("Strategy execution error at bar " + barIndex + ": " + e.getMessage());
             }
         }
-        
+
         // 記錄快照
-        result.addSnapshot(timestamp, portfolio.getTotalValue(), portfolio.getCash(), 
+        result.addSnapshot(timestamp, portfolio.getTotalValue(), portfolio.getCash(),
                           portfolio.getPositionValue(), portfolio.getPositions().size());
+
+        // 通知監聽器 K 線已處理
+        notifyBarProcessed(barIndex, currentBar);
     }
     
     /**
@@ -330,19 +333,25 @@ public class BacktestEngine {
             listener.onBacktestStarted();
         }
     }
-    
+
     private void notifyProgressUpdate(double progress) {
         for (BacktestListener listener : listeners) {
             listener.onProgressUpdate(progress);
         }
     }
-    
+
+    private void notifyBarProcessed(int barIndex, org.ta4j.core.Bar bar) {
+        for (BacktestListener listener : listeners) {
+            listener.onBarProcessed(barIndex, bar);
+        }
+    }
+
     private void notifyTradeExecuted(String symbol, TradeType type, int quantity, double price) {
         for (BacktestListener listener : listeners) {
             listener.onTradeExecuted(symbol, type, quantity, price);
         }
     }
-    
+
     private void notifyBacktestCompleted(BacktestResult result) {
         for (BacktestListener listener : listeners) {
             listener.onBacktestCompleted(result);
