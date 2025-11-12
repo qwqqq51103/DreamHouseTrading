@@ -509,6 +509,19 @@ public class ModeRecommendationDock extends JPanel {
                 .build();
         }
 
+        // 檢查數據是否充足（初始階段可能數據不足）
+        double volatility = regime.getVolatility();
+        double trendStrength = regime.getTrendStrength();
+
+        if (volatility <= 0.0 && trendStrength <= 0.0) {
+            return builder
+                .primaryMode(TradeMode.NO_TRADE)
+                .confidence(0.3)
+                .addReason("回測初始階段，數據累積中")
+                .addReason("建議：等待更多 K 線數據後再進行分析")
+                .build();
+        }
+
         // 判斷主要模式
         TradeMode primaryMode = determinePrimaryMode(regime, trend);
         TradeMode secondaryMode = determineSecondaryMode(regime, trend, primaryMode);
@@ -699,10 +712,14 @@ public class ModeRecommendationDock extends JPanel {
     }
 
     private String getTrendDirectionText(com.dreamhouse.trading.core.decision.trend.TrendDirection direction) {
+        if (direction == null) {
+            return "數據不足";
+        }
         switch (direction) {
             case UP: return "上升";
             case DOWN: return "下降";
             case SIDEWAY: return "盤整";
+            case UNCLEAR: return "不明確";
             default: return "未知";
         }
     }
