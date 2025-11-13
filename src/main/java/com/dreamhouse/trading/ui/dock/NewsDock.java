@@ -24,12 +24,12 @@ public class NewsDock extends JPanel {
     public NewsDock() {
         setLayout(new BorderLayout());
         setBorder(BorderFactory.createTitledBorder("Market News"));
-        
-        // 假資料
-        news.add(new NewsRow("10-23 14:30", "Bloomberg", "Fed signals rate cut pause", "https://example.com"));
-        news.add(new NewsRow("10-23 13:15", "Reuters", "Tech stocks rally on earnings", "https://example.com"));
-        news.add(new NewsRow("10-23 11:00", "CNBC", "Oil prices surge amid supply concerns", "https://example.com"));
-        
+
+        // 假資料（已禁用 - 使用真實 API 數據）
+        // news.add(new NewsRow("10-23 14:30", "Bloomberg", "Fed signals rate cut pause", "https://example.com"));
+        // news.add(new NewsRow("10-23 13:15", "Reuters", "Tech stocks rally on earnings", "https://example.com"));
+        // news.add(new NewsRow("10-23 11:00", "CNBC", "Oil prices surge amid supply concerns", "https://example.com"));
+
         tableModel = new EventTableModel<>(news, new NewsTableFormat());
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);

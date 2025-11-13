@@ -309,7 +309,7 @@ class DataSourceManagerTest {
     @DisplayName("測試所有 DataSourceType 枚舉值")
     void testAllDataSourceTypes() {
         DataSourceType[] types = DataSourceType.values();
-        assertEquals(6, types.length, "應該有 6 種數據源類型");
+        assertEquals(7, types.length, "應該有 7 種數據源類型");
 
         // 確保可以獲取所有枚舉值
         assertNotNull(DataSourceType.valueOf("SIMULATOR"));
@@ -318,6 +318,7 @@ class DataSourceManagerTest {
         assertNotNull(DataSourceType.valueOf("FINNHUB"));
         assertNotNull(DataSourceType.valueOf("IEX_CLOUD"));
         assertNotNull(DataSourceType.valueOf("POLYGON"));
+        assertNotNull(DataSourceType.valueOf("FINMIND"));
     }
 
     @Test

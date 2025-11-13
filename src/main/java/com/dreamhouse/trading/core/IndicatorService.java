@@ -87,9 +87,9 @@ public class IndicatorService {
     
     // 取得 RSI 指標
     public List<Double> getRSI(int period) {
-        System.out.println("計算 RSI，週期: " + period + "，數據量: " + barSeries.getBarCount());
+        //System.out.println("計算 RSI，週期: " + period + "，數據量: " + barSeries.getBarCount());
         if (barSeries.getBarCount() < period + 1) {
-            System.out.println("RSI 數據不足，需要 " + (period + 1) + " 根K線");
+            //System.out.println("RSI 數據不足，需要 " + (period + 1) + " 根K線");
             return Collections.emptyList();
         }
         

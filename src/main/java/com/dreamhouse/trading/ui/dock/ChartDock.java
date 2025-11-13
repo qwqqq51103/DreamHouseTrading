@@ -95,7 +95,11 @@ public class ChartDock extends JPanel implements MarketDataListener {
     // 交易標記
     private List<TradeMarker> tradeMarkers = new ArrayList<>();
     private TradeMarkerManager markerManager;
-    
+
+    // 其他 Dock 引用
+    private TimeSalesDock timeSalesDock;
+    private NewsDock newsDock;
+
     private Timeframe currentTimeframe = Timeframe.M1;
     private String currentOverlayIndicator = "SMA";  // SMA/EMA/None
     private String currentSubIndicator = "RSI";      // RSI/MACD/None
@@ -542,12 +546,41 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastVolume += trade.getQuantity();
                 updateLastBar();
             }
+
+            // 轉發到逐筆成交面板
+            if (timeSalesDock != null) {
+                timeSalesDock.addTrade(trade);
+            }
         });
     }
-    
+
+    @Override
+    public void onNews(NewsItem news) {
+        SwingUtilities.invokeLater(() -> {
+            // 轉發到市場消息面板
+            if (newsDock != null) {
+                newsDock.addNews(news);
+            }
+        });
+    }
+
     @Override
     public void onDepthUpdate(List<DepthLevel> depth) {
         // Not used in chart
+    }
+
+    /**
+     * 設置逐筆成交面板引用
+     */
+    public void setTimeSalesDock(TimeSalesDock timeSalesDock) {
+        this.timeSalesDock = timeSalesDock;
+    }
+
+    /**
+     * 設置市場消息面板引用
+     */
+    public void setNewsDock(NewsDock newsDock) {
+        this.newsDock = newsDock;
     }
     
     /**

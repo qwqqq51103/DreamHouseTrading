@@ -58,3 +58,11 @@ hs_err_pid*
 # Local configuration
 local.properties
 application-local.properties
+datasource.properties
+
+# IDE - Claude & Cursor
+.claude/
+.cursor/
+
+# Data files
+data/

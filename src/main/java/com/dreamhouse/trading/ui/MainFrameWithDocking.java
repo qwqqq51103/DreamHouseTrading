@@ -162,6 +162,10 @@ public class MainFrameWithDocking extends JFrame {
         Docking.registerDockable(newsWrapper);
         Docking.dock(newsWrapper, timeSalesWrapper, DockingRegion.EAST);
 
+        // 設置 ChartDock 的引用，讓它可以轉發數據
+        chartDock.setTimeSalesDock(timeSalesDock);
+        chartDock.setNewsDock(newsDock);
+
         // 市場分析面板
         marketAnalysisDock = new MarketAnalysisDock();
         DockableWrapper marketAnalysisWrapper = new DockableWrapper(
@@ -397,7 +401,7 @@ public class MainFrameWithDocking extends JFrame {
         
         // 數據模擬控制
         JToggleButton simulationBtn = new JToggleButton("⏸ 暫停模擬");
-        simulationBtn.setSelected(false);  // 預設為運行狀態
+        simulationBtn.setSelected(true);  // 預設為暫停狀態
         simulationBtn.addActionListener(e -> toggleSimulation(simulationBtn));
         toolBar.add(simulationBtn);
         

@@ -11,6 +11,7 @@ public class DataSourceManager {
 
     public enum DataSourceType {
         SIMULATOR("模擬數據", "Simulated Data"),
+        FINMIND("FinMind", "FinMind"),
         YAHOO_FINANCE("Yahoo Finance", "Yahoo Finance"),
         ALPHA_VANTAGE("Alpha Vantage", "Alpha Vantage"),
         FINNHUB("Finnhub", "Finnhub"),
@@ -35,6 +36,7 @@ public class DataSourceManager {
 
     private static final String CONFIG_FILE = "datasource.properties";
     private static final String PROP_DATASOURCE_TYPE = "datasource.type";
+    private static final String PROP_FINMIND_API_TOKEN = "finmind.apitoken";
     private static final String PROP_ALPHAVANTAGE_API_KEY = "alphavantage.apikey";
     private static final String PROP_FINNHUB_API_KEY = "finnhub.apikey";
     private static final String PROP_IEXCLOUD_API_KEY = "iexcloud.apikey";
@@ -92,6 +94,12 @@ public class DataSourceManager {
                 System.out.println("[DataSourceManager] 創建模擬數據源");
                 return new SimulatorFeed();
 
+            case FINMIND:
+                String fmApiToken = config.getProperty(PROP_FINMIND_API_TOKEN, "");
+                System.out.println("[DataSourceManager] 創建FinMind數據源 (API Token: "
+                                 + (fmApiToken.isEmpty() ? "未設定" : "***") + ")");
+                return new FinMindFeed(fmApiToken);
+
             case YAHOO_FINANCE:
                 System.out.println("[DataSourceManager] 創建Yahoo Finance數據源");
                 return new YahooFinanceFeed();
@@ -131,6 +139,26 @@ public class DataSourceManager {
      */
     public DataSourceType getCurrentType() {
         return currentType;
+    }
+
+    /**
+     * 設置FinMind API Token
+     */
+    public void setFinMindApiToken(String apiToken) {
+        config.setProperty(PROP_FINMIND_API_TOKEN, apiToken);
+        saveConfig();
+        System.out.println("[DataSourceManager] FinMind API Token已更新");
+
+        if (currentType == DataSourceType.FINMIND && currentFeed != null) {
+            switchDataSource(DataSourceType.FINMIND);
+        }
+    }
+
+    /**
+     * 獲取FinMind API Token
+     */
+    public String getFinMindApiToken() {
+        return config.getProperty(PROP_FINMIND_API_TOKEN, "");
     }
 
     /**
@@ -231,6 +259,7 @@ public class DataSourceManager {
         } else {
             // 創建默認配置
             config.setProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name());
+            config.setProperty(PROP_FINMIND_API_TOKEN, "");
             config.setProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
             config.setProperty(PROP_FINNHUB_API_KEY, "demo");
             config.setProperty(PROP_IEXCLOUD_API_KEY, "demo");
@@ -255,7 +284,8 @@ public class DataSourceManager {
      * 檢查數據源是否需要API密鑰
      */
     public boolean requiresApiKey(DataSourceType type) {
-        return type == DataSourceType.ALPHA_VANTAGE ||
+        return type == DataSourceType.FINMIND ||
+               type == DataSourceType.ALPHA_VANTAGE ||
                type == DataSourceType.FINNHUB ||
                type == DataSourceType.IEX_CLOUD ||
                type == DataSourceType.POLYGON;
@@ -278,6 +308,7 @@ public class DataSourceManager {
      */
     public String getApiKey(DataSourceType type) {
         return switch (type) {
+            case FINMIND -> getFinMindApiToken();
             case ALPHA_VANTAGE -> getAlphaVantageApiKey();
             case FINNHUB -> getFinnhubApiKey();
             case IEX_CLOUD -> getIEXCloudApiKey();
@@ -291,6 +322,7 @@ public class DataSourceManager {
      */
     public void setApiKey(DataSourceType type, String apiKey) {
         switch (type) {
+            case FINMIND -> setFinMindApiToken(apiKey);
             case ALPHA_VANTAGE -> setAlphaVantageApiKey(apiKey);
             case FINNHUB -> setFinnhubApiKey(apiKey);
             case IEX_CLOUD -> setIEXCloudApiKey(apiKey);

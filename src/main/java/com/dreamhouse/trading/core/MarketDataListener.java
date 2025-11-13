@@ -9,5 +9,6 @@ public interface MarketDataListener {
     default void onBar(Bar bar) {}
     default void onDepthUpdate(List<DepthLevel> depth) {}
     default void onTrade(Trade trade) {}
+    default void onNews(NewsItem news) {}
 }
 

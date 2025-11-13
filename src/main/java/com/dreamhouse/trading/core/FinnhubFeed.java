@@ -290,6 +290,15 @@ public class FinnhubFeed implements MarketDataFeed {
 
                 if (response.statusCode() == 200) {
                     parseHistoricalData(symbol, response.body());
+                } else if (response.statusCode() == 403) {
+                    logger.error("HTTP 403 - 無權限訪問 {}: {}", symbol, response.body());
+                    logger.error("可能原因：");
+                    logger.error("1. 您的 Finnhub API 訂閱計劃不支持此市場（台灣股市通常需要付費訂閱）");
+                    logger.error("2. 股票代碼格式不正確。請嘗試：");
+                    logger.error("   - 美股：AAPL");
+                    logger.error("   - 台灣股票：可能不支持或需要不同格式");
+                    logger.error("建議：切換到其他支持台灣股市的數據源（Yahoo Finance、模擬數據等）");
+                    generateFallbackData(symbol);
                 } else {
                     logger.error("HTTP error {}: {}", response.statusCode(), response.body());
                     generateFallbackData(symbol);
