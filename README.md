@@ -21,10 +21,16 @@
 - **互動功能**: 縮放、平移、參數自訂、顏色調整
 
 ### 💹 完整市場數據
+- **多數據源支援**: Yahoo Finance、Alpha Vantage、Finnhub、IEX Cloud、Polygon.io、**FinMind API (台股專用)**
+- **台股即時數據**: 支援 FinMind API Sponsor 會員功能
+  - 1分鐘K線（TaiwanStockKBar）
+  - 逐筆成交（TaiwanStockPriceTick）
+  - 市場消息（TaiwanStockNews）
+  - 即時快照（taiwan_stock_tick_snapshot，10秒更新）
 - **觀察清單**: 多商品監控，即時價格更新
-- **五檔掛單**: 模擬買賣盤口深度
-- **逐筆成交**: 時間序列成交記錄
-- **市場消息**: 資訊推播 (預留)
+- **五檔掛單**: 真實買賣盤口（最佳買賣價）
+- **逐筆成交**: 時間序列成交記錄，真實 TickType
+- **市場消息**: 即時新聞推播
 
 ### 🎨 現代化介面
 - **Modern Docking**: 可拖曳、可停靠的面板系統
@@ -41,6 +47,7 @@
 - **JDK 17** 或更高版本
 - **Maven 3.8+**
 - **NetBeans 17** (推薦) 或其他 Java IDE
+- **FinMind API Token** (選用，用於台股數據)
 
 ### 安裝步驟
 
@@ -62,7 +69,24 @@ copy settings.xml %USERPROFILE%\.m2\settings.xml  # Windows
 mvn clean compile
 ```
 
-4. **執行程式**
+4. **設定數據源** (選用)
+
+建立 `datasource.properties` 檔案並填入 API keys：
+```properties
+# FinMind API (台股數據)
+finmind.apitoken=YOUR_FINMIND_TOKEN
+datasource.type=FINMIND
+
+# 其他數據源
+alphavantage.apikey=YOUR_KEY
+finnhub.apikey=YOUR_KEY
+iexcloud.apikey=YOUR_KEY
+polygon.apikey=YOUR_KEY
+```
+
+> 💡 **取得 FinMind Token**: 前往 [FinMind 官網](https://finmindtrade.com/) 註冊並獲取 API Token
+
+5. **執行程式**
 ```bash
 mvn exec:java
 ```
@@ -99,13 +123,34 @@ mvn exec:java
 
 ## 🎯 核心功能
 
-### 1️⃣ 即時行情模擬
+### 1️⃣ 多數據源支援
+
+**支援的數據源**:
+| 數據源 | 類型 | 地區 | 說明 |
+|--------|------|------|------|
+| **FinMind** | 真實 | 🇹🇼 台灣 | **推薦**：台股即時數據，支援 1分K、逐筆、新聞 |
+| Yahoo Finance | 真實 | 🌎 全球 | 免費，延遲數據 |
+| Alpha Vantage | 真實 | 🌎 全球 | 需 API Key |
+| Finnhub | 真實 | 🌎 全球 | 需 API Key，台股需付費 |
+| IEX Cloud | 真實 | 🇺🇸 美股 | 需 API Key |
+| Polygon.io | 真實 | 🇺🇸 美股 | 需 API Key |
+| Simulator | 模擬 | - | 本地隨機數據生成 |
+
+**FinMind API 功能（台股專用）**:
+- ⏱️ **即時更新**: 10秒快照（交易時段 09:00-13:30）
+- 📊 **1分鐘K線**: 支援 Sponsor 會員 TaiwanStockKBar
+- 📈 **時間週期聚合**: 客戶端聚合為 5min/15min/30min/60min/Daily/Weekly
+- 💹 **逐筆成交**: 真實 TickType（1=買進、2=賣出）
+- 📰 **市場消息**: 即時新聞推播
+- 🔄 **自動控制**: 交易時段自動啟用，盤後自動停止
+
+### 2️⃣ 即時行情（模擬模式）
 - ⏱️ **更新頻率**: 每秒 1 次
 - 📊 **數據儲存**: 最多 500 根 K 線
 - 💰 **價格模型**: 隨機遊走
 - 📈 **成交量**: 動態生成 (100-600)
 
-### 2️⃣ 技術分析工具
+### 3️⃣ 技術分析工具
 
 **疊加指標 (主圖)**
 | 指標 | 週期 | 顏色 | 說明 |
@@ -125,7 +170,7 @@ mvn exec:java
 | CCI  | 14   | 🟨 黃色 | 順勢指標 |
 | WR   | 14   | 🟪 紫色 | 威廉指標 |
 
-### 3️⃣ 圖表互動
+### 4️⃣ 圖表互動
 
 **縮放**
 - 🔍+ 放大 (`Ctrl + =`)
@@ -138,7 +183,7 @@ mvn exec:java
 - 📈 趨勢線 (已完成)
 - ─ 水平線 (已完成)
 
-### 4️⃣ 市場數據面板
+### 5️⃣ 市場數據面板
 
 **觀察清單**
 - 多商品同時監控
@@ -155,6 +200,73 @@ mvn exec:java
 - 時間戳記
 - 價格、數量
 - 買賣方向標示
+
+---
+
+## 🇹🇼 FinMind API 台股數據配置
+
+### 📋 前置準備
+
+1. **註冊 FinMind 帳號**
+   - 前往 [FinMind 官網](https://finmindtrade.com/)
+   - 註冊並登入帳號
+   - 前往「API 管理」頁面取得 API Token
+
+2. **選擇會員方案**
+   - **Free 會員**: 僅日線歷史數據
+   - **Backer 會員**: 日線 + 逐筆成交
+   - **Sponsor 會員**: ⭐ **推薦** - 完整功能（1分K線、即時快照）
+
+### ⚙️ 配置步驟
+
+1. **建立配置檔案**
+
+   在專案根目錄建立 `datasource.properties`：
+   ```properties
+   # FinMind API Token（必填）
+   finmind.apitoken=YOUR_API_TOKEN_HERE
+
+   # 設定預設數據源為 FinMind
+   datasource.type=FINMIND
+   ```
+
+2. **啟動程式**
+
+   程式會自動偵測 `datasource.properties` 並載入 FinMind 數據源。
+
+3. **切換數據源**
+
+   在程式中透過 UI 切換數據源：
+   - 工具列 → 「數據源」下拉選單 → 選擇「FinMind」
+
+### 📊 支援的台股功能
+
+| API 端點 | 功能 | 會員要求 | 說明 |
+|----------|------|---------|------|
+| `TaiwanStockPrice` | 日線數據 | Free | 歷史日線 K 線 |
+| `TaiwanStockPriceTick` | 逐筆成交 | Backer+ | 歷史 Tick 數據 |
+| `TaiwanStockKBar` | 1分鐘K線 | **Sponsor** | 分鐘級 K 線（當日） |
+| `taiwan_stock_tick_snapshot` | 即時快照 | **Sponsor** | 10秒更新（盤中） |
+| `TaiwanStockNews` | 市場消息 | Free | 個股新聞 |
+
+### 🕐 交易時段自動偵測
+
+程式會自動判斷是否為台股交易時段：
+- **交易時段**: 週一至週五 09:00-13:30
+- **盤中**: 自動啟用即時更新（10秒一次）
+- **盤後**: 自動停止更新，避免資源浪費
+
+### 💡 使用範例
+
+**觀察台積電 (2330)**:
+1. 在觀察清單輸入 `2330.TW`
+2. 選擇時間週期（1分/5分/15分/30分/60分/日/週）
+3. 查看 K 線圖表、逐筆成交、市場消息
+
+**注意事項**:
+- 股票代碼需加上 `.TW` 或 `.TWO` 後綴
+- 1分鐘K線僅限當日數據
+- 五檔掛單僅顯示最佳買賣價（API 限制）
 
 ---
 
@@ -271,12 +383,14 @@ mvn clean compile
 
 ### 📅 **近期目標**
 
-#### ✅ **已完成** (2024-10-25)
+#### ✅ **已完成** (2025-01-13)
 - 📈 **K線圖表系統** - 即時更新、多時間週期
 - 🎨 **繪圖工具** - 趨勢線、水平線
 - 📊 **技術指標** - SMA/EMA/RSI/MACD/BOLL/KD/ADX/OBV/CCI/WR
 - 🌐 **國際化** - 中英文切換
 - 📁 **CSV 管理** - 匯入/匯出功能
+- 🇹🇼 **FinMind API 整合** - 台股即時數據、1分K線、逐筆成交、市場消息
+- 🔄 **多數據源支援** - 7種數據源（含模擬器）
 
 #### 🔄 **進行中**
 - 🎯 **測量工具** - 價格/時間測量

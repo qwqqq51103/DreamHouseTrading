@@ -38,12 +38,13 @@
 ### 📊 項目統計
 
 - **程式語言**: Java 17
-- **檔案數量**: 69 個檔案 (含測試與文檔)
-- **程式碼行數**: 26,150 行 (含測試)
-- **測試數量**: 103 個單元測試
+- **檔案數量**: 70+ 個檔案 (含測試與文檔)
+- **程式碼行數**: 27,150+ 行 (含測試)
+- **測試數量**: 103+ 個單元測試
 - **測試覆蓋率**: ~50% (核心類 100%)
 - **開發時間**: 2024年10月 - 2025年01月 (持續開發中)
 - **架構**: 分層架構 (UI/Core/Test)
+- **數據源**: 7 種（含 FinMind 台股即時數據）
 
 ---
 
@@ -90,22 +91,38 @@
   - [x] 即時應用
 
 #### 💹 市場數據
+- [x] **多數據源支援**
+  - [x] DataSourceManager 管理器
+  - [x] 7 種數據源（Simulator, Yahoo Finance, Alpha Vantage, Finnhub, IEX Cloud, Polygon.io, **FinMind**）
+  - [x] UI 動態切換數據源
+  - [x] API Key 配置管理
+- [x] **FinMind API 整合** (台股專用) ⭐ **新增**
+  - [x] TaiwanStockKBar (1分鐘K線，Sponsor會員)
+  - [x] TaiwanStockPriceTick (逐筆成交)
+  - [x] TaiwanStockNews (市場消息)
+  - [x] taiwan_stock_tick_snapshot (即時快照，10秒更新)
+  - [x] 客戶端K線聚合 (1min → 5/15/30/60min/Daily/Weekly)
+  - [x] 交易時段自動偵測 (週一至週五 09:00-13:30)
+  - [x] 盤中自動啟用即時更新，盤後自動停止
 - [x] **觀察清單**
   - [x] 多商品監控
   - [x] 即時價格更新
   - [x] 漲跌幅顯示
   - [x] 雙擊切換商品
 - [x] **五檔掛單**
-  - [x] 買賣盤口深度
+  - [x] 買賣盤口深度（真實最佳買賣價）
   - [x] 顏色區分 (綠買/紅賣)
   - [x] 動態更新
 - [x] **逐筆成交**
   - [x] 時間序列記錄
-  - [x] 買賣方向標示
+  - [x] 買賣方向標示（真實 TickType）
   - [x] 最新在上排序
+  - [x] 數據轉發（ChartDock → TimeSalesDock）
 - [x] **市場消息**
-  - [x] 假資料展示
+  - [x] 真實新聞數據（FinMind API）
   - [x] 時間/來源/標題
+  - [x] 數據轉發（ChartDock → NewsDock）
+  - [x] 移除模擬數據
 
 #### 🎨 使用者介面
 - [x] **Modern Docking**
@@ -378,7 +395,16 @@ DreamHouseTrading/
 │   ├── Main.java                           # 程式入口
 │   ├── core/                               # 核心邏輯層
 │   │   ├── MarketDataFeed.java             # 市場數據介面
+│   │   ├── MarketDataListener.java         # 數據監聽器介面
+│   │   ├── DataSourceManager.java          # 數據源管理器
+│   │   ├── DataSourceType.java             # 數據源類型枚舉
 │   │   ├── SimulatorFeed.java              # 數據模擬器
+│   │   ├── FinMindFeed.java                # FinMind API (台股數據)
+│   │   ├── YahooFinanceFeed.java           # Yahoo Finance API
+│   │   ├── AlphaVantageFeed.java           # Alpha Vantage API
+│   │   ├── FinnhubFeed.java                # Finnhub API
+│   │   ├── IEXCloudFeed.java               # IEX Cloud API
+│   │   ├── PolygonFeed.java                # Polygon.io API
 │   │   ├── IndicatorService.java           # 技術指標服務
 │   │   ├── IndicatorConfig.java            # 指標配置
 │   │   ├── Timeframe.java                  # 時間週期
@@ -1556,6 +1582,180 @@ double screenY = point.getY() - dataArea.getY();
 | **📚 Docs** | **6** | **2,000** | **測試文檔** |
 | **🔧 Scripts** | **3** | **100** | **開發工具腳本** |
 | **總計** | **69** | **26,150** | - |
+
+---
+
+### 🇹🇼 第五階段：FinMind API 台股數據整合 (2025-01-13)
+
+#### 2025-01-13: FinMind API 完整整合
+
+**背景**:
+使用者需要真實的台股數據支援當沖交易（Day Trading），選擇訂閱 FinMind Sponsor 會員方案以獲取 1 分鐘 K 線和即時快照功能。
+
+**主要目標**:
+- ✅ 整合 FinMind API v4
+- ✅ 支援台股即時數據（1分K線、逐筆成交、市場消息）
+- ✅ 實現客戶端 K 線聚合（1min → 5/15/30/60min/Daily/Weekly）
+- ✅ 移除所有模擬數據生成
+- ✅ 實現交易時段自動偵測
+
+**實作內容**:
+
+1. **FinMindFeed.java 核心實現** (1000+ 行)
+   ```java
+   public class FinMindFeed implements MarketDataFeed {
+       // API 端點支援
+       - TaiwanStockKBar (1分鐘K線，Sponsor會員專屬)
+       - TaiwanStockPrice (日線數據)
+       - TaiwanStockPriceTick (逐筆成交)
+       - TaiwanStockNews (市場消息)
+       - taiwan_stock_tick_snapshot (即時快照，10秒更新)
+
+       // 核心功能
+       - isMarketOpen(): 交易時段偵測
+       - aggregateBars(): K線聚合（1min → 多週期）
+       - aggregateDailyToWeekly(): 週K線聚合
+       - fetchAndNotifyRealTimeData(): 即時數據更新
+       - parseAndNotifyRealTimeSnapshot(): 快照數據解析
+   }
+   ```
+
+2. **K 線聚合算法實現**
+   ```java
+   // 1分鐘 → 5/15/30/60 分鐘聚合
+   private List<KBarData> aggregateBars(List<KBarData> oneMinuteBars, int periodMinutes) {
+       - 按時間窗口分組
+       - 計算 OHLC: first open, max high, min low, last close
+       - 累加成交量: sum(volume)
+   }
+
+   // 日線 → 週線聚合
+   private List<KBarData> aggregateDailyToWeekly(List<KBarData> dailyBars) {
+       - 使用 ISO 週數規則（WeekFields.ISO）
+       - 週一為一週開始
+       - 自動處理跨年週數
+   }
+   ```
+
+3. **即時數據與交易時段控制**
+   ```java
+   // 交易時段自動偵測
+   private boolean isMarketOpen() {
+       LocalDateTime now = LocalDateTime.now();
+       DayOfWeek dayOfWeek = now.getDayOfWeek();
+       if (dayOfWeek == SATURDAY || dayOfWeek == SUNDAY) return false;
+
+       int timeInMinutes = now.getHour() * 60 + now.getMinute();
+       return timeInMinutes >= 540 && timeInMinutes <= 810; // 09:00-13:30
+   }
+
+   // 盤中自動啟用即時更新，盤後自動停止
+   if (isMarketOpen()) {
+       realTimeUpdateTask = executor.scheduleAtFixedRate(
+           () -> fetchAndNotifyRealTimeData(symbol),
+           0, 10, TimeUnit.SECONDS
+       );
+   }
+   ```
+
+4. **數據轉發機制優化**
+   ```java
+   // MarketDataListener 新增 onNews() 方法
+   public interface MarketDataListener {
+       default void onTick(Tick tick) {}
+       default void onBar(Bar bar) {}
+       default void onDepthUpdate(List<DepthLevel> depth) {}
+       default void onTrade(Trade trade) {}
+       default void onNews(NewsItem news) {}  // 新增
+   }
+
+   // ChartDock 轉發數據到其他面板
+   @Override
+   public void onTrade(Trade trade) {
+       if (timeSalesDock != null) {
+           timeSalesDock.addTrade(trade);  // 轉發逐筆成交
+       }
+   }
+
+   @Override
+   public void onNews(NewsItem news) {
+       if (newsDock != null) {
+           newsDock.addNews(news);  // 轉發市場消息
+       }
+   }
+   ```
+
+5. **移除模擬數據**
+   - ❌ NewsDock.java: 註解假新聞數據
+   - ❌ FinMindFeed.java: 停用 generateFallbackHistoricalData()
+   - ❌ FinMindFeed.java: 移除 TickType=0 隨機分配
+   - ❌ FinMindFeed.java: generateTicksFromBar() 改為只生成 1 tick（原 4 ticks）
+   - ❌ 移除所有隨機 Trade 生成邏輯
+
+**遇到的問題與解決**:
+
+| 問題 | 原因 | 解決方案 |
+|------|------|---------|
+| HTTP 400: dataset size too large | TaiwanStockKBar 不支援多日請求 | 移除 end_date 參數，只請求單日 |
+| DateTimeParseException | 時間欄位為空或格式錯誤 | 新增彈性時間解析，支援多種格式 |
+| 只顯示 1 根 K 線 | 欄位名稱錯誤（Time vs minute） | 修正為 `bar.path("minute")` |
+| 所有時間週期顯示 1 分鐘 | FinMind 無 period 參數 | 實現客戶端 K 線聚合 |
+| 週 K 線顯示為日 K 線 | 缺少週線聚合邏輯 | 實現 ISO 週數聚合 |
+| Time & Sales 無數據 | 面板未註冊監聽器 | 實現 ChartDock 數據轉發機制 |
+| 所有 Tick 時間顯示 09:00 | 時間解析預設值 | 加強驗證，跳過無效時間 |
+| 最後 K 線跳到當前時間 | 即時更新無時段控制 | 實現交易時段自動偵測 |
+| 五檔掛單只有一檔 | API 僅提供最佳買賣價 | 文檔說明 API 限制 |
+
+**測試更新**:
+```java
+// DataSourceManagerTest.java 更新
+@Test
+void testAllDataSourceTypes() {
+    DataSourceType[] types = DataSourceType.values();
+    assertEquals(7, types.length, "應該有 7 種數據源類型");  // 6 → 7
+    assertNotNull(DataSourceType.valueOf("FINMIND"));  // 新增驗證
+}
+```
+
+**技術亮點**:
+- 🎯 **智能時段控制**: 自動判斷交易時段，盤中啟用即時更新，盤後停止
+- 📊 **客戶端聚合**: 1分K線聚合為多時間週期，無需多次 API 請求
+- 🔄 **數據轉發架構**: ChartDock 作為中心，轉發數據到各面板
+- 🇹🇼 **台股專用**: 完整支援 FinMind Sponsor 會員功能
+- ⚡ **性能優化**: 使用 HttpClient 非同步請求，避免阻塞 UI
+
+**統計數據**:
+- **新增檔案**: 1 個（FinMindFeed.java，1000+ 行）
+- **修改檔案**: 7 個（DataSourceManager, MarketDataListener, ChartDock, NewsDock 等）
+- **測試更新**: 1 個（DataSourceManagerTest）
+- **新增範例**: 2 個（MultiTimeframeBacktestExample, DecisionSystemIntegrationTest）
+- **文檔更新**: .gitignore, README.md, PROJECT_DOCUMENTATION.md
+- **Git 提交**: 71faa8f - "feat: 實現 FinMind API 完整整合"
+
+**配置示例**:
+```properties
+# datasource.properties
+finmind.apitoken=YOUR_FINMIND_TOKEN
+datasource.type=FINMIND
+```
+
+**使用範例**:
+```java
+// 觀察台積電 (2330.TW)
+1. 在觀察清單輸入 "2330.TW"
+2. 選擇時間週期（1分/5分/15分/30分/60分/日/週）
+3. 查看 K 線圖表、逐筆成交、市場消息
+```
+
+**成果展示**:
+- ✅ 台股即時數據（10秒更新）
+- ✅ 1分鐘 K 線圖表
+- ✅ 多時間週期支援（客戶端聚合）
+- ✅ 真實逐筆成交（TickType: 1=買、2=賣）
+- ✅ 市場消息推播
+- ✅ 最佳買賣價五檔掛單
+- ✅ 交易時段自動控制
+- ✅ 零模擬數據（100% 真實）
 
 ---
 
