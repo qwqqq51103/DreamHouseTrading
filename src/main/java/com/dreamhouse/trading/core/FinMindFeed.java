@@ -64,6 +64,21 @@ public class FinMindFeed implements MarketDataFeed {
     public void subscribe(String symbol, MarketDataListener listener) {
         listeners.computeIfAbsent(symbol, k -> new CopyOnWriteArrayList<>()).add(listener);
         logger.info("訂閱商品: {}", symbol);
+
+        // 如果數據源已啟動且即時輪詢尚未運行，檢查是否需要啟動
+        if (connected && updateTask == null) {
+            if (isMarketOpen()) {
+                logger.info("當前為交易時間，啟動即時數據輪詢（每 {} 秒）...", UPDATE_INTERVAL_MS / 1000);
+                updateTask = executor.scheduleAtFixedRate(
+                    this::updateRealTimeData,
+                    UPDATE_INTERVAL_MS,  // 延遲啟動
+                    UPDATE_INTERVAL_MS,
+                    TimeUnit.MILLISECONDS
+                );
+            } else {
+                logger.info("當前為非交易時間，即時數據輪詢已禁用 - 僅顯示歷史數據");
+            }
+        }
     }
 
     @Override
@@ -973,6 +988,11 @@ public class FinMindFeed implements MarketDataFeed {
                     } else if (timeStr.length() == 5) {
                         // HH:mm 格式（沒有秒）
                         timestamp = LocalDateTime.parse(dateStr + " " + timeStr + ":00",
+                                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                    } else if (timeStr.length() > 8 && timeStr.contains(".")) {
+                        // HH:mm:ss.SSSSSS 格式（帶微秒）- 截取前 8 個字符
+                        String timeWithoutMicros = timeStr.substring(0, 8);
+                        timestamp = LocalDateTime.parse(dateStr + " " + timeWithoutMicros,
                                 DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
                     } else {
                         logger.warn("時間格式不正確: '{}', 跳過此筆數據", timeStr);
