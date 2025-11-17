@@ -40,11 +40,13 @@ public class FinMindFeed implements MarketDataFeed {
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
     private final Random random = new Random();
+    private final RealtimeBarBuilder realtimeBarBuilder = new RealtimeBarBuilder();
 
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> updateTask;
     private boolean connected = false;
     private boolean paused = false;
+    private java.time.LocalDate queryDate = java.time.LocalDate.now(); // 查詢日期
 
     public FinMindFeed(String apiToken) {
         this.apiToken = apiToken != null && !apiToken.trim().isEmpty() ? apiToken : "";
@@ -139,9 +141,11 @@ public class FinMindFeed implements MarketDataFeed {
         boolean isOpen = timeInMinutes >= marketOpenTime && timeInMinutes <= marketCloseTime;
 
         if (isOpen) {
-            logger.info("當前時間 {}:{:02d} 在交易時間內（09:00-13:30）", hour, minute);
+            logger.info("當前時間 {}:{} 在交易時間內（09:00-13:30）",
+                String.format("%02d", hour), String.format("%02d", minute));
         } else {
-            logger.debug("當前時間 {}:{:02d} 不在交易時間內（09:00-13:30）", hour, minute);
+            logger.debug("當前時間 {}:{} 不在交易時間內（09:00-13:30）",
+                String.format("%02d", hour), String.format("%02d", minute));
         }
 
         return isOpen;
@@ -179,6 +183,29 @@ public class FinMindFeed implements MarketDataFeed {
     @Override
     public boolean isPaused() {
         return paused;
+    }
+
+    /**
+     * 設定查詢日期
+     */
+    public void setQueryDate(java.time.LocalDate date) {
+        if (date == null) {
+            date = java.time.LocalDate.now();
+        }
+        this.queryDate = date;
+        logger.info("查詢日期已設置為: {}", date.format(DATE_FORMATTER));
+
+        // 重新載入數據
+        if (connected && !listeners.isEmpty()) {
+            new Thread(this::loadHistoricalData, "FinMind-Reload").start();
+        }
+    }
+
+    /**
+     * 取得查詢日期
+     */
+    public java.time.LocalDate getQueryDate() {
+        return queryDate;
     }
 
     /**
@@ -254,6 +281,49 @@ public class FinMindFeed implements MarketDataFeed {
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null) return;
 
+        // ⭐ 盤中時段且查詢今日的分時K線：直接使用即時快照組合K線
+        if (isMarketOpen() &&
+            this.queryDate.equals(java.time.LocalDate.now()) &&
+            (timeframe == Timeframe.M1 || timeframe == Timeframe.M5 ||
+             timeframe == Timeframe.M15 || timeframe == Timeframe.M30 || timeframe == Timeframe.H1)) {
+
+            logger.info("{} - 盤中時段查詢今日分時K線，直接使用即時快照 API", symbol);
+
+            // 主動調用即時快照 API
+            fetchAndNotifyRealTimeData(symbol);
+
+            // 稍微等待讓快照數據被處理
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            // 從即時K線建構器獲取K線
+            List<Bar> realtimeBars = realtimeBarBuilder.buildBars(symbol, timeframe, barCount);
+
+            if (!realtimeBars.isEmpty()) {
+                logger.info("{} - 成功組合 {} 根即時K線", symbol, realtimeBars.size());
+
+                // 通知監聽器
+                for (Bar bar : realtimeBars) {
+                    generateTicksFromBar(symbol, bar.getTimestamp(),
+                            bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(),
+                            bar.getVolume(), symbolListeners);
+
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return; // ⭐ 成功組合K線後直接返回，不再調用 TaiwanStockKBar
+            } else {
+                logger.warn("{} - 即時快照尚未累積足夠數據，嘗試使用歷史數據", symbol);
+                // 繼續執行下面的歷史數據加載邏輯
+            }
+        }
+
         try {
             // 轉換商品代號（移除 .TW 或 .TWO）
             String stockId = convertToFinMindSymbol(symbol);
@@ -261,7 +331,7 @@ public class FinMindFeed implements MarketDataFeed {
             // 根據週期選擇 dataset 和參數
             String dataset;
             LocalDateTime startDate;
-            LocalDateTime endDate = LocalDateTime.now();
+            LocalDateTime endDate = this.queryDate.atTime(23, 59, 59); // 使用查詢日期
 
             if (timeframe == Timeframe.D1 || timeframe == Timeframe.W1) {
                 // 日線或週線：使用 TaiwanStockPrice（免費）
@@ -693,34 +763,38 @@ public class FinMindFeed implements MarketDataFeed {
         try {
             String stockId = convertToFinMindSymbol(symbol);
 
-            // 使用 taiwan_stock_tick_snapshot 獲取即時快照（Sponsor 專屬）
+            // ⭐ 使用 taiwan_stock_tick_snapshot 獲取即時快照（Sponsor 專屬）
+            // 規則：盤中使用 Bearer token 在 headers，參數是 data_id
             String url = API_BASE_URL + "/taiwan_stock_tick_snapshot" +
-                        "?stock_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8);
+                        "?data_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8);
 
-            if (!apiToken.isEmpty()) {
-                url += "&token=" + URLEncoder.encode(apiToken, StandardCharsets.UTF_8);
-            }
+            logger.info("{} - 請求即時快照 API: {}", symbol, url);
 
-            logger.debug("{} - 請求即時快照數據", symbol);
-
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("User-Agent", "Mozilla/5.0")
                     .timeout(java.time.Duration.ofSeconds(10))
-                    .GET()
-                    .build();
+                    .GET();
+
+            // ⭐ 使用 Bearer token（不是 URL 參數）
+            if (!apiToken.isEmpty()) {
+                requestBuilder.header("Authorization", "Bearer " + apiToken);
+            }
+
+            HttpRequest request = requestBuilder.build();
 
             HttpResponse<String> response = httpClient.send(request,
                     HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
+                logger.info("{} - API 響應: {}", symbol, response.body());
                 parseAndNotifyRealTimeSnapshot(symbol, response.body());
             } else {
                 logger.warn("{} - 獲取即時快照失敗: HTTP {}", symbol, response.statusCode());
             }
 
         } catch (Exception e) {
-            logger.debug("{} - 調用即時快照 API 異常: {}", symbol, e.getMessage());
+            logger.error("{} - 調用即時快照 API 異常: {}", symbol, e.getMessage(), e);
         }
     }
 
@@ -733,13 +807,13 @@ public class FinMindFeed implements MarketDataFeed {
 
             int status = root.path("status").asInt(-1);
             if (status != 200) {
-                logger.debug("{} - API 狀態碼: {}", symbol, status);
+                logger.warn("{} - API 狀態碼: {}", symbol, status);
                 return;
             }
 
             JsonNode dataArray = root.path("data");
             if (!dataArray.isArray() || dataArray.size() == 0) {
-                logger.debug("{} - 無即時快照數據", symbol);
+                logger.warn("{} - 無即時快照數據", symbol);
                 return;
             }
 
@@ -763,7 +837,7 @@ public class FinMindFeed implements MarketDataFeed {
             int tickType = snapshot.path("TickType").asInt(0);
 
             if (close <= 0) {
-                logger.debug("{} - 價格無效", symbol);
+                logger.warn("{} - 價格無效: close={}", symbol, close);
                 return;
             }
 
@@ -772,6 +846,9 @@ public class FinMindFeed implements MarketDataFeed {
 
             // 更新最後價格
             lastPrices.put(symbol, close);
+
+            // ⭐ 添加到即時K線建構器（使用快照的真實OHLC）
+            realtimeBarBuilder.addSnapshot(symbol, LocalDateTime.now(), open, high, low, close, volume);
 
             // 創建 Tick
             Tick tick = new Tick(symbol, LocalDateTime.now(), close, volume);
@@ -847,24 +924,14 @@ public class FinMindFeed implements MarketDataFeed {
     private void generateTicksFromBar(String symbol, LocalDateTime barTime,
                                       double open, double high, double low, double close,
                                       long volume, List<MarketDataListener> listeners) {
-        // 已禁用：不再從 K 線生成模擬 tick
-        // 改為只生成一個 tick 代表該根 K 線的收盤價
-        Tick tick = new Tick(symbol, barTime, close, volume);
-
-        SwingUtilities.invokeLater(() -> {
-            for (MarketDataListener listener : listeners) {
-                listener.onTick(tick);
-            }
-        });
-
-        /* 原模擬代碼（已禁用）：
+        // ⭐ 生成 4 個 tick 來模擬 K 線的 OHLC，以正確顯示上下影線
         double[] prices = {open, high, low, close};
 
         for (int j = 0; j < 4; j++) {
             LocalDateTime tickTime = barTime.plusSeconds(j * 15);
             long tickVolume = volume / 4;
 
-            Tick tick = new Tick(symbol, tickTime, prices[j], tickVolume);
+            final Tick tick = new Tick(symbol, tickTime, prices[j], tickVolume);
 
             SwingUtilities.invokeLater(() -> {
                 for (MarketDataListener listener : listeners) {
@@ -872,20 +939,24 @@ public class FinMindFeed implements MarketDataFeed {
                 }
             });
         }
-        */
     }
 
     /**
      * 生成備用歷史數據（已禁用 - 不再生成模擬數據）
+     * 注意：即時快照邏輯已移至 loadHistoricalDataForSymbol 開頭優先處理
      */
     private void generateFallbackHistoricalData(String symbol, Timeframe timeframe, int barCount) {
-        logger.warn("{} - 無法從 FinMind 獲取 {} 數據，且模擬功能已禁用", symbol, timeframe.getLabel());
+        // 顯示警告訊息
+        logger.warn("{} - 無法從 FinMind 獲取 {} 數據", symbol, timeframe.getLabel());
         logger.warn("{} - 請確認：", symbol);
         logger.warn("  1. API Token 是否正確");
         logger.warn("  2. 股票代碼是否正確");
         logger.warn("  3. 時間週期是否支援（分K需 Sponsor 會員）");
         logger.warn("  4. 今日是否為交易日");
-        // 不再生成模擬數據
+
+        if (isMarketOpen() && this.queryDate.equals(java.time.LocalDate.now())) {
+            logger.warn("  5. 盤中時段：請等待即時快照累積足夠數據");
+        }
     }
 
     /**
@@ -897,23 +968,25 @@ public class FinMindFeed implements MarketDataFeed {
             String stockId = convertToFinMindSymbol(symbol);
             String today = LocalDateTime.now().format(DATE_FORMATTER);
 
-            // TaiwanStockPriceTick 只能請求一天數據
+            // ⭐ TaiwanStockPriceTick 只能請求一天數據
             String url = DATA_ENDPOINT +
                         "?dataset=TaiwanStockPriceTick" +
                         "&data_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8) +
                         "&start_date=" + today;
 
-            if (!apiToken.isEmpty()) {
-                url += "&token=" + URLEncoder.encode(apiToken, StandardCharsets.UTF_8);
-            }
+            logger.info("{} - 請求逐筆成交數據: {}", symbol, url);
 
-            logger.info("{} - 請求逐筆成交數據", symbol);
-
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("User-Agent", "Mozilla/5.0")
-                    .GET()
-                    .build();
+                    .GET();
+
+            // ⭐ 使用 Bearer token（不是 URL 參數）
+            if (!apiToken.isEmpty()) {
+                requestBuilder.header("Authorization", "Bearer " + apiToken);
+            }
+
+            HttpRequest request = requestBuilder.build();
 
             HttpResponse<String> response = httpClient.send(request,
                     HttpResponse.BodyHandlers.ofString());
@@ -1046,27 +1119,29 @@ public class FinMindFeed implements MarketDataFeed {
         try {
             String stockId = convertToFinMindSymbol(symbol);
 
-            // 獲取最近 7 天的新聞
-            LocalDateTime endDate = LocalDateTime.now();
-            LocalDateTime startDate = endDate.minusDays(7);
+            // ⭐ 獲取最近 7 天的新聞
+            // 注意：TaiwanStockNews 不接受 end_date 參數（API 限制）
+            LocalDateTime startDate = LocalDateTime.now().minusDays(7);
 
             String url = DATA_ENDPOINT +
                         "?dataset=TaiwanStockNews" +
                         "&data_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8) +
-                        "&start_date=" + startDate.format(DATE_FORMATTER) +
-                        "&end_date=" + endDate.format(DATE_FORMATTER);
+                        "&start_date=" + startDate.format(DATE_FORMATTER);
+            // ⭐ 不能加 end_date
 
-            if (!apiToken.isEmpty()) {
-                url += "&token=" + URLEncoder.encode(apiToken, StandardCharsets.UTF_8);
-            }
+            logger.info("{} - 請求市場消息: {}", symbol, url);
 
-            logger.info("{} - 請求市場消息", symbol);
-
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("User-Agent", "Mozilla/5.0")
-                    .GET()
-                    .build();
+                    .GET();
+
+            // ⭐ 使用 Bearer token（不是 URL 參數）
+            if (!apiToken.isEmpty()) {
+                requestBuilder.header("Authorization", "Bearer " + apiToken);
+            }
+
+            HttpRequest request = requestBuilder.build();
 
             HttpResponse<String> response = httpClient.send(request,
                     HttpResponse.BodyHandlers.ofString());

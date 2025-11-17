@@ -24,7 +24,7 @@ public class MainFrameAdvanced extends JFrame {
     private TimeSalesDock timeSalesDock;
     private NewsDock newsDock;
     
-    private String currentSymbol = "AAPL";
+    private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
     private double lastPrice = 0;
     private int frameCount = 0;

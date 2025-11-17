@@ -126,11 +126,11 @@ public class BacktestConfigDialog extends JDialog {
 
         // 策略選擇
         strategyComboBox = new JComboBox<>();
-        strategyComboBox.addItem(new StrategyItem("MultiTimeframeDecisionStrategy", "⭐ 多週期決策策略 (新)"));
-        strategyComboBox.addItem(new StrategyItem("DayTradingStrategy", "🔸 當沖交易策略"));
-        strategyComboBox.addItem(new StrategyItem("SwingTradingStrategy", "🔹 短線交易策略"));
-        strategyComboBox.addItem(new StrategyItem("PositionTradingStrategy", "🔺 波段交易策略"));
-        strategyComboBox.addItem(new StrategyItem("MultiStyleStrategyManager", "🎯 多風格策略組合"));
+        strategyComboBox.addItem(new StrategyItem("MultiTimeframeDecisionStrategy", "多週期決策策略 (新)"));
+        strategyComboBox.addItem(new StrategyItem("DayTradingStrategy", "當沖交易策略"));
+        strategyComboBox.addItem(new StrategyItem("SwingTradingStrategy", "短線交易策略"));
+        strategyComboBox.addItem(new StrategyItem("PositionTradingStrategy", "波段交易策略"));
+        strategyComboBox.addItem(new StrategyItem("MultiStyleStrategyManager", "多風格策略組合"));
         strategyComboBox.addItem(new StrategyItem("SimpleMovingAverageStrategy", "雙移動平均線策略"));
         strategyComboBox.addItem(new StrategyItem("RSIStrategy", "RSI 策略"));
         strategyComboBox.addItem(new StrategyItem("MACDStrategy", "MACD 策略"));

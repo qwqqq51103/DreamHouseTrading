@@ -34,9 +34,9 @@ public class WatchlistPanel extends JPanel {
         } catch (Exception e) {
             System.err.println("Failed to initialize cache: " + e.getMessage());
             // 初始化範例資料
-            items.add(new WatchlistItem("AAPL", 180.50, 2.5, 1500000));
-            items.add(new WatchlistItem("TSLA", 245.30, -1.2, 2300000));
-            items.add(new WatchlistItem("MSFT", 380.20, 0.8, 980000));
+//            items.add(new WatchlistItem("AAPL", 180.50, 2.5, 1500000));
+//            items.add(new WatchlistItem("TSLA", 245.30, -1.2, 2300000));
+//            items.add(new WatchlistItem("MSFT", 380.20, 0.8, 980000));
         }
         
         tableModel = new EventTableModel<>(items, new WatchlistTableFormat());

@@ -99,6 +99,12 @@ public class ChartDock extends JPanel implements MarketDataListener {
     // 其他 Dock 引用
     private TimeSalesDock timeSalesDock;
     private NewsDock newsDock;
+    private WatchlistPanel watchlistPanel;
+
+    // 當前商品和價格追蹤
+    private String currentSymbol = "";
+    private double dayOpenPrice = 0.0;  // 當日開盤價（用於計算漲跌%）
+    private long totalVolume = 0;       // 累積成交量
 
     private Timeframe currentTimeframe = Timeframe.M1;
     private String currentOverlayIndicator = "SMA";  // SMA/EMA/None
@@ -503,7 +509,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         SwingUtilities.invokeLater(() -> {
             LocalDateTime now = tick.getTimestamp();
             LocalDateTime normalizedNow = now.withSecond(0).withNano(0);
-            
+
             if (lastBarTime == null) {
                 // 第一根 K 線
                 lastBarTime = normalizedNow;
@@ -512,12 +518,19 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastLow = tick.getPrice();
                 lastClose = tick.getPrice();
                 lastVolume = tick.getVolume(); // 使用 tick 的成交量
+
+                // ⭐ 記錄當日開盤價（用於計算漲跌%）
+                if (dayOpenPrice == 0.0) {
+                    dayOpenPrice = tick.getPrice();
+                }
+                totalVolume = tick.getVolume();
+
                 addNewBar();
             } else if (normalizedNow.isAfter(lastBarTime)) {
                 // 時間到了下一分鐘，開始新的 K 線
                 // 開始新 K 線之前，先更新一次當前 K 線（確保最後的數據被保存）
                 updateLastBar();
-                
+
                 // 開始新 K 線
                 lastBarTime = normalizedNow;
                 lastOpen = lastClose; // 新K線開盤價 = 上一根的收盤價
@@ -525,7 +538,10 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastLow = tick.getPrice();
                 lastClose = tick.getPrice();
                 lastVolume = tick.getVolume(); // 使用 tick 的成交量
-                
+
+                // ⭐ 累積成交量
+                totalVolume += tick.getVolume();
+
                 // 添加新 K 線
                 addNewBar();
             } else {
@@ -534,8 +550,15 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastHigh = Math.max(lastHigh, tick.getPrice());
                 lastLow = Math.min(lastLow, tick.getPrice());
                 lastVolume += tick.getVolume(); // 累積 tick 的成交量
+
+                // ⭐ 累積成交量
+                totalVolume += tick.getVolume();
+
                 updateLastBar();
             }
+
+            // ⭐ 更新觀察清單的即時數據
+            updateWatchlist();
         });
     }
     
@@ -582,7 +605,41 @@ public class ChartDock extends JPanel implements MarketDataListener {
     public void setNewsDock(NewsDock newsDock) {
         this.newsDock = newsDock;
     }
-    
+
+    /**
+     * 設置觀察清單面板引用
+     */
+    public void setWatchlistPanel(WatchlistPanel watchlistPanel) {
+        this.watchlistPanel = watchlistPanel;
+    }
+
+    /**
+     * 設置當前商品代號（用於觀察清單更新）
+     */
+    public void setCurrentSymbol(String symbol) {
+        this.currentSymbol = symbol;
+        this.dayOpenPrice = 0.0;  // 重置開盤價
+        this.totalVolume = 0;      // 重置成交量
+    }
+
+    /**
+     * 更新觀察清單的即時數據
+     */
+    private void updateWatchlist() {
+        if (watchlistPanel == null || currentSymbol == null || currentSymbol.isEmpty()) {
+            return;
+        }
+
+        // 計算漲跌百分比
+        double changePct = 0.0;
+        if (dayOpenPrice > 0) {
+            changePct = ((lastClose - dayOpenPrice) / dayOpenPrice) * 100.0;
+        }
+
+        // 更新觀察清單
+        watchlistPanel.updateItem(currentSymbol, lastClose, changePct, totalVolume);
+    }
+
     /**
      * 根據 LocalDateTime 創建適當的時間週期
      */

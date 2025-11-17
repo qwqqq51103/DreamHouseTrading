@@ -1,5 +1,8 @@
 package com.dreamhouse.trading.core;
 
+import com.dreamhouse.trading.core.model.Bar;
+import java.util.List;
+
 public interface MarketDataFeed {
     void subscribe(String symbol, MarketDataListener listener);
     void unsubscribe(String symbol, MarketDataListener listener);
@@ -38,6 +41,20 @@ public interface MarketDataFeed {
     default void loadHistoricalData(String symbol, Timeframe timeframe, int barCount) {
         // 預設調用不帶K線數量的方法
         loadHistoricalData(symbol, timeframe);
+    }
+
+    /**
+     * 同步獲取歷史K線數據（用於監控服務）
+     * 注意：此方法是同步的，會阻塞直到數據返回
+     *
+     * @param symbol 商品代號
+     * @param timeframe 時間週期
+     * @param barCount 要獲取的K線數量
+     * @return K線列表，如果獲取失敗返回空列表
+     */
+    default List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        // 預設返回空列表，子類需要實現
+        return new java.util.ArrayList<>();
     }
 }
 

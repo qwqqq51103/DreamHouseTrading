@@ -165,6 +165,7 @@ public class MainFrameWithDocking extends JFrame {
         // 設置 ChartDock 的引用，讓它可以轉發數據
         chartDock.setTimeSalesDock(timeSalesDock);
         chartDock.setNewsDock(newsDock);
+        chartDock.setWatchlistPanel(watchlistPanel);
 
         // 市場分析面板
         marketAnalysisDock = new MarketAnalysisDock();
@@ -351,7 +352,27 @@ public class MainFrameWithDocking extends JFrame {
         });
         toolBar.add(barCountSpinner);
         toolBar.addSeparator();
-        
+
+        // 日期選擇
+        toolBar.add(new JLabel(" 日期 "));
+
+        JButton todayBtn = new JButton("今日");
+        todayBtn.setToolTipText("切換到今日數據");
+        todayBtn.addActionListener(e -> changeDateQuery(java.time.LocalDate.now()));
+        toolBar.add(todayBtn);
+
+        JButton yesterdayBtn = new JButton("昨日");
+        yesterdayBtn.setToolTipText("切換到昨日數據");
+        yesterdayBtn.addActionListener(e -> changeDateQuery(java.time.LocalDate.now().minusDays(1)));
+        toolBar.add(yesterdayBtn);
+
+        JButton customDateBtn = new JButton("自訂日期...");
+        customDateBtn.setToolTipText("選擇特定日期");
+        customDateBtn.addActionListener(e -> showDatePickerDialog());
+        toolBar.add(customDateBtn);
+
+        toolBar.addSeparator();
+
         // 指標選擇
         toolBar.add(new JLabel(" 指標 "));
         String[] indicators = {"無", "SMA", "EMA", "RSI", "MACD", "BOLL", "KD", "ADX", "OBV", "CCI", "WR"};
@@ -435,6 +456,12 @@ public class MainFrameWithDocking extends JFrame {
             public void onTrade(com.dreamhouse.trading.core.model.Trade trade) {
                 timeSalesDock.addTrade(trade);
             }
+
+            @Override
+            public void onNews(com.dreamhouse.trading.core.model.NewsItem news) {
+                // ⭐ 轉發新聞到 ChartDock，由它轉發到 NewsDock
+                chartDock.onNews(news);
+            }
         };
 
         // 訂閱當前商品
@@ -455,6 +482,7 @@ public class MainFrameWithDocking extends JFrame {
 
         // 更新當前商品
         currentSymbol = symbol;
+        chartDock.setCurrentSymbol(symbol);  // ⭐ 設置圖表的當前商品（用於觀察清單更新）
         statusBar.setSymbol(symbol);
         statusBar.setText("正在載入 " + symbol + " " + currentTimeframe.getLabel() + " 歷史數據...");
 
@@ -540,6 +568,105 @@ public class MainFrameWithDocking extends JFrame {
                 System.err.println("[MainFrame] 歷史數據重新載入被中斷");
             }
         }, "CustomBarCountLoader").start();
+    }
+
+    /**
+     * 變更查詢日期
+     */
+    private void changeDateQuery(java.time.LocalDate date) {
+        System.out.println("[MainFrame] 切換查詢日期: " + date);
+
+        // 如果當前數據源是 FinMindFeed，設置查詢日期
+        if (dataFeed instanceof com.dreamhouse.trading.core.FinMindFeed) {
+            ((com.dreamhouse.trading.core.FinMindFeed) dataFeed).setQueryDate(date);
+            statusBar.setText("已切換至 " + date + " 的數據");
+        } else {
+            JOptionPane.showMessageDialog(this,
+                "日期查詢功能僅支援 FinMind 數據源\n請先切換至 FinMind 數據源",
+                "提示",
+                JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+
+    /**
+     * 顯示日期選擇對話框
+     */
+    private void showDatePickerDialog() {
+        // 創建簡單的日期選擇對話框
+        JDialog dialog = new JDialog(this, "選擇日期", true);
+        dialog.setLayout(new java.awt.BorderLayout());
+
+        JPanel panel = new JPanel(new java.awt.GridBagLayout());
+        java.awt.GridBagConstraints gbc = new java.awt.GridBagConstraints();
+        gbc.insets = new java.awt.Insets(5, 5, 5, 5);
+        gbc.fill = java.awt.GridBagConstraints.HORIZONTAL;
+
+        // 年
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        panel.add(new JLabel("年："), gbc);
+
+        gbc.gridx = 1;
+        SpinnerNumberModel yearModel = new SpinnerNumberModel(
+            java.time.LocalDate.now().getYear(), 2000, 2100, 1);
+        JSpinner yearSpinner = new JSpinner(yearModel);
+        panel.add(yearSpinner, gbc);
+
+        // 月
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        panel.add(new JLabel("月："), gbc);
+
+        gbc.gridx = 1;
+        SpinnerNumberModel monthModel = new SpinnerNumberModel(
+            java.time.LocalDate.now().getMonthValue(), 1, 12, 1);
+        JSpinner monthSpinner = new JSpinner(monthModel);
+        panel.add(monthSpinner, gbc);
+
+        // 日
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        panel.add(new JLabel("日："), gbc);
+
+        gbc.gridx = 1;
+        SpinnerNumberModel dayModel = new SpinnerNumberModel(
+            java.time.LocalDate.now().getDayOfMonth(), 1, 31, 1);
+        JSpinner daySpinner = new JSpinner(dayModel);
+        panel.add(daySpinner, gbc);
+
+        dialog.add(panel, java.awt.BorderLayout.CENTER);
+
+        // 按鈕
+        JPanel buttonPanel = new JPanel();
+        JButton okButton = new JButton("確定");
+        JButton cancelButton = new JButton("取消");
+
+        okButton.addActionListener(e -> {
+            int year = (Integer) yearSpinner.getValue();
+            int month = (Integer) monthSpinner.getValue();
+            int day = (Integer) daySpinner.getValue();
+
+            try {
+                java.time.LocalDate selectedDate = java.time.LocalDate.of(year, month, day);
+                changeDateQuery(selectedDate);
+                dialog.dispose();
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(dialog,
+                    "無效的日期！",
+                    "錯誤",
+                    JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        cancelButton.addActionListener(e -> dialog.dispose());
+
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+        dialog.add(buttonPanel, java.awt.BorderLayout.SOUTH);
+
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 
     private void changeIndicator(String indicator) {
