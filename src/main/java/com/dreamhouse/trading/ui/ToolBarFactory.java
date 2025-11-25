@@ -16,6 +16,7 @@ public class ToolBarFactory {
         public Consumer<Timeframe> onTimeframeChange;
         public Consumer<String> onIndicatorChange;
         public Consumer<LocalDate> onDateChange;  // 新增：日期變更回調
+        public Runnable onLoadHistoricalData;     // 新增：載入歷史數據回調
         public Runnable onZoomIn;
         public Runnable onZoomOut;
         public Runnable onZoomReset;
@@ -99,8 +100,18 @@ public class ToolBarFactory {
         });
         toolBar.add(customDateBtn);
 
+        // 載入歷史數據按鈕
+        JButton loadHistoryBtn = new JButton("📊 " + I18n.get("toolbar.loadhistory"));
+        loadHistoryBtn.setToolTipText(I18n.get("toolbar.loadhistory.tooltip"));
+        loadHistoryBtn.addActionListener(e -> {
+            if (callbacks.onLoadHistoricalData != null) {
+                callbacks.onLoadHistoricalData.run();
+            }
+        });
+        toolBar.add(loadHistoryBtn);
+
         toolBar.addSeparator();
-        
+
         // 指標選擇
         toolBar.add(new JLabel(" " + I18n.get("toolbar.indicator") + " "));
         String[] indicators = {

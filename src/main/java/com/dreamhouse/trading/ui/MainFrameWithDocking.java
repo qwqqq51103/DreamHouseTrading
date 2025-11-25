@@ -371,6 +371,12 @@ public class MainFrameWithDocking extends JFrame {
         customDateBtn.addActionListener(e -> showDatePickerDialog());
         toolBar.add(customDateBtn);
 
+        // 載入歷史數據按鈕
+        JButton loadHistoryBtn = new JButton("📊 載入歷史數據");
+        loadHistoryBtn.setToolTipText("從資料庫載入今日開盤後的所有數據");
+        loadHistoryBtn.addActionListener(e -> loadHistoricalDataFromDatabase());
+        toolBar.add(loadHistoryBtn);
+
         toolBar.addSeparator();
 
         // 指標選擇
@@ -667,6 +673,91 @@ public class MainFrameWithDocking extends JFrame {
         dialog.pack();
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
+    }
+
+    /**
+     * 從資料庫載入歷史數據
+     * 用於補充開盤後的缺失數據
+     */
+    private void loadHistoricalDataFromDatabase() {
+        System.out.println("[MainFrame] 手動觸發載入資料庫歷史數據");
+
+        // 檢查當前數據源
+        if (!(dataFeed instanceof com.dreamhouse.trading.core.FinMindFeed)) {
+            JOptionPane.showMessageDialog(this,
+                "歷史數據載入功能僅支援 FinMind 數據源\n請先切換至 FinMind 數據源",
+                "提示",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        // 顯示載入中提示
+        statusBar.setText("正在從資料庫載入今日開盤至今的數據...");
+
+        // 在背景執行載入任務
+        SwingWorker<Void, Void> worker = new SwingWorker<>() {
+            private int loadedCount = 0;
+            private String errorMessage = null;
+
+            @Override
+            protected Void doInBackground() throws Exception {
+                try {
+                    // 創建 MarketDataLoader
+                    com.dreamhouse.trading.core.MarketDataLoader loader =
+                        new com.dreamhouse.trading.core.MarketDataLoader();
+                    loader.initialize();
+
+                    // 載入當前商品的歷史數據
+                    java.util.List<com.dreamhouse.trading.core.model.Tick> ticks =
+                        loader.loadTodayMarketOpenToNow(currentSymbol);
+
+                    loadedCount = ticks.size();
+
+                    if (loadedCount > 0) {
+                        // 通知所有監聽器
+                        for (com.dreamhouse.trading.core.model.Tick tick : ticks) {
+                            chartDock.onTick(tick);
+                        }
+                    }
+
+                    loader.close();
+                } catch (Exception e) {
+                    errorMessage = e.getMessage();
+                    e.printStackTrace();
+                }
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                if (errorMessage != null) {
+                    statusBar.setText("載入失敗：" + errorMessage);
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                        "從資料庫載入數據失敗！\n" +
+                        "錯誤訊息：" + errorMessage + "\n\n" +
+                        "請確認：\n" +
+                        "1. MarketDataCollector 資料庫正在運行\n" +
+                        "2. 資料庫中有今日 " + currentSymbol + " 的數據",
+                        "載入失敗",
+                        JOptionPane.ERROR_MESSAGE);
+                } else if (loadedCount == 0) {
+                    statusBar.setText("資料庫中沒有今日數據");
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                        "資料庫中沒有找到今日 " + currentSymbol + " 的數據！\n\n" +
+                        "請確認 MarketDataCollector 已經運行並收集了數據。",
+                        "無數據",
+                        JOptionPane.WARNING_MESSAGE);
+                } else {
+                    statusBar.setText("已從資料庫載入 " + loadedCount + " 筆數據");
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                        "成功從資料庫載入 " + loadedCount + " 筆歷史數據！",
+                        "載入成功",
+                        JOptionPane.INFORMATION_MESSAGE);
+                }
+            }
+        };
+
+        worker.execute();
     }
 
     private void changeIndicator(String indicator) {

@@ -41,6 +41,7 @@ public class FinMindFeed implements MarketDataFeed {
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
     private final Random random = new Random();
     private final RealtimeBarBuilder realtimeBarBuilder = new RealtimeBarBuilder();
+    private MarketDataLoader marketDataLoader; // 歷史數據載入器
 
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> updateTask;
@@ -58,14 +59,56 @@ public class FinMindFeed implements MarketDataFeed {
         this.objectMapper = new ObjectMapper();
         this.executor = Executors.newScheduledThreadPool(2);
 
+        // 初始化 MarketDataLoader（如果資料庫可用）
+        initializeMarketDataLoader();
+
         logger.info("FinMindFeed 初始化完成 (API Token: {})",
                    apiToken.isEmpty() ? "未設定" : "***");
+
+        // 測試 Token 有效性（非同步執行，不阻塞啟動）
+        if (!apiToken.isEmpty()) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(2000); // 延遲2秒後測試
+                    testToken();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "FinMind-TokenTest").start();
+        }
+    }
+
+    /**
+     * 初始化歷史數據載入器
+     */
+    private void initializeMarketDataLoader() {
+        try {
+            marketDataLoader = new MarketDataLoader();
+            marketDataLoader.initialize();
+            logger.info("MarketDataLoader 初始化成功 - 可從資料庫載入歷史數據");
+        } catch (Exception e) {
+            logger.warn("MarketDataLoader 初始化失敗 - 將僅使用 FinMind API: {}", e.getMessage());
+            marketDataLoader = null;
+        }
     }
 
     @Override
     public void subscribe(String symbol, MarketDataListener listener) {
         listeners.computeIfAbsent(symbol, k -> new CopyOnWriteArrayList<>()).add(listener);
         logger.info("訂閱商品: {}", symbol);
+
+        // ⭐ 訂閱新商品時，嘗試從資料庫載入今日歷史數據
+        if (connected && marketDataLoader != null && marketDataLoader.isInitialized()) {
+            // 在背景執行緒中載入，避免阻塞 UI
+            new Thread(() -> {
+                try {
+                    logger.info("🔄 訂閱 {} 時，嘗試從資料庫載入歷史數據...", symbol);
+                    loadHistoricalDataFromDatabase(symbol);
+                } catch (Exception e) {
+                    logger.warn("從資料庫載入 {} 數據失敗: {}", symbol, e.getMessage());
+                }
+            }, "FinMind-Subscribe-" + symbol).start();
+        }
 
         // 如果數據源已啟動且即時輪詢尚未運行，檢查是否需要啟動
         if (connected && updateTask == null) {
@@ -78,7 +121,7 @@ public class FinMindFeed implements MarketDataFeed {
                     TimeUnit.MILLISECONDS
                 );
             } else {
-                logger.info("當前為非交易時間，即時數據輪詢已禁用 - 僅顯示歷史數據");
+                logger.info("當前為非交易時間,即時數據輪詢已禁用 - 僅顯示歷史數據");
             }
         }
     }
@@ -160,6 +203,10 @@ public class FinMindFeed implements MarketDataFeed {
         if (executor != null) {
             executor.shutdown();
         }
+        // 關閉 MarketDataLoader
+        if (marketDataLoader != null) {
+            marketDataLoader.close();
+        }
         logger.info("FinMind 數據源已停止");
     }
 
@@ -213,6 +260,15 @@ public class FinMindFeed implements MarketDataFeed {
      */
     private void loadHistoricalData() {
         for (String symbol : listeners.keySet()) {
+            // ⭐ 優先從資料庫載入今日開盤到現在的數據
+            if (marketDataLoader != null && marketDataLoader.isInitialized() && isMarketOpen()) {
+                try {
+                    loadHistoricalDataFromDatabase(symbol);
+                } catch (Exception e) {
+                    logger.warn("從資料庫載入 {} 數據失敗，改用 FinMind API: {}", symbol, e.getMessage());
+                }
+            }
+
             // 1. 加載歷史 K 線
             loadHistoricalDataForSymbol(symbol, Timeframe.M1, 50);
 
@@ -231,6 +287,83 @@ public class FinMindFeed implements MarketDataFeed {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+    }
+
+    /**
+     * 從資料庫載入歷史數據（補充開盤後的缺失數據）
+     */
+    private void loadHistoricalDataFromDatabase(String symbol) {
+        logger.info("========================================");
+        logger.info("嘗試從資料庫載入 {} 的歷史數據", symbol);
+        logger.info("========================================");
+
+        try {
+            // 先用原始 symbol 查詢
+            List<Tick> ticks = marketDataLoader.loadTodayMarketOpenToNow(symbol);
+
+            // 如果沒有數據且 symbol 不包含 ".TW"，嘗試添加 ".TW" 再查詢一次
+            if (ticks.isEmpty() && !symbol.contains(".TW") && !symbol.contains(".")) {
+                String symbolWithTW = symbol + ".TW";
+                logger.info("🔄 未找到 {} 的數據，嘗試查詢 {} ...", symbol, symbolWithTW);
+                ticks = marketDataLoader.loadTodayMarketOpenToNow(symbolWithTW);
+
+                if (!ticks.isEmpty()) {
+                    logger.info("✓ 使用 {} 格式找到數據", symbolWithTW);
+                    // 更新 symbol 為實際找到數據的格式
+                    symbol = symbolWithTW;
+                }
+            }
+
+            if (ticks.isEmpty()) {
+                logger.warn("⚠ 資料庫中沒有 {} 的今日數據", symbol);
+                logger.warn("請檢查：");
+                logger.warn("  1. MarketDataCollector 是否正在運行");
+                logger.warn("  2. 資料庫表 ticks 中是否有 {} 的記錄", symbol);
+                logger.warn("  3. 使用 SQL 確認：SELECT COUNT(*) FROM ticks WHERE symbol='{}' AND DATE(ts) = CURDATE();", symbol);
+                return;
+            }
+
+            logger.info("✓ 從資料庫成功載入了 {} 筆tick數據", ticks.size());
+
+            if (ticks.size() > 0) {
+                Tick firstTick = ticks.get(0);
+                Tick lastTick = ticks.get(ticks.size() - 1);
+                logger.info("  時間範圍: {} ~ {}", firstTick.getTimestamp(), lastTick.getTimestamp());
+                logger.info("  價格範圍: {} ~ {}",
+                    String.format("%.2f", firstTick.getPrice()),
+                    String.format("%.2f", lastTick.getPrice()));
+            }
+
+            // 通知所有監聽器
+            List<MarketDataListener> symbolListeners = listeners.get(symbol);
+            if (symbolListeners != null) {
+                int notifiedCount = 0;
+                for (Tick tick : ticks) {
+                    for (MarketDataListener listener : symbolListeners) {
+                        listener.onTick(tick);
+                        notifiedCount++;
+                    }
+                }
+                logger.info("✓ 已通知 {} 個監聽器，共 {} 次", symbolListeners.size(), notifiedCount);
+            } else {
+                logger.warn("⚠ 沒有監聽器訂閱 {}", symbol);
+            }
+
+            // 更新最後價格
+            if (!ticks.isEmpty()) {
+                Tick lastTick = ticks.get(ticks.size() - 1);
+                lastPrices.put(symbol, lastTick.getPrice());
+                logger.info("✓ 更新最後價格: {}", lastTick.getPrice());
+            }
+
+            logger.info("========================================");
+            logger.info("資料庫數據載入完成");
+            logger.info("========================================");
+
+        } catch (Exception e) {
+            logger.error("✗ 從資料庫載入數據時發生錯誤", e);
+            logger.error("錯誤訊息: {}", e.getMessage());
         }
     }
 
@@ -359,8 +492,9 @@ public class FinMindFeed implements MarketDataFeed {
                 url += "&end_date=" + endDate.format(DATE_FORMATTER);
             }
 
+            // ⭐ Token 不需要 URL 編碼（直接附加）
             if (!apiToken.isEmpty()) {
-                url += "&token=" + URLEncoder.encode(apiToken, StandardCharsets.UTF_8);
+                url += "&token=" + apiToken;
             }
 
             logger.info("請求 FinMind API ({}): {}", dataset, url.replace(apiToken, "***"));
@@ -382,6 +516,40 @@ public class FinMindFeed implements MarketDataFeed {
                 }
             } else {
                 logger.warn("FinMind API HTTP 錯誤 {}: {}", response.statusCode(), response.body());
+                logger.warn("{} - 無法從 FinMind 獲取 {} 數據", symbol, timeframe.getLabel());
+
+                // 診斷建議
+                if (response.statusCode() == 400) {
+                    try {
+                        JsonNode errorResponse = objectMapper.readTree(response.body());
+                        String errorMsg = errorResponse.path("msg").asText("未知錯誤");
+
+                        if (errorMsg.contains("Token is illegal") || errorMsg.contains("token")) {
+                            logger.warn("{} - Token 認證失敗！", symbol);
+                            logger.warn("  ▶ 請檢查 Token 是否正確：{}", apiToken.isEmpty() ? "未設定" : apiToken.substring(0, Math.min(20, apiToken.length())) + "...");
+                            logger.warn("  ▶ 請到 https://finmindtrade.com/ 重新取得 Token");
+                            logger.warn("  ▶ 確認 Token 是否已過期或被撤銷");
+                        } else if (dataset.equals("TaiwanStockKBar")) {
+                            logger.warn("{} - TaiwanStockKBar API 錯誤", symbol);
+                            logger.warn("  ▶ 此 API 需要 Sponsor 會員權限");
+                            logger.warn("  ▶ 請確認您的 FinMind 帳號是否為 Sponsor 會員");
+                            logger.warn("  ▶ 或改用 TaiwanStockPrice（免費但僅日線數據）");
+                        }
+                    } catch (Exception e) {
+                        logger.debug("無法解析錯誤響應", e);
+                    }
+                }
+
+                logger.warn("{} - 請確認：", symbol);
+                logger.warn("  1. API Token 是否正確");
+                logger.warn("  2. 股票代碼是否正確");
+                logger.warn("  3. 時間週期是否支援（分K需 Sponsor 會員）");
+                logger.warn("  4. 今日是否為交易日");
+
+                if (isMarketOpen()) {
+                    logger.warn("  5. 盤中時段：請等待即時快照數據累積");
+                }
+
                 generateFallbackHistoricalData(symbol, timeframe, barCount);
             }
 
@@ -915,6 +1083,60 @@ public class FinMindFeed implements MarketDataFeed {
      */
     private String convertToFinMindSymbol(String symbol) {
         return symbol.replace(".TW", "").replace(".TWO", "");
+    }
+
+    /**
+     * 測試 FinMind Token 是否有效
+     * 使用一個簡單的 API 調用來驗證 Token
+     */
+    public boolean testToken() {
+        if (apiToken.isEmpty()) {
+            logger.warn("未設定 API Token");
+            return false;
+        }
+
+        try {
+            // 使用 TaiwanStockPrice 測試（免費API，僅測試 Token 有效性）
+            String testUrl = DATA_ENDPOINT +
+                    "?dataset=TaiwanStockPrice" +
+                    "&data_id=2330" +
+                    "&start_date=2025-11-01" +
+                    "&end_date=2025-11-01" +
+                    "&token=" + apiToken;
+
+            logger.info("測試 Token 有效性...");
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(testUrl))
+                    .header("User-Agent", "Mozilla/5.0")
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                JsonNode root = objectMapper.readTree(response.body());
+                int status = root.path("status").asInt(-1);
+
+                if (status == 200) {
+                    logger.info("✓ Token 驗證成功！");
+                    return true;
+                } else {
+                    String msg = root.path("msg").asText("未知錯誤");
+                    logger.warn("✗ Token 驗證失敗: {}", msg);
+                    return false;
+                }
+            } else {
+                logger.warn("✗ HTTP 錯誤 {}: {}", response.statusCode(), response.body());
+                return false;
+            }
+
+        } catch (Exception e) {
+            logger.error("測試 Token 時發生錯誤: {}", e.getMessage(), e);
+            return false;
+        }
     }
 
     /**
