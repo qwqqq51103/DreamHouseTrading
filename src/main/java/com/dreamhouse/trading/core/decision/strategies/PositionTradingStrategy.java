@@ -80,10 +80,12 @@ public class PositionTradingStrategy extends MultiTimeframeDecisionStrategy {
         rsi.setWeight(1.0);
         addStrategy(rsi);
 
-        // TODO: 可添加 MA 策略（50/200 經典系統）
+        // 擴展建議: 添加 MA 移動平均策略（50/200 經典系統）
+        // 需要先實現 SignalMAStrategy 類 (目前專案中尚未實現)
+        // 實現後可這樣添加:
         // SignalMAStrategy ma = new SignalMAStrategy();
-        // ma.setFastPeriod(50);
-        // ma.setSlowPeriod(200);
+        // ma.setFastPeriod(50);    // 50日均線
+        // ma.setSlowPeriod(200);   // 200日均線
         // ma.setWeight(0.7);
         // addStrategy(ma);
 

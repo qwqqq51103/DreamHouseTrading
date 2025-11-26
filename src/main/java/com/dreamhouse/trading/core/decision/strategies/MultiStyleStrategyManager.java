@@ -166,13 +166,19 @@ public class MultiStyleStrategyManager extends BaseStrategy {
             double totalCapital = getPortfolio().getInitialCash();
             double allocatedCapital = totalCapital * allocation.getAllocationPercent();
 
-            // TODO: 實際應該限制策略的資金使用
-            // 目前簡化處理，直接調用策略的 onBar
+            // 注意: 目前簡化處理，未限制策略的資金使用
+            // 完整實現建議:
+            // 1. 在 MultiTimeframeDecisionStrategy 添加 setMaxCapital() 方法
+            // 2. 在下單前檢查是否超過資金上限
+            // 3. 超過上限時拒絕下單
             strategy.onBar(barIndex, bar);
 
             // 更新已使用資金（簡化計算）
-            // 注意：hasPosition 是 protected 方法，無法直接訪問
-            // TODO: 未來可以通過策略接口提供持倉查詢方法
+            // 注意: hasPosition 是 protected 方法，無法直接訪問
+            // 完整實現建議:
+            // 1. 在 Strategy 介面添加 hasPosition() 公開方法
+            // 2. 在 Strategy 介面添加 getPositionValue() 方法
+            // 3. 據此計算已使用資金並更新 allocation
             allocation.incrementTradeCount();
         }
 
@@ -190,8 +196,18 @@ public class MultiStyleStrategyManager extends BaseStrategy {
             return;
         }
 
-        // TODO: 根據策略的實際表現動態調整資金分配
-        // 例如：表現好的策略增加分配，表現差的減少分配
+        // 完整實現建議: 根據策略的實際表現動態調整資金分配
+        // 步驟:
+        // 1. 計算每個策略的 Sharpe Ratio 或勝率
+        // 2. 表現好的策略增加分配 (如 +5%)
+        // 3. 表現差的策略減少分配 (如 -5%)
+        // 4. 確保總分配比例 = 100%
+        // 範例:
+        // for (StrategyAllocation alloc : allocations.values()) {
+        //     double sharpe = calculateSharpeRatio(alloc);
+        //     if (sharpe > 1.5) alloc.adjustAllocation(0.05);
+        //     else if (sharpe < 0.5) alloc.adjustAllocation(-0.05);
+        // }
 
         log("[自動平衡] 重新評估策略資金分配");
     }

@@ -80,10 +80,13 @@ public class SwingTradingStrategy extends MultiTimeframeDecisionStrategy {
         rsi.setWeight(1.0);
         addStrategy(rsi);
 
-        // TODO: 可添加 MACD 策略
+        // 擴展建議: 添加 MACD 策略以增強交易信號
+        // 需要先實現 SignalMACDStrategy 類 (目前專案中尚未實現)
+        // 實現後可這樣添加:
         // SignalMACDStrategy macd = new SignalMACDStrategy();
-        // macd.setFastPeriod(12);
-        // macd.setSlowPeriod(26);
+        // macd.setFastPeriod(12);   // 快線週期
+        // macd.setSlowPeriod(26);   // 慢線週期
+        // macd.setSignalPeriod(9);  // 信號線週期
         // macd.setWeight(0.6);
         // addStrategy(macd);
 

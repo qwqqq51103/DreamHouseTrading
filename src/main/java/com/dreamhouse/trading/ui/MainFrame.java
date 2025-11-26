@@ -22,6 +22,7 @@ public class MainFrame extends JFrame {
     private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
     private double lastPrice = 0;
+    private double previousPrice = 0;
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
     
@@ -137,8 +138,16 @@ public class MainFrame extends JFrame {
         dataFeed.subscribe(currentSymbol, new MarketDataListener() {
             @Override
             public void onTick(Tick tick) {
+                previousPrice = lastPrice;
                 lastPrice = tick.getPrice();
-                statusBar.setLastPrice(lastPrice, 0); // TODO: 計算變化百分比
+
+                // 計算價格變化百分比
+                double changePercent = 0;
+                if (previousPrice > 0) {
+                    changePercent = ((lastPrice - previousPrice) / previousPrice) * 100.0;
+                }
+
+                statusBar.setLastPrice(lastPrice, changePercent);
                 frameCount++;
             }
             
@@ -164,12 +173,18 @@ public class MainFrame extends JFrame {
     private void changeTimeframe(Timeframe tf) {
         currentTimeframe = tf;
         statusBar.setTimeframe(tf.getLabel());
-        // TODO: 重新聚合資料
+        // 注意: 切換時間週期後需要重新聚合資料
+        // 實現建議: 使用 BarAggregator 將 Tick 數據聚合為新週期的 K 線
+        // dataFeed.unsubscribe(currentSymbol);
+        // subscribeMarketData();
     }
-    
+
     private void changeIndicator(String indicator) {
         System.out.println("Change indicator to: " + indicator);
-        // TODO: 更新指標顯示
+        // 注意: 需要更新圖表面板的指標顯示
+        // 實現建議: 通知 ChartDock 更新指標配置並重繪
+        // chartDock.setIndicator(indicator);
+        // chartDock.repaint();
     }
     
     private void zoomIn() {
