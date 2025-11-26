@@ -69,7 +69,13 @@ public class IEXCloudFeed implements MarketDataFeed {
         List<MarketDataListener> list = listeners.get(symbol);
         if (list != null) {
             list.remove(listener);
-            logger.info("Unsubscribed from symbol: {}", symbol);
+            // ⭐ 如果列表為空，從 Map 中移除該商品，避免繼續呼叫 API
+            if (list.isEmpty()) {
+                listeners.remove(symbol);
+                logger.info("Unsubscribed from symbol (removed): {}", symbol);
+            } else {
+                logger.info("Unsubscribed from symbol (other listeners remain): {}", symbol);
+            }
         }
     }
 

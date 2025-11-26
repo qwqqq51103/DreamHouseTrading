@@ -56,7 +56,13 @@ public class YahooFinanceFeed implements MarketDataFeed {
         List<MarketDataListener> list = listeners.get(symbol);
         if (list != null) {
             list.remove(listener);
-            System.out.println("[YahooFinanceFeed] 取消訂閱商品: " + symbol);
+            // ⭐ 如果列表為空，從 Map 中移除該商品，避免繼續呼叫 API
+            if (list.isEmpty()) {
+                listeners.remove(symbol);
+                System.out.println("[YahooFinanceFeed] 取消訂閱商品（已移除）: " + symbol);
+            } else {
+                System.out.println("[YahooFinanceFeed] 取消訂閱商品（還有其他監聽器）: " + symbol);
+            }
         }
     }
 

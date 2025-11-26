@@ -47,7 +47,7 @@ public class MainFrameWithDocking extends JFrame {
     private ModeRecommendationDock modeRecommendationDock;
     private ExecutionStatusDock executionStatusDock;
 
-    private String currentSymbol = "AAPL";
+    private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
     private int customBarCount = 100;  // 用戶自定義的K線數量，預設100根
     private double lastPrice = 0;
@@ -323,7 +323,7 @@ public class MainFrameWithDocking extends JFrame {
         
         // Symbol 搜尋框
         toolBar.add(new JLabel(" 商品 "));
-        JTextField symbolField = new JTextField("AAPL", 8);
+        JTextField symbolField = new JTextField("", 8);
         symbolField.addActionListener(e -> changeSymbol(symbolField.getText()));
         toolBar.add(symbolField);
         

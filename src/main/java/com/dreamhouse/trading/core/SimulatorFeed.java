@@ -77,6 +77,10 @@ public class SimulatorFeed implements MarketDataFeed {
         List<MarketDataListener> list = listeners.get(symbol);
         if (list != null) {
             list.remove(listener);
+            // ⭐ 如果列表為空，從 Map 中移除該商品，避免繼續生成模擬數據
+            if (list.isEmpty()) {
+                listeners.remove(symbol);
+            }
         }
     }
     
