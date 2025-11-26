@@ -104,31 +104,57 @@ public class MarketDataCache {
 
     /**
      * 保存K線數據
+     * 修復：使用手動 INSERT/UPDATE 策略，避免 H2 MERGE AUTO_INCREMENT 問題
      */
     public void saveBars(String symbol, List<Bar> bars, String timeframe) {
         if (bars == null || bars.isEmpty()) {
             return;
         }
 
-        String sql = "MERGE INTO bars (symbol, timestamp, open, high, low, close, volume, timeframe) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        String insertSql = "INSERT INTO bars (symbol, timestamp, open, high, low, close, volume, timeframe) " +
+                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
-        try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
+        String updateSql = "UPDATE bars SET open = ?, high = ?, low = ?, close = ?, volume = ? " +
+                          "WHERE symbol = ? AND timestamp = ? AND timeframe = ?";
+
+        try {
             connection.setAutoCommit(false);
 
-            for (Bar bar : bars) {
-                pstmt.setString(1, symbol);
-                pstmt.setTimestamp(2, Timestamp.valueOf(bar.getTimestamp()));
-                pstmt.setDouble(3, bar.getOpen());
-                pstmt.setDouble(4, bar.getHigh());
-                pstmt.setDouble(5, bar.getLow());
-                pstmt.setDouble(6, bar.getClose());
-                pstmt.setLong(7, bar.getVolume());
-                pstmt.setString(8, timeframe);
-                pstmt.addBatch();
+            try (PreparedStatement insertStmt = connection.prepareStatement(insertSql);
+                 PreparedStatement updateStmt = connection.prepareStatement(updateSql)) {
+
+                for (Bar bar : bars) {
+                    try {
+                        // 嘗試 INSERT
+                        insertStmt.setString(1, symbol);
+                        insertStmt.setTimestamp(2, Timestamp.valueOf(bar.getTimestamp()));
+                        insertStmt.setDouble(3, bar.getOpen());
+                        insertStmt.setDouble(4, bar.getHigh());
+                        insertStmt.setDouble(5, bar.getLow());
+                        insertStmt.setDouble(6, bar.getClose());
+                        insertStmt.setLong(7, bar.getVolume());
+                        insertStmt.setString(8, timeframe);
+                        insertStmt.executeUpdate();
+
+                    } catch (SQLException e) {
+                        // 如果是 duplicate key 錯誤 (23505)，則執行 UPDATE
+                        if (e.getErrorCode() == 23505) {
+                            updateStmt.setDouble(1, bar.getOpen());
+                            updateStmt.setDouble(2, bar.getHigh());
+                            updateStmt.setDouble(3, bar.getLow());
+                            updateStmt.setDouble(4, bar.getClose());
+                            updateStmt.setLong(5, bar.getVolume());
+                            updateStmt.setString(6, symbol);
+                            updateStmt.setTimestamp(7, Timestamp.valueOf(bar.getTimestamp()));
+                            updateStmt.setString(8, timeframe);
+                            updateStmt.executeUpdate();
+                        } else {
+                            throw e; // 其他錯誤則向上拋出
+                        }
+                    }
+                }
             }
 
-            pstmt.executeBatch();
             connection.commit();
             connection.setAutoCommit(true);
 
