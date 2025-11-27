@@ -146,13 +146,11 @@
             <version>8.2.0</version>
         </dependency>
 
-        <!-- MarketDataCollector JAR (Local) -->
+        <!-- MarketDataCollector JAR (已安裝到本地 Maven 倉庫) -->
         <dependency>
             <groupId>com.market</groupId>
             <artifactId>market-data-collector</artifactId>
             <version>1.0.0</version>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/lib/market-data-collector-1.0.0.jar</systemPath>
         </dependency>
     </dependencies>
     
@@ -187,9 +185,6 @@
                 <configuration>
                     <mainClass>com.dreamhouse.trading.Main</mainClass>
                     <includePluginDependencies>true</includePluginDependencies>
-                    <additionalClasspathElements>
-                        <additionalClasspathElement>${project.basedir}/lib/market-data-collector-1.0.0.jar</additionalClasspathElement>
-                    </additionalClasspathElements>
                 </configuration>
             </plugin>
             <plugin>
