@@ -3,6 +3,7 @@ package com.dreamhouse.trading.ui.dock;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
+import com.dreamhouse.trading.core.backtest.Position;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -12,8 +13,10 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 執行狀態面板
@@ -37,6 +40,7 @@ public class ExecutionStatusDock extends JPanel {
     // 訂單歷史表格
     private DefaultTableModel tableModel;
     private JTable orderHistoryTable;
+    private final Map<String, Double> latestPrices = new ConcurrentHashMap<>();
 
     // 最大顯示筆數
     private static final int MAX_DISPLAY_ORDERS = 50;
@@ -218,7 +222,7 @@ public class ExecutionStatusDock extends JPanel {
         panel.setBorder(border);
 
         // 創建表格模型
-        String[] columnNames = {"狀態", "時間", "商品", "類型", "數量", "價格", "訊息"};
+        String[] columnNames = {"狀態", "交易組", "時間", "商品", "動作", "類型", "數量", "價格", "停損", "停利", "損益", "訊息"};
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -241,15 +245,24 @@ public class ExecutionStatusDock extends JPanel {
 
         // 設定列寬
         orderHistoryTable.getColumnModel().getColumn(0).setPreferredWidth(60);   // 狀態
-        orderHistoryTable.getColumnModel().getColumn(1).setPreferredWidth(120);  // 時間
-        orderHistoryTable.getColumnModel().getColumn(2).setPreferredWidth(80);   // 商品
-        orderHistoryTable.getColumnModel().getColumn(3).setPreferredWidth(60);   // 類型
-        orderHistoryTable.getColumnModel().getColumn(4).setPreferredWidth(60);   // 數量
-        orderHistoryTable.getColumnModel().getColumn(5).setPreferredWidth(80);   // 價格
-        orderHistoryTable.getColumnModel().getColumn(6).setPreferredWidth(200);  // 訊息
+        orderHistoryTable.getColumnModel().getColumn(1).setPreferredWidth(80);   // 交易組
+        orderHistoryTable.getColumnModel().getColumn(2).setPreferredWidth(120);  // 時間
+        orderHistoryTable.getColumnModel().getColumn(3).setPreferredWidth(80);   // 商品
+        orderHistoryTable.getColumnModel().getColumn(4).setPreferredWidth(60);   // 動作
+        orderHistoryTable.getColumnModel().getColumn(5).setPreferredWidth(60);   // 類型
+        orderHistoryTable.getColumnModel().getColumn(6).setPreferredWidth(60);   // 數量
+        orderHistoryTable.getColumnModel().getColumn(7).setPreferredWidth(80);   // 價格
+        orderHistoryTable.getColumnModel().getColumn(8).setPreferredWidth(80);   // 停損
+        orderHistoryTable.getColumnModel().getColumn(9).setPreferredWidth(80);   // 停利
+        orderHistoryTable.getColumnModel().getColumn(10).setPreferredWidth(80);  // 損益
+        orderHistoryTable.getColumnModel().getColumn(11).setPreferredWidth(220); // 訊息
 
         // 自定義單元格渲染器（為狀態列添加顏色）
         orderHistoryTable.getColumnModel().getColumn(0).setCellRenderer(new StatusCellRenderer());
+        TradeGroupCellRenderer tradeRenderer = new TradeGroupCellRenderer();
+        for (int i = 1; i < orderHistoryTable.getColumnCount(); i++) {
+            orderHistoryTable.getColumnModel().getColumn(i).setCellRenderer(tradeRenderer);
+        }
 
         // 滾動面板
         JScrollPane scrollPane = new JScrollPane(orderHistoryTable);
@@ -265,6 +278,13 @@ public class ExecutionStatusDock extends JPanel {
     public void setExecutionEngine(ExecutionEngine engine) {
         this.executionEngine = engine;
         updateDisplay();
+    }
+
+    public void updateMarketPrice(String symbol, double price) {
+        if (symbol != null && !symbol.isBlank() && price > 0.0) {
+            latestPrices.put(symbol, price);
+            updateDisplay();
+        }
     }
 
     /**
@@ -290,6 +310,9 @@ public class ExecutionStatusDock extends JPanel {
                 // 獲取執行歷史
                 Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
                 List<ExecutionResult> results = new ArrayList<>(history.values());
+                results.sort(Comparator
+                    .comparing(ExecutionResult::getExecutionTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(ExecutionResult::getOrderId, Comparator.nullsLast(Comparator.naturalOrder())));
 
                 // 計算統計
                 long totalOrders = results.size();
@@ -323,17 +346,40 @@ public class ExecutionStatusDock extends JPanel {
             ExecutionResult result = results.get(i);
 
             String status = getStatusIcon(result.getStatus());
+            String tradeId = result.getTradeId() != null && !result.getTradeId().isBlank()
+                    ? result.getTradeId() : "--";
             String time = result.getExecutionTime() != null ?
                     result.getExecutionTime().format(TIME_FORMATTER) : "--";
             String symbol = result.getSymbol();
+            String action = result.getAction() != null && !result.getAction().isBlank()
+                    ? result.getAction() : "--";
             String type = result.getOrderType() != null ?
                     result.getOrderType().getShortCode() : "--";
             String quantity = String.valueOf(result.getExecutedQuantity());
             String price = String.format("%.2f", result.getExecutedPrice());
+            String stopLoss = result.getStopLoss() != null ? String.format("%.2f", result.getStopLoss()) : "--";
+            String takeProfit = result.getTakeProfit() != null ? String.format("%.2f", result.getTakeProfit()) : "--";
+            String pnl = String.format("%.2f", calculateDisplayedPnL(result));
             String message = result.getMessage() != null ? result.getMessage() : "";
 
-            tableModel.addRow(new Object[]{status, time, symbol, type, quantity, price, message});
+            tableModel.addRow(new Object[]{status, tradeId, time, symbol, action, type, quantity, price, stopLoss, takeProfit, pnl, message});
         }
+    }
+
+    private double calculateDisplayedPnL(ExecutionResult result) {
+        if (executionEngine == null || result == null) {
+            return 0.0;
+        }
+        if (!"開倉".equals(result.getAction())) {
+            return result.getRealizedPnL();
+        }
+
+        Position position = executionEngine.getPortfolio().getPosition(result.getSymbol());
+        Double latestPrice = latestPrices.get(result.getSymbol());
+        if (position != null && latestPrice != null && latestPrice > 0.0) {
+            return position.getUnrealizedPnL(latestPrice);
+        }
+        return result.getRealizedPnL();
     }
 
     // ==================== 輔助方法 ====================
@@ -395,6 +441,9 @@ public class ExecutionStatusDock extends JPanel {
             Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
 
             if (!isSelected) {
+                Object tradeValue = table.getValueAt(row, 1);
+                String tradeId = tradeValue != null ? tradeValue.toString() : "";
+                c.setBackground(TradeGroupCellRenderer.resolveGroupColor(tradeId));
                 String status = (String) value;
                 if ("✓".equals(status)) {
                     c.setForeground(new Color(0, 255, 0));
@@ -413,6 +462,39 @@ public class ExecutionStatusDock extends JPanel {
 
             setHorizontalAlignment(CENTER);
             return c;
+        }
+    }
+
+    private static class TradeGroupCellRenderer extends DefaultTableCellRenderer {
+        private static final Color[] GROUP_COLORS = {
+            new Color(46, 55, 64),
+            new Color(55, 48, 64),
+            new Color(48, 60, 50),
+            new Color(62, 53, 43),
+            new Color(50, 58, 66)
+        };
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                                                       boolean isSelected, boolean hasFocus,
+                                                       int row, int column) {
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            if (!isSelected) {
+                Object tradeValue = table.getValueAt(row, 1);
+                String tradeId = tradeValue != null ? tradeValue.toString() : "";
+                c.setBackground(resolveGroupColor(tradeId));
+                c.setForeground(Color.LIGHT_GRAY);
+            }
+            setHorizontalAlignment(column == 11 ? LEFT : CENTER);
+            return c;
+        }
+
+        private static Color resolveGroupColor(String tradeId) {
+            if (tradeId == null || tradeId.isBlank() || "--".equals(tradeId)) {
+                return new Color(40, 40, 40);
+            }
+            int index = Math.abs(tradeId.hashCode()) % GROUP_COLORS.length;
+            return GROUP_COLORS[index];
         }
     }
 }

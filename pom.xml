@@ -202,9 +202,13 @@
                     <!-- 在測試前準備 JaCoCo 代理 -->
                     <execution>
                         <id>prepare-agent</id>
+                        <phase>initialize</phase>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
+                        <configuration>
+                            <destFile>${java.io.tmpdir}/dreamhouse-jacoco.exec</destFile>
+                        </configuration>
                     </execution>
                     <!-- 在測試後生成報告 -->
                     <execution>
@@ -213,6 +217,9 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                        <configuration>
+                            <dataFile>${java.io.tmpdir}/dreamhouse-jacoco.exec</dataFile>
+                        </configuration>
                     </execution>
                     <!-- 檢查代碼覆蓋率是否達標（可選） -->
                     <execution>
@@ -221,6 +228,7 @@
                             <goal>check</goal>
                         </goals>
                         <configuration>
+                            <dataFile>${java.io.tmpdir}/dreamhouse-jacoco.exec</dataFile>
                             <rules>
                                 <rule>
                                     <element>PACKAGE</element>

@@ -50,11 +50,11 @@ public interface MarketDataFeed {
      * @param symbol 商品代號
      * @param timeframe 時間週期
      * @param barCount 要獲取的K線數量
-     * @return K線列表，如果獲取失敗返回空列表
+     * @return K線列表，必須依時間遞增排序
      */
     default List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
-        // 預設返回空列表，子類需要實現
-        return new java.util.ArrayList<>();
+        throw new UnsupportedOperationException(
+            getClass().getSimpleName() + " 尚未實作同步歷史K線查詢");
     }
 }
 

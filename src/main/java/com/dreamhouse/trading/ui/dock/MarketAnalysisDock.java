@@ -7,17 +7,20 @@ import com.dreamhouse.trading.core.decision.trend.TrendDirection;
 import com.dreamhouse.trading.core.decision.trend.TrendStrength;
 import com.dreamhouse.trading.core.decision.intraday.IntradayAnalysis;
 import com.dreamhouse.trading.core.decision.intraday.LiquidityLevel;
+import com.dreamhouse.trading.core.scanner.MarketScanResult;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
+import java.time.format.DateTimeFormatter;
 
 /**
  * 市場分析面板
  * 顯示多週期市場分析結果（週線、日線、分鐘線）
  */
 public class MarketAnalysisDock extends JPanel {
+    private static final DateTimeFormatter SCAN_TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     // 週線分析組件
     private JLabel regimeLabel;
@@ -35,6 +38,7 @@ public class MarketAnalysisDock extends JPanel {
     private JLabel volatilityLabel;
     private JLabel activeTimeLabel;
     private JLabel dayTradeSuitableLabel;
+    private JTextArea scanDetailArea;
 
     // 最後更新時間
     private JLabel lastUpdateLabel;
@@ -58,6 +62,8 @@ public class MarketAnalysisDock extends JPanel {
         mainPanel.add(createDailyPanel());
         mainPanel.add(Box.createVerticalStrut(10));
         mainPanel.add(createIntradayPanel());
+        mainPanel.add(Box.createVerticalStrut(10));
+        mainPanel.add(createScanDetailPanel());
         mainPanel.add(Box.createVerticalStrut(10));
 
         // 添加更新時間標籤
@@ -297,6 +303,29 @@ public class MarketAnalysisDock extends JPanel {
         return panel;
     }
 
+    private JPanel createScanDetailPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(50, 50, 50));
+        panel.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(new Color(100, 100, 100)),
+                "\u8a0a\u865f\u8a3a\u65b7",
+                TitledBorder.LEFT,
+                TitledBorder.TOP,
+                new Font("Microsoft JhengHei", Font.BOLD, 14),
+                Color.WHITE
+        ));
+
+        scanDetailArea = new JTextArea(5, 24);
+        scanDetailArea.setEditable(false);
+        scanDetailArea.setLineWrap(true);
+        scanDetailArea.setWrapStyleWord(true);
+        scanDetailArea.setForeground(Color.LIGHT_GRAY);
+        scanDetailArea.setBackground(new Color(45, 45, 45));
+        scanDetailArea.setText("\u539f\u59cb\u7b56\u7565\u8a0a\u865f: --\n\u6700\u5f8c\u88ab\u64cb\u539f\u56e0: --\n\u6700\u7d42\u6c7a\u7b56\u539f\u56e0: --");
+        panel.add(new JScrollPane(scanDetailArea), BorderLayout.CENTER);
+        return panel;
+    }
+
     /**
      * 更新週線分析顯示
      */
@@ -364,7 +393,7 @@ public class MarketAnalysisDock extends JPanel {
      * 更新分鐘線分析顯示
      */
     public void updateIntradayAnalysis(IntradayAnalysis analysis) {
-        SwingUtilities.invokeLater(() -> {
+        Runnable updateTask = () -> {
             if (analysis == null) {
                 liquidityLabel.setText("尚未分析");
                 liquidityLabel.setForeground(Color.GRAY);
@@ -398,6 +427,43 @@ public class MarketAnalysisDock extends JPanel {
                     dayTradeSuitableLabel.setForeground(Color.RED);
                 }
             }
+            updateLastUpdateTime();
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateTask.run();
+        } else {
+            SwingUtilities.invokeLater(updateTask);
+        }
+    }
+
+    public void updateScanResult(MarketScanResult result) {
+        if (result == null) {
+            return;
+        }
+
+        SwingUtilities.invokeLater(() -> {
+            liquidityLabel.setText(String.format("分數 %.0f%%", result.getScore() * 100));
+            liquidityLabel.setForeground(result.getScore() >= 0.6 ? Color.GREEN : Color.ORANGE);
+
+            volatilityLabel.setText(String.format("信心 %.0f%%", result.getConfidence() * 100));
+
+            String time = result.getScannedAt() != null ? result.getScannedAt().format(SCAN_TIME_FMT) : "--";
+            activeTimeLabel.setText(time);
+            activeTimeLabel.setForeground(Color.LIGHT_GRAY);
+
+            String mode = result.getTradeMode() != null ? result.getTradeMode().getDisplayName() : "--";
+            String action = result.getDecisionResult() != null
+                ? result.getDecisionResult().getAction().getDisplayName()
+                : "--";
+            dayTradeSuitableLabel.setText(mode + " / " + action);
+            dayTradeSuitableLabel.setForeground(result.hasTradeSignal() ? Color.GREEN : Color.GRAY);
+            scanDetailArea.setText(String.format(
+                "\u539f\u59cb\u7b56\u7565\u8a0a\u865f: %s%n\u6700\u5f8c\u88ab\u64cb\u539f\u56e0: %s%n\u6700\u7d42\u6c7a\u7b56\u539f\u56e0: %s",
+                result.getRawSignalSummary(),
+                result.getBlockReason(),
+                result.getReason()));
+
             updateLastUpdateTime();
         });
     }

@@ -930,6 +930,41 @@ public class BacktestConfigDialog extends JDialog {
     public Strategy getSelectedStrategy() { return selectedStrategy; }
 
     /**
+     * 獲取策略要求的時間週期（分鐘）
+     * 用於驗證數據週期是否匹配
+     */
+    public int getStrategyRequiredIntervalMinutes() {
+        if (strategyComboBox.getSelectedItem() == null) {
+            return 0;
+        }
+
+        String strategyName = ((StrategyItem) strategyComboBox.getSelectedItem()).getClassName();
+
+        switch (strategyName) {
+            case "DayTradingStrategy":
+                return 5;  // M5 (5分鐘)
+            case "SwingTradingStrategy":
+                return 15; // M15 (15分鐘)
+            case "PositionTradingStrategy":
+                return 60; // H1 (60分鐘 = 1小時)
+            case "MultiTimeframeDecisionStrategy":
+                return 1440; // D1 (日線)
+            case "MultiStyleStrategyManager":
+                return 5; // 使用最小的週期（當沖的 M5）
+            default:
+                return 0; // 其他策略不限制
+        }
+    }
+
+    /**
+     * 獲取策略名稱（用於錯誤訊息）
+     */
+    public String getStrategyDisplayName() {
+        StrategyItem item = (StrategyItem) strategyComboBox.getSelectedItem();
+        return item != null ? item.getDisplayName() : "未知策略";
+    }
+
+    /**
      * 是否啟用日期過濾
      */
     public boolean isDateFilterEnabled() {

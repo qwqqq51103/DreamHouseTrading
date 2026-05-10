@@ -2,8 +2,10 @@ package com.dreamhouse.trading.core;
 
 import com.dreamhouse.trading.core.DataSourceManager.DataSourceType;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -16,6 +18,8 @@ class DataSourceManagerTest {
 
     private static final String TEST_CONFIG_FILE = "test_datasource.properties";
     private DataSourceManager manager;
+    @TempDir
+    Path tempDir;
 
     @BeforeEach
     void setUp() {
@@ -23,7 +27,7 @@ class DataSourceManagerTest {
         deleteTestConfig();
 
         // 創建管理器
-        manager = new DataSourceManager();
+        manager = new DataSourceManager(tempDir.resolve(TEST_CONFIG_FILE));
     }
 
     @AfterEach
@@ -41,7 +45,7 @@ class DataSourceManagerTest {
     }
 
     private void deleteTestConfig() {
-        File configFile = new File("datasource.properties");
+        File configFile = tempDir.resolve(TEST_CONFIG_FILE).toFile();
         if (configFile.exists()) {
             configFile.delete();
         }
@@ -274,7 +278,7 @@ class DataSourceManagerTest {
         manager.switchDataSource(DataSourceType.ALPHA_VANTAGE);
 
         // 創建新的管理器實例（應該加載保存的配置）
-        DataSourceManager newManager = new DataSourceManager();
+        DataSourceManager newManager = new DataSourceManager(tempDir.resolve(TEST_CONFIG_FILE));
 
         assertEquals("PERSISTENT_KEY", newManager.getAlphaVantageApiKey(),
             "API 密鑰應該被持久化");

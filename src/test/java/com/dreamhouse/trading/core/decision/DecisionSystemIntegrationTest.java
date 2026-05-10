@@ -95,6 +95,30 @@ public class DecisionSystemIntegrationTest {
      * 測試 2：投票機制
      */
     @Test
+    public void testDecisionUsesStrategySuggestedStops() {
+        Portfolio localPortfolio = new Portfolio(100000.0);
+        DecisionConfig config = DecisionConfig.createAggressive();
+        config.setRegimeDetectionEnabled(false);
+        config.setTrendAnalysisEnabled(false);
+        config.setVerboseLogging(false);
+
+        DecisionEngine engine = new DecisionEngine(config, localPortfolio);
+        engine.setSymbol("TEST");
+
+        BarSeries series = createFlatBarSeries("TEST", 40, 100.0);
+        engine.setBarSeries(series, Timeframe.M5);
+        engine.setStrategySignals(List.of(
+            createSignal("Breakout", SignalType.LONG, 0.8, 95.0, 112.0)
+        ));
+
+        DecisionResult result = engine.onBar(series.getLastBar());
+
+        assertEquals(DecisionResult.Action.OPEN_LONG, result.getAction());
+        assertEquals(95.0, result.getSuggestedStopLoss(), 0.0001);
+        assertEquals(112.0, result.getSuggestedTakeProfit(), 0.0001);
+    }
+
+    @Test
     public void testVotingMechanism() {
         VotingConfig config = new VotingConfig();
         VotingEngine votingEngine = new VotingEngine(config);
@@ -136,10 +160,16 @@ public class DecisionSystemIntegrationTest {
 
         assertNull(violation, "初始狀態不應有風險違規");
 
-        // 測試倉位數量計算
-        int positionSize = riskManager.calculatePositionSize(100.0, 95.0);
-        System.out.println("建議倉位數量: " + positionSize);
+        // 測試倉位數量計算（美股）
+        int positionSize = riskManager.calculatePositionSize("AAPL", 100.0, 95.0);
+        System.out.println("建議倉位數量 (美股): " + positionSize);
         assertTrue(positionSize > 0, "倉位數量應大於 0");
+
+        // 測試倉位數量計算（台股）
+        int positionSizeTW = riskManager.calculatePositionSize("2330.TW", 100.0, 95.0);
+        System.out.println("建議倉位數量 (台股): " + positionSizeTW);
+        assertTrue(positionSizeTW >= 1000, "台股倉位數量應至少 1000 股");
+        assertTrue(positionSizeTW % 1000 == 0, "台股倉位數量應為 1000 的倍數");
         System.out.println("通過 ✓\n");
     }
 
@@ -300,11 +330,43 @@ public class DecisionSystemIntegrationTest {
     /**
      * 建立測試用的策略信號
      */
+    private BarSeries createFlatBarSeries(String symbol, int barCount, double closePrice) {
+        BarSeries series = new BaseBarSeries(symbol);
+        ZonedDateTime time = ZonedDateTime.now().minusDays(1);
+
+        for (int i = 0; i < barCount; i++) {
+            Bar bar = new BaseBar(
+                    Duration.ofMinutes(5),
+                    time.plusMinutes(i * 5L),
+                    DecimalNum.valueOf(closePrice - 0.2),
+                    DecimalNum.valueOf(closePrice + 0.5),
+                    DecimalNum.valueOf(closePrice - 0.5),
+                    DecimalNum.valueOf(closePrice),
+                    DecimalNum.valueOf(10000),
+                    DecimalNum.valueOf(0)
+            );
+            series.addBar(bar);
+        }
+
+        return series;
+    }
+
     private IStrategySignal createSignal(String strategyName, SignalType signal, double confidence) {
         return new StrategySignal.Builder(strategyName, Timeframe.M5, signal)
                 .confidence(confidence)
                 .weight(1.0)
                 .reason("測試信號")
+                .build();
+    }
+
+    private IStrategySignal createSignal(String strategyName, SignalType signal, double confidence,
+                                         Double stopLoss, Double takeProfit) {
+        return new StrategySignal.Builder(strategyName, Timeframe.M5, signal)
+                .confidence(confidence)
+                .weight(1.0)
+                .reason("皜祈岫靽∟?")
+                .suggestedStopLoss(stopLoss)
+                .suggestedTakeProfit(takeProfit)
                 .build();
     }
 }

@@ -23,6 +23,8 @@ public class DayTradingStrategy extends MultiTimeframeDecisionStrategy {
 
     public DayTradingStrategy(DecisionConfig config) {
         super(config);
+        // 設置當沖策略的名稱（覆蓋父類的「多週期決策策略」）
+        this.name = "當沖交易策略";
         setupDayTradingStrategies();
     }
 
@@ -37,6 +39,10 @@ public class DayTradingStrategy extends MultiTimeframeDecisionStrategy {
         config.setRiskMonitorTimeframe(Timeframe.M1);  // 1 分鐘風控週期
 
         // 關閉長週期過濾（當沖不看大趨勢）
+        config.setShortSellingEnabled(false);
+        config.setMinRiskRewardRatio(1.2);
+        config.setMinEntryAtrPercent(0.001);
+        config.setMaxEntryAtrPercent(0.08);
         config.setRegimeDetectionEnabled(false);  // 不看週線環境
         config.setTrendAnalysisEnabled(false);    // 不看日線趨勢
 
@@ -81,6 +87,28 @@ public class DayTradingStrategy extends MultiTimeframeDecisionStrategy {
         rsi.setOverboughtThreshold(60.0);       // 較寬鬆的超買
         rsi.setWeight(1.0);
         addStrategy(rsi);
+
+        OpeningRangeBreakoutStrategy openingRange = new OpeningRangeBreakoutStrategy();
+        openingRange.setWeight(0.9);
+        addStrategy(openingRange);
+
+        VolumeBreakoutStrategy volumeBreakout = new VolumeBreakoutStrategy();
+        volumeBreakout.setWeight(0.85);
+        addStrategy(volumeBreakout);
+
+        VwapPullbackStrategy vwapPullback = new VwapPullbackStrategy();
+        vwapPullback.setWeight(0.8);
+        addStrategy(vwapPullback);
+
+        DayTradeCloseGuardStrategy closeGuard = new DayTradeCloseGuardStrategy();
+        closeGuard.setWeight(1.0);
+        addStrategy(closeGuard);
+
+        AtrVolatilityFilterStrategy atrFilter = new AtrVolatilityFilterStrategy();
+        atrFilter.setMinAtrPercent(0.001);
+        atrFilter.setMaxAtrPercent(0.08);
+        atrFilter.setWeight(0.4);
+        addStrategy(atrFilter);
 
         System.out.println("[DayTradingStrategy] ========== 當沖交易策略初始化 ==========");
         System.out.println("[DayTradingStrategy] 主要週期：" +

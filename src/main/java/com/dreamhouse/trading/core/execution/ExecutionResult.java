@@ -42,6 +42,11 @@ public class ExecutionResult {
     private final LocalDateTime executionTime;
     private final String message;
     private final Exception error;
+    private final String action;
+    private final String tradeId;
+    private final double realizedPnL;
+    private final Double stopLoss;
+    private final Double takeProfit;
 
     /**
      * 建構子（使用 Builder 模式）
@@ -59,6 +64,11 @@ public class ExecutionResult {
         this.executionTime = builder.executionTime;
         this.message = builder.message;
         this.error = builder.error;
+        this.action = builder.action;
+        this.tradeId = builder.tradeId;
+        this.realizedPnL = builder.realizedPnL;
+        this.stopLoss = builder.stopLoss;
+        this.takeProfit = builder.takeProfit;
     }
 
     // Getters
@@ -75,6 +85,11 @@ public class ExecutionResult {
     public LocalDateTime getExecutionTime() { return executionTime; }
     public String getMessage() { return message; }
     public Exception getError() { return error; }
+    public String getAction() { return action; }
+    public String getTradeId() { return tradeId; }
+    public double getRealizedPnL() { return realizedPnL; }
+    public Double getStopLoss() { return stopLoss; }
+    public Double getTakeProfit() { return takeProfit; }
 
     /**
      * 是否成功
@@ -144,6 +159,11 @@ public class ExecutionResult {
         private LocalDateTime executionTime = LocalDateTime.now();
         private String message = "";
         private Exception error = null;
+        private String action = "";
+        private String tradeId = "";
+        private double realizedPnL = 0.0;
+        private Double stopLoss = null;
+        private Double takeProfit = null;
 
         public Builder status(Status status) {
             this.status = status;
@@ -204,6 +224,31 @@ public class ExecutionResult {
             this.error = error;
             this.status = Status.FAILED;
             this.message = error.getMessage();
+            return this;
+        }
+
+        public Builder action(String action) {
+            this.action = action != null ? action : "";
+            return this;
+        }
+
+        public Builder tradeId(String tradeId) {
+            this.tradeId = tradeId != null ? tradeId : "";
+            return this;
+        }
+
+        public Builder realizedPnL(double realizedPnL) {
+            this.realizedPnL = realizedPnL;
+            return this;
+        }
+
+        public Builder stopLoss(Double stopLoss) {
+            this.stopLoss = stopLoss;
+            return this;
+        }
+
+        public Builder takeProfit(Double takeProfit) {
+            this.takeProfit = takeProfit;
             return this;
         }
 

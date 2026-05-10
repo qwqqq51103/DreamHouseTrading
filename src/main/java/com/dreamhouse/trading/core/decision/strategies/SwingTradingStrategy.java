@@ -36,6 +36,10 @@ public class SwingTradingStrategy extends MultiTimeframeDecisionStrategy {
         config.setRiskMonitorTimeframe(Timeframe.M5);   // 5 分鐘風控週期
 
         // 啟用日線過濾，關閉週線（短線跟隨日線趨勢）
+        config.setShortSellingEnabled(false);
+        config.setMinRiskRewardRatio(1.4);
+        config.setMinEntryAtrPercent(0.005);
+        config.setMaxEntryAtrPercent(0.12);
         config.setRegimeDetectionEnabled(false);  // 不看週線環境
         config.setTrendAnalysisEnabled(true);     // 看日線趨勢
 
@@ -79,6 +83,29 @@ public class SwingTradingStrategy extends MultiTimeframeDecisionStrategy {
         rsi.setOverboughtThreshold(70.0);       // 標準超買
         rsi.setWeight(1.0);
         addStrategy(rsi);
+
+        MovingAverageAlignmentStrategy maAlignment = new MovingAverageAlignmentStrategy();
+        maAlignment.setPeriods(5, 10, 20);
+        maAlignment.setWeight(0.9);
+        addStrategy(maAlignment);
+
+        PlatformBreakoutStrategy platformBreakout = new PlatformBreakoutStrategy();
+        platformBreakout.setPlatformLookbackBars(16);
+        platformBreakout.setMaxPlatformRangePercent(0.07);
+        platformBreakout.setWeight(0.85);
+        addStrategy(platformBreakout);
+
+        LowVolumeConsolidationBreakoutStrategy lowVolumeBreakout = new LowVolumeConsolidationBreakoutStrategy();
+        lowVolumeBreakout.setContractionBars(8);
+        lowVolumeBreakout.setBaselineBars(20);
+        lowVolumeBreakout.setWeight(0.8);
+        addStrategy(lowVolumeBreakout);
+
+        AtrVolatilityFilterStrategy atrFilter = new AtrVolatilityFilterStrategy();
+        atrFilter.setMinAtrPercent(0.005);
+        atrFilter.setMaxAtrPercent(0.12);
+        atrFilter.setWeight(0.4);
+        addStrategy(atrFilter);
 
         // 擴展建議: 添加 MACD 策略以增強交易信號
         // 需要先實現 SignalMACDStrategy 類 (目前專案中尚未實現)

@@ -32,7 +32,7 @@ public class YahooFinanceFeed implements MarketDataFeed {
     private final HttpClient httpClient;
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+    private ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
     private final Random random = new Random();
 
     private boolean connected = false;
@@ -68,6 +68,7 @@ public class YahooFinanceFeed implements MarketDataFeed {
 
     @Override
     public void start() {
+        ensureExecutor();
         connected = true;
         System.out.println("[YahooFinanceFeed] 正在啟動...");
 
@@ -76,12 +77,18 @@ public class YahooFinanceFeed implements MarketDataFeed {
             loadHistoricalData();
 
             // 開始定期更新實時數據
-            updateTask = executor.scheduleAtFixedRate(
-                this::updateRealTimeData,
-                0,
-                UPDATE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS
-            );
+            if (connected && !executor.isShutdown()) {
+                try {
+                    updateTask = executor.scheduleAtFixedRate(
+                        this::updateRealTimeData,
+                        0,
+                        UPDATE_INTERVAL_MS,
+                        TimeUnit.MILLISECONDS
+                    );
+                } catch (RejectedExecutionException e) {
+                    System.out.println("[YahooFinanceFeed] 即時排程已在停止後略過");
+                }
+            }
         }, "YahooFinance-Startup").start();
     }
 
@@ -90,9 +97,16 @@ public class YahooFinanceFeed implements MarketDataFeed {
         connected = false;
         if (updateTask != null) {
             updateTask.cancel(false);
+            updateTask = null;
         }
         executor.shutdown();
         System.out.println("[YahooFinanceFeed] 已停止");
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
+        }
     }
 
     @Override

@@ -1,6 +1,7 @@
 package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 
 /**
  * 信號監控配置
@@ -18,6 +19,9 @@ public class SignalMonitorConfig {
 
     // K 線數量（用於技術分析）
     private int barCount = 100;
+
+    // 掃描交易模式
+    private TradeMode tradeMode = TradeMode.DAY_TRADE;
 
     // 策略參數（可選）
     private Integer rsiPeriod;
@@ -89,6 +93,14 @@ public class SignalMonitorConfig {
 
     public void setBarCount(int barCount) {
         this.barCount = barCount;
+    }
+
+    public TradeMode getTradeMode() {
+        return tradeMode;
+    }
+
+    public void setTradeMode(TradeMode tradeMode) {
+        this.tradeMode = tradeMode != null ? tradeMode : TradeMode.NO_TRADE;
     }
 
     public Integer getRsiPeriod() {

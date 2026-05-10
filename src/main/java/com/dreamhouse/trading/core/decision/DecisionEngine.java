@@ -110,6 +110,9 @@ public class DecisionEngine {
     public void setBarSeries(BarSeries bars, Timeframe sourceTimeframe) {
         // 儲存原始數據
         timeframeSeries.put(sourceTimeframe, bars);
+        if (sourceTimeframe == config.getMainLoopTimeframe()) {
+            primarySeries = bars;
+        }
 
         // 聚合到其他週期
         aggregateToOtherTimeframes(bars, sourceTimeframe);
@@ -151,7 +154,10 @@ public class DecisionEngine {
         barCount++;
 
         // 1. 更新主週期數據
-        primarySeries.addBar(bar);
+        if (primarySeries.getBarCount() == 0
+                || bar.getEndTime().isAfter(primarySeries.getLastBar().getEndTime())) {
+            primarySeries.addBar(bar);
+        }
 
         // 2. 更新日期（用於每日風控重置）
         LocalDate currentDate = bar.getBeginTime().toLocalDate();
@@ -311,12 +317,47 @@ public class DecisionEngine {
             lastVotingResult = votingResult;
 
             if (votingResult.isEntry()) {
-                // 計算停損停利
-                double stopLoss = calculateStopLoss(currentPrice, votingResult.isLong(), trendAnalysis);
-                double takeProfit = calculateTakeProfit(currentPrice, votingResult.isLong(), trendAnalysis);
+                if (votingResult.isShort() && !config.isShortSellingEnabled()) {
+                    return new DecisionResult.Builder()
+                            .action(DecisionResult.Action.NO_ACTION)
+                            .source(DecisionResult.Source.VOTING_ENTRY)
+                            .reason("Short signal is treated as risk warning only in long-only mode")
+                            .votingResult(votingResult)
+                            .confidence(votingResult.getShortScore())
+                            .build();
+                }
 
-                // 計算數量
-                int quantity = riskManager.calculatePositionSize(currentPrice, stopLoss);
+                DecisionResult atrViolation = checkAtrEntryFilter(currentPrice);
+                if (atrViolation != null) {
+                    return atrViolation;
+                }
+                // 計算停損停利
+                boolean isLongEntry = votingResult.isLong();
+                Double signalStopLoss = calculateSignalSuggestedStopLoss(currentPrice, votingResult);
+                Double signalTakeProfit = calculateSignalSuggestedTakeProfit(currentPrice, votingResult);
+                double stopLoss = signalStopLoss != null
+                        ? signalStopLoss
+                        : calculateStopLoss(currentPrice, isLongEntry, trendAnalysis);
+                double takeProfit = signalTakeProfit != null
+                        ? signalTakeProfit
+                        : calculateTakeProfit(currentPrice, isLongEntry, trendAnalysis);
+
+                // 計算數量（根據市場規則調整）
+                Double riskRewardRatio = calculateRiskRewardRatio(currentPrice, stopLoss, takeProfit, isLongEntry);
+                if (riskRewardRatio != null && riskRewardRatio < config.getMinRiskRewardRatio()) {
+                    return new DecisionResult.Builder()
+                            .action(DecisionResult.Action.NO_ACTION)
+                            .source(DecisionResult.Source.RISK_MANAGER)
+                            .reason(String.format("Risk/reward %.2f is below minimum %.2f",
+                                    riskRewardRatio, config.getMinRiskRewardRatio()))
+                            .suggestedStopLoss(stopLoss)
+                            .suggestedTakeProfit(takeProfit)
+                            .votingResult(votingResult)
+                            .confidence(0.0)
+                            .build();
+                }
+
+                int quantity = riskManager.calculatePositionSize(currentSymbol, currentPrice, stopLoss);
 
                 // 檢查是否可以開倉
                 double positionValue = currentPrice * quantity;
@@ -407,6 +448,128 @@ public class DecisionEngine {
     /**
      * 計算停損價格
      */
+    private Double calculateSignalSuggestedStopLoss(double entryPrice, VotingResult votingResult) {
+        return weightedAverageSuggestion(entryPrice, votingResult, true);
+    }
+
+    private DecisionResult checkAtrEntryFilter(double currentPrice) {
+        if (config.getMinEntryAtrPercent() <= 0.0 && config.getMaxEntryAtrPercent() == Double.MAX_VALUE) {
+            return null;
+        }
+        Double atrPercent = calculateAtrPercent(currentPrice, config.getAtrFilterPeriod());
+        if (atrPercent == null) {
+            return null;
+        }
+        if (atrPercent < config.getMinEntryAtrPercent() || atrPercent > config.getMaxEntryAtrPercent()) {
+            return new DecisionResult.Builder()
+                    .action(DecisionResult.Action.NO_ACTION)
+                    .source(DecisionResult.Source.RISK_MANAGER)
+                    .reason(String.format("ATR %.2f%% outside %.2f%%-%.2f%% filter",
+                            atrPercent * 100.0,
+                            config.getMinEntryAtrPercent() * 100.0,
+                            config.getMaxEntryAtrPercent() * 100.0))
+                    .confidence(0.0)
+                    .build();
+        }
+        return null;
+    }
+
+    private Double calculateAtrPercent(double currentPrice, int period) {
+        if (primarySeries == null || primarySeries.getBarCount() <= period || currentPrice <= 0.0) {
+            return null;
+        }
+
+        int end = primarySeries.getEndIndex();
+        int start = Math.max(primarySeries.getBeginIndex() + 1, end - period + 1);
+        double sum = 0.0;
+        int count = 0;
+        for (int i = start; i <= end; i++) {
+            Bar bar = primarySeries.getBar(i);
+            Bar previous = primarySeries.getBar(i - 1);
+            double high = bar.getHighPrice().doubleValue();
+            double low = bar.getLowPrice().doubleValue();
+            double previousClose = previous.getClosePrice().doubleValue();
+            double trueRange = Math.max(high - low,
+                    Math.max(Math.abs(high - previousClose), Math.abs(low - previousClose)));
+            sum += trueRange;
+            count++;
+        }
+        return count == 0 ? null : (sum / count) / currentPrice;
+    }
+
+    private Double calculateRiskRewardRatio(double entryPrice, double stopLoss, double takeProfit, boolean isLong) {
+        double risk = Math.abs(entryPrice - stopLoss);
+        double reward = Math.abs(takeProfit - entryPrice);
+        if (risk <= 0.0 || reward <= 0.0) {
+            return null;
+        }
+        if (isLong && (stopLoss >= entryPrice || takeProfit <= entryPrice)) {
+            return null;
+        }
+        if (!isLong && (stopLoss <= entryPrice || takeProfit >= entryPrice)) {
+            return null;
+        }
+        return reward / risk;
+    }
+
+    private Double calculateSignalSuggestedTakeProfit(double entryPrice, VotingResult votingResult) {
+        Double takeProfit = weightedAverageSuggestion(entryPrice, votingResult, false);
+        if (takeProfit != null) {
+            return takeProfit;
+        }
+
+        Double stopLoss = calculateSignalSuggestedStopLoss(entryPrice, votingResult);
+        if (stopLoss == null) {
+            return null;
+        }
+
+        double risk = Math.abs(entryPrice - stopLoss);
+        if (risk <= 0.0) {
+            return null;
+        }
+        return votingResult.isLong() ? entryPrice + risk * 2.0 : entryPrice - risk * 2.0;
+    }
+
+    private Double weightedAverageSuggestion(double entryPrice, VotingResult votingResult, boolean stopLoss) {
+        if (votingResult == null || !votingResult.isEntry()) {
+            return null;
+        }
+
+        SignalType targetSignal = votingResult.getSignalType();
+        double weightedSum = 0.0;
+        double totalWeight = 0.0;
+        for (IStrategySignal signal : votingResult.getSignals()) {
+            if (signal.getSignal() != targetSignal) {
+                continue;
+            }
+
+            Double value = stopLoss ? signal.getSuggestedStopLoss() : signal.getSuggestedTakeProfit();
+            if (value == null || !isValidSuggestion(entryPrice, value, votingResult.isLong(), stopLoss)) {
+                continue;
+            }
+
+            double weightedScore = signal.getConfidence() * signal.getWeight();
+            if (weightedScore <= 0.0) {
+                continue;
+            }
+
+            weightedSum += value * weightedScore;
+            totalWeight += weightedScore;
+        }
+
+        return totalWeight <= 0.0 ? null : weightedSum / totalWeight;
+    }
+
+    private boolean isValidSuggestion(double entryPrice, double value, boolean isLong, boolean stopLoss) {
+        if (value <= 0.0) {
+            return false;
+        }
+        if (isLong) {
+            return stopLoss ? value < entryPrice : value > entryPrice;
+        }
+        return stopLoss ? value > entryPrice : value < entryPrice;
+    }
+
     private double calculateStopLoss(double entryPrice, boolean isLong, TrendAnalysis trend) {
         double stopLoss;
 

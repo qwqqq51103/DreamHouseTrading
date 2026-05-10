@@ -87,6 +87,7 @@ public class FinnhubFeed implements MarketDataFeed {
 
     @Override
     public void start() {
+        ensureExecutor();
         connected = true;
         logger.info("Starting Finnhub feed...");
 
@@ -172,7 +173,7 @@ public class FinnhubFeed implements MarketDataFeed {
                     logger.warn("WebSocket closed: {} - {}", code, reason);
 
                     // 自動重連（如果仍然connected）
-                    if (connected) {
+                    if (connected && executor != null && !executor.isShutdown()) {
                         executor.schedule(() -> connectWebSocket(), 5, TimeUnit.SECONDS);
                     }
                 }
@@ -187,6 +188,12 @@ public class FinnhubFeed implements MarketDataFeed {
 
         } catch (Exception e) {
             logger.error("Failed to connect WebSocket", e);
+        }
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
         }
     }
 

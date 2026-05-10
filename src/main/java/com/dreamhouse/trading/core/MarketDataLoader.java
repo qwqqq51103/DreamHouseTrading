@@ -247,32 +247,82 @@ public class MarketDataLoader {
 
     /**
      * 將 Quote 轉換為 Tick
+     * 注意：資料庫中的 volume 是累積成交量，需要轉換為分時成交量
      */
     private List<Tick> convertQuotesToTicks(List<Quote> quotes) {
-        return quotes.stream()
-                .map(quote -> new Tick(
-                        quote.getSymbol(),
-                        quote.getTimestamp().toLocalDateTime(),
-                        quote.getPrice(),
-                        quote.getVolume()
-                ))
-                .collect(Collectors.toList());
+        if (quotes.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Tick> ticks = new ArrayList<>();
+        long previousVolume = 0; // 前一筆的累積成交量
+
+        for (Quote quote : quotes) {
+            long cumulativeVolume = quote.getVolume(); // 當前累積成交量
+
+            // 計算該時刻的成交量 = 當前累積量 - 前一筆累積量
+            long tickVolume = cumulativeVolume - previousVolume;
+
+            // 防止負數（數據異常或跨日時）
+            if (tickVolume < 0) {
+                logger.debug("檢測到成交量重置（可能是跨日）：當前累積量 {} < 前一筆累積量 {}，重新開始計算",
+                           cumulativeVolume, previousVolume);
+                tickVolume = cumulativeVolume; // 跨日時重新開始
+            }
+
+            ticks.add(new Tick(
+                    quote.getSymbol(),
+                    quote.getTimestamp().toLocalDateTime(),
+                    quote.getPrice(),
+                    tickVolume  // 使用分時成交量
+            ));
+
+            previousVolume = cumulativeVolume; // 更新前一筆的累積量
+        }
+
+        logger.debug("轉換 {} 筆 Tick，累積成交量 → 分時成交量", ticks.size());
+        return ticks;
     }
 
     /**
      * 將 Candlestick 轉換為 Bar
+     * 注意：資料庫中的 volume 是累積成交量，需要轉換為分時成交量
      */
     private List<Bar> convertCandlesToBars(List<Candlestick> candles) {
-        return candles.stream()
-                .map(candle -> new Bar(
-                        candle.getTimestamp().toLocalDateTime(),
-                        candle.getOpen(),
-                        candle.getHigh(),
-                        candle.getLow(),
-                        candle.getClose(),
-                        candle.getVolume()
-                ))
-                .collect(Collectors.toList());
+        if (candles.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Bar> bars = new ArrayList<>();
+        long previousVolume = 0; // 前一根 K 線的累積成交量
+
+        for (Candlestick candle : candles) {
+            long cumulativeVolume = candle.getVolume(); // 當前累積成交量
+
+            // 計算分時成交量 = 當前累積量 - 前一根累積量
+            long periodVolume = cumulativeVolume - previousVolume;
+
+            // 防止負數（數據異常時）
+            if (periodVolume < 0) {
+                logger.warn("檢測到異常成交量：當前累積量 {} < 前一根累積量 {}，使用累積量",
+                           cumulativeVolume, previousVolume);
+                periodVolume = cumulativeVolume;
+            }
+
+            bars.add(new Bar(
+                    candle.getTimestamp().toLocalDateTime(),
+                    candle.getOpen(),
+                    candle.getHigh(),
+                    candle.getLow(),
+                    candle.getClose(),
+                    periodVolume  // 使用分時成交量
+            ));
+
+            previousVolume = cumulativeVolume; // 更新前一根的累積量
+        }
+
+        logger.debug("轉換 {} 根 K 線，累積成交量 → 分時成交量", bars.size());
+        return bars;
     }
 
     /**

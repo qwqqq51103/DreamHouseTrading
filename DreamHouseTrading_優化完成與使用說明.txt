@@ -1,0 +1,114 @@
+DreamHouseTrading 優化完成與使用說明
+更新日期: 2026-05-10
+
+一、已完成的核心優化
+
+1. 資料源與 K 線一致性
+- MarketDataFeed.fetchHistoricalBars(symbol, timeframe, barCount) 已改為核心能力，不再靜默回傳空列表。
+- FinMindFeed 與 SimulatorFeed 已支援同步歷史 K 線查詢。
+- 新增 MarketDataNormalizer，統一排序、去重、barCount 裁切與未完成 K 線處理。
+- DecisionEngine.setBarSeries() 會同步主週期資料；onBar() 會避免重複加入相同時間的 K 線。
+- feed start/stop/restart 已補強，避免快速停止後背景排程丟出 RejectedExecutionException。
+
+2. 策略與訊號模型
+- SignalMonitorService 已改為透過 MarketScannerService 取得掃描結果，不再只硬掛 RSI。
+- DecisionEngine 會優先採用策略給出的 suggestedStopLoss 與 suggestedTakeProfit。
+- 第一版維持台股做多與平倉流程；空方訊號在 shortSellingEnabled=false 時只作為風險提醒，不會產生 OPEN_SHORT。
+- 新增風控設定:
+  - shortSellingEnabled
+  - minRiskRewardRatio
+  - minEntryAtrPercent
+  - maxEntryAtrPercent
+  - atrFilterPeriod
+
+3. 市場掃描服務
+- 新增 MarketScannerService，統一 watchlist 掃描入口。
+- 新增 MarketScanResult，輸出 symbol、tradeMode、score、action、confidence、reason、stop loss、take profit、suggested quantity、riskRewardRatio、lastSignalTime。
+- 掃描結果會依 score 排序，可用於今日機會雷達與監控服務。
+
+4. UI 改進
+- 新增 OpportunityRadarDock，作為「今日機會雷達」區塊。
+- WatchlistPanel 增加當沖分數、波段分數、訊號、信心度、風險報酬比、最後訊號時間欄位。
+- 點選候選股時可同步切換圖表、新聞與分析面板。
+- NewsDock 已支援個股新聞面板與 symbol/source/time/url/title 欄位。
+- MarketAnalysisDock 接收盤中掃描分析結果。
+- ModeRecommendationDock 改用 TradeModeClassifier，避免 UI 內重寫分類邏輯。
+
+5. 策略擴充
+- 當沖策略新增:
+  - 開盤區間突破 OpeningRangeBreakoutStrategy
+  - 放量突破 VolumeBreakoutStrategy
+  - VWAP 回踩 VwapPullbackStrategy
+  - ATR 波動過濾 AtrVolatilityFilterStrategy
+  - 收盤前強制平倉 DayTradeCloseGuardStrategy
+- 波段與部位策略新增:
+  - 均線多頭排列 MovingAverageAlignmentStrategy
+  - 平台突破 PlatformBreakoutStrategy
+  - 週線/高週期轉強 WeeklyStrengthStrategy
+  - 量縮整理後放量 LowVolumeConsolidationBreakoutStrategy
+  - 風險報酬比過濾由 DecisionEngine 統一執行
+
+6. 測試與可靠性
+- JaCoCo 輸出已調整到 ASCII-safe 的 build/jacoco 位置，避免中文路徑失敗。
+- DataSourceManagerTest 已改用 JUnit TempDir，不會直接改動專案根目錄 datasource.properties。
+- 已補上測試:
+  - MarketDataNormalizerTest
+  - MarketScannerServiceTest
+  - DecisionEngineRiskFiltersTest
+  - DayTradingSignalStrategiesTest
+  - SwingSignalStrategiesTest
+  - DecisionSystemIntegrationTest 擴充策略停損停利驗收
+
+二、如何使用今日機會雷達
+
+1. 啟動應用程式
+- 開發時可先確認編譯:
+  mvn -q -DskipTests compile
+- 執行完整測試:
+  mvn -q test
+- 啟動方式沿用專案既有批次檔或 Maven 啟動流程。
+
+2. 選擇資料源
+- 若要使用真實台股資料，請在 datasource.properties 設定 FinMind token，並將資料源切到 FinMind。
+- 若只想測 UI 與策略流程，可使用 SimulatorFeed。
+
+3. 使用雷達
+- 開啟主畫面後查看「今日機會雷達」。
+- 在 watchlist 內放入要掃描的股票代號，例如 2330.TW、2317.TW。
+- 雷達會依交易模式產生 score、action、confidence、reason、stop loss、take profit 與 riskRewardRatio。
+- 點選候選股後，圖表、新聞與分析面板會同步切換到該股票。
+
+4. 解讀訊號
+- OPEN_LONG: 做多候選。
+- CLOSE_POSITION: 平倉或降低風險。
+- NO_ACTION/HOLD: 條件不足或風控未通過。
+- 空方訊號: 第一版只作風險提醒，不會自動開空。
+
+三、策略與風控設定建議
+
+1. 當沖
+- 建議使用 M1 或 M5 timeframe。
+- barCount 建議至少 60 根以上，讓 VWAP、ATR 與開盤區間策略有足夠資料。
+- 當沖預設風險報酬比門檻較低，適合快速掃描候選。
+
+2. 波段
+- 建議使用 M30、H1 或日線資料。
+- barCount 建議至少 100 根以上，讓均線、平台突破與高週期轉強策略更穩定。
+- 波段預設風險報酬比門檻較高，避免追高或無效突破。
+
+3. 風控
+- minRiskRewardRatio 控制最低風險報酬比。
+- minEntryAtrPercent 與 maxEntryAtrPercent 控制進場波動區間，過低代表沒波動，過高代表風險過大。
+- shortSellingEnabled 預設 false。未來若要支援融券放空，需同時補交易規則、風控、UI 標示與回測驗收。
+
+四、已執行的驗收命令
+
+- mvn -q -DskipTests compile
+- mvn -q test
+
+五、注意事項
+
+- 本次實作沒有復原工作區中既有的刪除或無關修改，避免覆蓋使用者原本的工作。
+- 專案仍保留 Swing、FlatLaf、JFreeChart 架構，未改成 Web UI。
+- 第一版不做真實下單，也不做融券放空。
+- 新策略都透過 DecisionEngine 與 MarketScannerService 接入，因此可同時供回測、監控與 UI 使用。

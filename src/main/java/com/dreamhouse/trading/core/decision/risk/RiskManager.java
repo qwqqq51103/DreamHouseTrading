@@ -160,18 +160,23 @@ public class RiskManager {
      * 計算建議的部位大小
      * 根據風險百分比和停損距離計算
      *
+     * @param symbol         商品代號（用於判斷市場規則）
      * @param entryPrice     進場價格
      * @param stopLossPrice  停損價格
      * @return 建議的部位數量（股數）
      */
-    public int calculatePositionSize(double entryPrice, double stopLossPrice) {
+    public int calculatePositionSize(String symbol, double entryPrice, double stopLossPrice) {
         double accountEquity = portfolio.getTotalValue();
         double riskAmount = accountEquity * config.getRiskPercentPerTrade();
         double stopDistance = Math.abs(entryPrice - stopLossPrice);
 
+        // 判斷最小交易單位
+        int minLotSize = getMinLotSize(symbol);
+        int lotIncrement = getLotIncrement(symbol);
+
         if (stopDistance <= 0.0) {
             System.err.println("[RiskManager] 警告：停損距離 <= 0，使用最小部位");
-            return 100;  // 預設最小部位
+            return minLotSize;  // 返回該市場的最小交易單位
         }
 
         int quantity = (int) (riskAmount / stopDistance);
@@ -182,8 +187,66 @@ public class RiskManager {
 
         quantity = Math.min(quantity, maxQuantity);
 
-        // 確保至少有 100 股（或符合最小交易單位）
-        quantity = Math.max(quantity, 100);
+        // 調整至符合市場規則的交易單位
+        quantity = adjustToLotSize(quantity, minLotSize, lotIncrement);
+
+        return quantity;
+    }
+
+    /**
+     * 取得最小交易單位（根據市場規則）
+     *
+     * @param symbol 商品代號
+     * @return 最小交易單位（股數）
+     */
+    private int getMinLotSize(String symbol) {
+        if (symbol != null && symbol.endsWith(".TW")) {
+            // 台股：1 張 = 1000 股
+            return 1000;
+        }
+        // 美股等其他市場：最小 100 股
+        return 100;
+    }
+
+    /**
+     * 取得交易單位增量（根據市場規則）
+     *
+     * @param symbol 商品代號
+     * @return 交易單位增量（股數）
+     */
+    private int getLotIncrement(String symbol) {
+        if (symbol != null && symbol.endsWith(".TW")) {
+            // 台股：必須是整張（1000 股）的倍數
+            return 1000;
+        }
+        // 美股等其他市場：可以單股交易
+        return 1;
+    }
+
+    /**
+     * 調整數量至符合交易單位規則
+     *
+     * @param quantity       原始數量
+     * @param minLotSize     最小交易單位
+     * @param lotIncrement   交易單位增量
+     * @return 調整後的數量
+     */
+    private int adjustToLotSize(int quantity, int minLotSize, int lotIncrement) {
+        // 確保至少有最小交易單位
+        if (quantity < minLotSize) {
+            return minLotSize;
+        }
+
+        // 如果需要調整至特定增量（如台股的整張）
+        if (lotIncrement > 1) {
+            // 向下取整至最接近的交易單位倍數
+            quantity = (quantity / lotIncrement) * lotIncrement;
+
+            // 如果取整後低於最小值，返回最小值
+            if (quantity < minLotSize) {
+                return minLotSize;
+            }
+        }
 
         return quantity;
     }

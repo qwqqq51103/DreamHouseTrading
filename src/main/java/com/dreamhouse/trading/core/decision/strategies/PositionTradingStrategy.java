@@ -36,6 +36,10 @@ public class PositionTradingStrategy extends MultiTimeframeDecisionStrategy {
         config.setRiskMonitorTimeframe(Timeframe.M15);  // 15 分鐘風控週期
 
         // 啟用所有過濾（波段看大趨勢）
+        config.setShortSellingEnabled(false);
+        config.setMinRiskRewardRatio(1.8);
+        config.setMinEntryAtrPercent(0.003);
+        config.setMaxEntryAtrPercent(0.15);
         config.setRegimeDetectionEnabled(true);   // 看週線環境
         config.setTrendAnalysisEnabled(true);     // 看日線趨勢
 
@@ -79,6 +83,35 @@ public class PositionTradingStrategy extends MultiTimeframeDecisionStrategy {
         rsi.setOverboughtThreshold(75.0);       // 更嚴格的超買
         rsi.setWeight(1.0);
         addStrategy(rsi);
+
+        MovingAverageAlignmentStrategy maAlignment = new MovingAverageAlignmentStrategy();
+        maAlignment.setPeriods(20, 50, 100);
+        maAlignment.setWeight(0.95);
+        addStrategy(maAlignment);
+
+        PlatformBreakoutStrategy platformBreakout = new PlatformBreakoutStrategy();
+        platformBreakout.setPlatformLookbackBars(30);
+        platformBreakout.setMaxPlatformRangePercent(0.12);
+        platformBreakout.setWeight(0.85);
+        addStrategy(platformBreakout);
+
+        LowVolumeConsolidationBreakoutStrategy lowVolumeBreakout = new LowVolumeConsolidationBreakoutStrategy();
+        lowVolumeBreakout.setContractionBars(15);
+        lowVolumeBreakout.setBaselineBars(40);
+        lowVolumeBreakout.setWeight(0.8);
+        addStrategy(lowVolumeBreakout);
+
+        WeeklyStrengthStrategy weeklyStrength = new WeeklyStrengthStrategy();
+        weeklyStrength.setTrendLookbackBars(20);
+        weeklyStrength.setBreakoutLookbackBars(12);
+        weeklyStrength.setWeight(0.9);
+        addStrategy(weeklyStrength);
+
+        AtrVolatilityFilterStrategy atrFilter = new AtrVolatilityFilterStrategy();
+        atrFilter.setMinAtrPercent(0.003);
+        atrFilter.setMaxAtrPercent(0.15);
+        atrFilter.setWeight(0.4);
+        addStrategy(atrFilter);
 
         // 擴展建議: 添加 MA 移動平均策略（50/200 經典系統）
         // 需要先實現 SignalMAStrategy 類 (目前專案中尚未實現)

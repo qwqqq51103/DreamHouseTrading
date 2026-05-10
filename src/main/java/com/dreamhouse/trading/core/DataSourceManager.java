@@ -1,6 +1,10 @@
 package com.dreamhouse.trading.core;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.*;
+import java.nio.file.Path;
 import java.util.Properties;
 
 /**
@@ -8,6 +12,7 @@ import java.util.Properties;
  * 負責創建和切換不同的市場數據源
  */
 public class DataSourceManager {
+    private static final Logger logger = LoggerFactory.getLogger(DataSourceManager.class);
 
     public enum DataSourceType {
         SIMULATOR("模擬數據", "Simulated Data"),
@@ -45,8 +50,14 @@ public class DataSourceManager {
     private DataSourceType currentType;
     private MarketDataFeed currentFeed;
     private Properties config;
+    private final File configFile;
 
     public DataSourceManager() {
+        this(Path.of(CONFIG_FILE));
+    }
+
+    public DataSourceManager(Path configPath) {
+        this.configFile = configPath != null ? configPath.toFile() : Path.of(CONFIG_FILE).toFile();
         loadConfig();
         currentType = DataSourceType.valueOf(
             config.getProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name())
@@ -247,8 +258,6 @@ public class DataSourceManager {
      */
     private void loadConfig() {
         config = new Properties();
-        File configFile = new File(CONFIG_FILE);
-
         if (configFile.exists()) {
             try (FileInputStream fis = new FileInputStream(configFile)) {
                 config.load(fis);
@@ -272,7 +281,7 @@ public class DataSourceManager {
      * 保存配置
      */
     private void saveConfig() {
-        try (FileOutputStream fos = new FileOutputStream(CONFIG_FILE)) {
+        try (FileOutputStream fos = new FileOutputStream(configFile)) {
             config.store(fos, "DreamHouse Trading - Data Source Configuration");
             System.out.println("[DataSourceManager] 配置已保存");
         } catch (IOException e) {

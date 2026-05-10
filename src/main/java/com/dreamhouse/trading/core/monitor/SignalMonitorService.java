@@ -2,10 +2,12 @@ package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.MarketDataFeed;
+import com.dreamhouse.trading.core.MarketDataListener;
 import com.dreamhouse.trading.core.decision.DecisionConfig;
 import com.dreamhouse.trading.core.decision.DecisionEngine;
 import com.dreamhouse.trading.core.decision.DecisionResult;
-import com.dreamhouse.trading.core.decision.strategies.DayTradingStrategy;
+import com.dreamhouse.trading.core.scanner.MarketScanResult;
+import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import com.dreamhouse.trading.core.backtest.Portfolio;
 import com.dreamhouse.trading.core.model.Bar;
 import org.slf4j.Logger;
@@ -45,8 +47,13 @@ public class SignalMonitorService {
     // 決策引擎
     private final DecisionEngine decisionEngine;
 
+    // 市場掃描服務
+    private final MarketScannerService scannerService;
+    private final DecisionConfig decisionConfig;
+
     // 監控的商品列表
     private final Set<String> monitoredSymbols = new ConcurrentHashMap<String, Boolean>().keySet(true);
+    private final Map<String, MarketDataListener> monitorDataListeners = new ConcurrentHashMap<>();
 
     // 定時器
     private ScheduledExecutorService executor;
@@ -58,34 +65,57 @@ public class SignalMonitorService {
     // 狀態回調（message）
     private java.util.function.Consumer<String> onStatusUpdate;
 
+    // 掃描結果回調（供 UI 顯示候選分數）
+    private java.util.function.Consumer<MarketScanResult> onScanResult;
+    private java.util.function.Consumer<List<MarketScanResult>> onScanResults;
+
     // 運行狀態
     private volatile boolean running = false;
 
     // 上次檢測時間記錄（避免重複提醒）
     private final Map<String, LocalDateTime> lastSignalTime = new ConcurrentHashMap<>();
 
+    // 子策略列表（用於產生信號）
+    private final List<com.dreamhouse.trading.core.decision.signal.IStrategySignal> strategySignals;
+
     /**
-     * 建構子
+     * 建構子（使用預設策略配置）
      */
     public SignalMonitorService(MarketDataFeed dataFeed, SignalMonitorConfig config) {
+        this(dataFeed, config, null);
+    }
+
+    /**
+     * 建構子（自訂策略配置）
+     * @param dataFeed 數據源
+     * @param config 監控配置
+     * @param decisionConfig 決策配置（如果為 null，使用多週期決策策略）
+     */
+    public SignalMonitorService(MarketDataFeed dataFeed, SignalMonitorConfig config, DecisionConfig decisionConfig) {
         this.dataFeed = dataFeed;
         this.config = config;
-
-        // 創建決策引擎（使用當沖策略）
-        DecisionConfig decisionConfig = DayTradingStrategy.createDayTradingConfig();
-
-        // 應用用戶自訂配置
-        if (config.getRsiPeriod() != null) {
-            // 注意：這裡需要重新配置策略參數
-            // 簡化起見，先使用預設配置
-        }
+        this.strategySignals = new java.util.ArrayList<>();
 
         // 創建模擬組合（僅用於決策引擎，不實際交易）
         Portfolio mockPortfolio = new Portfolio(100000.0);  // 10萬初始資金
 
-        this.decisionEngine = new DecisionEngine(decisionConfig, mockPortfolio);
+        // 使用預設配置（與回測預設選項一致）
+        if (decisionConfig == null) {
+            decisionConfig = DecisionConfig.createDefault();
+        }
 
-        logger.info("信號監控服務已創建");
+        // 創建 DecisionEngine
+        this.decisionConfig = decisionConfig;
+        this.decisionEngine = new DecisionEngine(decisionConfig, mockPortfolio);
+        this.scannerService = new MarketScannerService(dataFeed);
+
+        // 添加 RSI 子策略（與回測系統一致）
+        com.dreamhouse.trading.core.decision.strategies.SignalRSIStrategy rsiStrategy =
+            new com.dreamhouse.trading.core.decision.strategies.SignalRSIStrategy();
+        rsiStrategy.setWeight(1.0);
+        strategySignals.add(rsiStrategy);
+
+        logger.info("信號監控服務已創建，使用多週期決策策略（包含 RSI 子策略）");
     }
 
     /**
@@ -99,6 +129,7 @@ public class SignalMonitorService {
 
         monitoredSymbols.clear();
         monitoredSymbols.addAll(symbols);
+        subscribeMonitoredSymbols();
 
         executor = Executors.newScheduledThreadPool(1);
 
@@ -144,6 +175,7 @@ public class SignalMonitorService {
         }
 
         running = false;
+        unsubscribeMonitoredSymbols();
         monitoredSymbols.clear();
         lastSignalTime.clear();
 
@@ -165,13 +197,22 @@ public class SignalMonitorService {
         logger.info("⏰ [{}] 開始掃描 {} 檔商品...", timestamp, monitoredSymbols.size());
 
         int signalCount = 0;
+        List<MarketScanResult> scanResults = new ArrayList<>();
 
         for (String symbol : monitoredSymbols) {
             try {
-                DecisionResult result = analyzeSymbol(symbol);
+                MarketScanResult scanResult = analyzeSymbol(symbol);
+                if (isBatchScanMode()) {
+                    if (scanResult != null) {
+                        scanResults.add(scanResult);
+                    }
+                    continue;
+                }
+                notifyScanResult(scanResult);
 
-                if (result != null && result.getAction() != DecisionResult.Action.HOLD
-                    && result.getAction() != DecisionResult.Action.NO_ACTION) {
+                DecisionResult result = scanResult != null ? scanResult.getDecisionResult() : null;
+
+                if (scanResult != null && scanResult.hasTradeSignal()) {
                     // 檢查是否為新信號（避免重複提醒）
                     if (isNewSignal(symbol)) {
                         signalCount++;
@@ -189,6 +230,22 @@ public class SignalMonitorService {
         String statusMsg = String.format("✅ [%s] 掃描完成：%d 檔商品，發現 %d 個信號",
             timestamp, monitoredSymbols.size(), signalCount);
 
+        if (isBatchScanMode()) {
+            notifyScanResults(scanResults);
+            for (MarketScanResult scanResult : scanResults) {
+                DecisionResult result = scanResult.getDecisionResult();
+                if (scanResult.hasTradeSignal() && isNewSignal(scanResult.getSymbol())) {
+                    signalCount++;
+                    lastSignalTime.put(scanResult.getSymbol(), LocalDateTime.now());
+
+                    logger.info("Signal detected: {} - {}", scanResult.getSymbol(), result.getAction());
+                    notifySignal(scanResult.getSymbol(), result);
+                }
+            }
+            statusMsg = String.format("[%s] Batch scan completed: %d symbols, %d signals",
+                timestamp, monitoredSymbols.size(), signalCount);
+        }
+
         logger.info(statusMsg);
         notifyStatus(statusMsg);
     }
@@ -196,87 +253,71 @@ public class SignalMonitorService {
     /**
      * 分析單一商品
      */
-    private DecisionResult analyzeSymbol(String symbol) {
+    private MarketScanResult analyzeSymbol(String symbol) {
         logger.debug("分析商品: {}", symbol);
 
         try {
-            // 從數據源同步獲取K線數據（使用配置中的 barCount）
-            List<Bar> bars = dataFeed.fetchHistoricalBars(symbol, config.getTimeframe(), config.getBarCount());
-
-            if (bars == null || bars.isEmpty()) {
-                logger.debug("商品 {} 無可用數據", symbol);
-                return null;
-            }
-
-            logger.debug("商品 {} 獲取到 {} 根 K 線", symbol, bars.size());
-
-            // 需要至少 2 根 K 線才能分析
-            if (bars.size() < 2) {
-                logger.debug("商品 {} K 線數量不足（需要至少 2 根）", symbol);
-                return null;
-            }
-
-            // 將前 N-1 根 K 線轉換為 ta4j BarSeries（排除最後一根）
-            List<Bar> historyBars = bars.subList(0, bars.size() - 1);
-            BarSeries series = convertToTa4jBarSeries(symbol, historyBars);
-
-            if (series.getBarCount() == 0) {
-                logger.debug("商品 {} 轉換後無有效數據", symbol);
-                return null;
-            }
-
-            // 處理最後一根K線，觸發決策
-            Bar lastBar = bars.get(bars.size() - 1);
-
-            // ⭐ 調試：顯示最後幾根 K 線的時間戳
-            if (bars.size() >= 3) {
-                logger.debug("商品 {} 最後3根K線時間: {} | {} | {}",
-                    symbol,
-                    bars.get(bars.size() - 3).getTimestamp(),
-                    bars.get(bars.size() - 2).getTimestamp(),
-                    bars.get(bars.size() - 1).getTimestamp());
-            }
-
-            // ⚠️ 重要：只在K線完成時才進行決策分析
-            // 未完成的K線數據不穩定，可能產生假信號
-            if (!isBarComplete(lastBar, config.getTimeframe())) {
-                logger.debug("商品 {} 最後一根K線未完成，等待下次掃描", symbol);
-                return null;
-            }
-
-            // 設定決策引擎
-            decisionEngine.setSymbol(symbol);
-            decisionEngine.setBarSeries(series, config.getTimeframe());
-
-            // K線已完成，可以安全地進行決策
-            org.ta4j.core.Bar ta4jBar = convertToTa4jBar(lastBar);
-
-            // ⭐ 調試：顯示 series 最後一根和準備添加的 K 線時間
-            if (series.getBarCount() > 0) {
-                org.ta4j.core.Bar lastInSeries = series.getLastBar();
-                logger.debug("商品 {} Series最後K線時間: {}, 準備添加K線時間: {}",
-                    symbol,
-                    lastInSeries.getEndTime(),
-                    ta4jBar.getEndTime());
-            }
-
-            DecisionResult result = decisionEngine.onBar(ta4jBar);
+            MarketScannerService.ScanRequest request = MarketScannerService.ScanRequest.createDefault()
+                .timeframe(config.getTimeframe())
+                .barCount(config.getBarCount())
+                .tradeMode(config.getTradeMode())
+                .decisionConfig(decisionConfig);
+            MarketScanResult scanResult = scannerService.scan(symbol, request);
+            DecisionResult result = scanResult.getDecisionResult();
 
             if (result != null && result.shouldTrade()) {
                 logger.info("商品 {} 決策: {} - {}", symbol, result.getAction(), result.getReason());
             }
 
-            return result;
+            return scanResult;
 
         } catch (Exception e) {
             logger.error("分析商品 {} 時發生錯誤: {}", symbol, e.getMessage(), e);
-            return null;
+            return MarketScanResult.builder(symbol)
+                .tradeMode(config.getTradeMode())
+                .decisionResult(new DecisionResult.Builder()
+                    .action(DecisionResult.Action.NO_ACTION)
+                    .source(DecisionResult.Source.TECHNICAL)
+                    .reason("掃描失敗：" + e.getMessage())
+                    .confidence(0.0)
+                    .build())
+                .score(0.0)
+                .build();
         }
     }
 
     /**
      * 將自定義 Bar 列表轉換為 ta4j BarSeries
      */
+    private void subscribeMonitoredSymbols() {
+        for (String symbol : monitoredSymbols) {
+            if (symbol == null || symbol.isBlank()) {
+                continue;
+            }
+            monitorDataListeners.computeIfAbsent(symbol, key -> {
+                MarketDataListener listener = new MarketDataListener() {
+                };
+                try {
+                    dataFeed.subscribe(key, listener);
+                } catch (Exception e) {
+                    logger.warn("Unable to subscribe monitored symbol {} for realtime simulation: {}", key, e.getMessage());
+                }
+                return listener;
+            });
+        }
+    }
+
+    private void unsubscribeMonitoredSymbols() {
+        for (Map.Entry<String, MarketDataListener> entry : monitorDataListeners.entrySet()) {
+            try {
+                dataFeed.unsubscribe(entry.getKey(), entry.getValue());
+            } catch (Exception e) {
+                logger.debug("Unable to unsubscribe monitored symbol {}: {}", entry.getKey(), e.getMessage());
+            }
+        }
+        monitorDataListeners.clear();
+    }
+
     private BarSeries convertToTa4jBarSeries(String symbol, List<Bar> bars) {
         BaseBarSeries series = new BaseBarSeries(symbol);
 
@@ -401,9 +442,40 @@ public class SignalMonitorService {
         }
     }
 
+    private void notifyScanResult(MarketScanResult result) {
+        if (onScanResult != null && result != null) {
+            try {
+                onScanResult.accept(result);
+            } catch (Exception e) {
+                logger.error("通知掃描結果時發生錯誤", e);
+            }
+        }
+    }
+
     /**
      * 設置信號回調
      */
+    private void notifyScanResults(List<MarketScanResult> results) {
+        if (results == null || results.isEmpty()) {
+            return;
+        }
+        if (onScanResults != null) {
+            try {
+                onScanResults.accept(List.copyOf(results));
+                return;
+            } catch (Exception e) {
+                logger.error("Failed to notify batch scan results", e);
+            }
+        }
+        for (MarketScanResult result : results) {
+            notifyScanResult(result);
+        }
+    }
+
+    private boolean isBatchScanMode() {
+        return true;
+    }
+
     public void setOnSignalDetected(BiConsumer<String, DecisionResult> callback) {
         this.onSignalDetected = callback;
     }
@@ -413,6 +485,17 @@ public class SignalMonitorService {
      */
     public void setOnStatusUpdate(java.util.function.Consumer<String> callback) {
         this.onStatusUpdate = callback;
+    }
+
+    /**
+     * 設置掃描結果回調
+     */
+    public void setOnScanResult(java.util.function.Consumer<MarketScanResult> callback) {
+        this.onScanResult = callback;
+    }
+
+    public void setOnScanResults(java.util.function.Consumer<List<MarketScanResult>> callback) {
+        this.onScanResults = callback;
     }
 
     /**

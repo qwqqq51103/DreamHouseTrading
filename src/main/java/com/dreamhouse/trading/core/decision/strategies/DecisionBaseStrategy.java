@@ -21,6 +21,8 @@ public abstract class DecisionBaseStrategy extends BaseStrategy implements IStra
     protected double weight;
     protected String signalReason;
     protected long signalTimestamp;
+    protected Double signalStopLoss;
+    protected Double signalTakeProfit;
 
     public DecisionBaseStrategy(String name, String description) {
         super(name, description);
@@ -30,6 +32,8 @@ public abstract class DecisionBaseStrategy extends BaseStrategy implements IStra
         this.weight = 1.0;
         this.signalReason = "";
         this.signalTimestamp = System.currentTimeMillis();
+        this.signalStopLoss = null;
+        this.signalTakeProfit = null;
     }
 
     /**
@@ -45,10 +49,17 @@ public abstract class DecisionBaseStrategy extends BaseStrategy implements IStra
      * 更新信號狀態
      */
     protected void updateSignal(SignalType signal, double confidence, String reason) {
+        updateSignal(signal, confidence, reason, null, null);
+    }
+
+    protected void updateSignal(SignalType signal, double confidence, String reason,
+                                Double stopLoss, Double takeProfit) {
         this.currentSignal = signal;
         this.confidence = confidence;
         this.signalReason = reason;
         this.signalTimestamp = System.currentTimeMillis();
+        this.signalStopLoss = stopLoss;
+        this.signalTakeProfit = takeProfit;
     }
 
     // ===== IStrategySignal 介面實作 =====
@@ -88,6 +99,16 @@ public abstract class DecisionBaseStrategy extends BaseStrategy implements IStra
         return signalReason;
     }
 
+    @Override
+    public Double getSuggestedStopLoss() {
+        return signalStopLoss;
+    }
+
+    @Override
+    public Double getSuggestedTakeProfit() {
+        return signalTakeProfit;
+    }
+
     /**
      * 設定策略權重
      */
@@ -106,11 +127,18 @@ public abstract class DecisionBaseStrategy extends BaseStrategy implements IStra
      * 建立 StrategySignal 物件（工具方法）
      */
     protected StrategySignal buildSignal(SignalType signal, double confidence, String reason) {
+        return buildSignal(signal, confidence, reason, signalStopLoss, signalTakeProfit);
+    }
+
+    protected StrategySignal buildSignal(SignalType signal, double confidence, String reason,
+                                         Double stopLoss, Double takeProfit) {
         return new StrategySignal.Builder(getName(), timeframe, signal)
                 .confidence(confidence)
                 .weight(weight)
                 .reason(reason)
                 .timestamp(System.currentTimeMillis())
+                .suggestedStopLoss(stopLoss)
+                .suggestedTakeProfit(takeProfit)
                 .build();
     }
 }

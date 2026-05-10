@@ -113,6 +113,7 @@ public class FinMindFeed implements MarketDataFeed {
         // 如果數據源已啟動且即時輪詢尚未運行，檢查是否需要啟動
         if (connected && updateTask == null) {
             if (isMarketOpen()) {
+                ensureExecutor();
                 logger.info("當前為交易時間，啟動即時數據輪詢（每 {} 秒）...", UPDATE_INTERVAL_MS / 1000);
                 updateTask = executor.scheduleAtFixedRate(
                     this::updateRealTimeData,
@@ -143,6 +144,10 @@ public class FinMindFeed implements MarketDataFeed {
 
     @Override
     public void start() {
+        ensureExecutor();
+        if (marketDataLoader == null || !marketDataLoader.isInitialized()) {
+            initializeMarketDataLoader();
+        }
         connected = true;
         logger.info("啟動 FinMind 數據源...");
 
@@ -151,7 +156,7 @@ public class FinMindFeed implements MarketDataFeed {
             loadHistoricalData();
 
             // 2. 智能即時更新：只在交易時間內啟動
-            if (isMarketOpen()) {
+            if (connected && isMarketOpen() && !executor.isShutdown()) {
                 logger.info("當前為交易時間，啟動即時數據輪詢（每 {} 秒）...", UPDATE_INTERVAL_MS / 1000);
                 updateTask = executor.scheduleAtFixedRate(
                     this::updateRealTimeData,
@@ -205,6 +210,7 @@ public class FinMindFeed implements MarketDataFeed {
         connected = false;
         if (updateTask != null) {
             updateTask.cancel(false);
+            updateTask = null;
         }
         if (executor != null) {
             executor.shutdown();
@@ -408,6 +414,220 @@ public class FinMindFeed implements MarketDataFeed {
                 Thread.currentThread().interrupt();
             }
         }, "FinMind-HistoricalData").start();
+    }
+
+    @Override
+    public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        int safeCount = Math.max(2, barCount);
+
+        List<Bar> databaseBars = fetchHistoricalBarsFromDatabase(symbol, timeframe, safeCount);
+        if (!databaseBars.isEmpty()) {
+            return databaseBars;
+        }
+
+        if (isMarketOpen() && queryDate.equals(java.time.LocalDate.now())
+            && timeframe.getMinutes() < Timeframe.D1.getMinutes()) {
+            fetchAndNotifyRealTimeData(symbol);
+            List<Bar> realtimeBars = realtimeBarBuilder.buildBars(symbol, timeframe, safeCount);
+            realtimeBars = MarketDataNormalizer.normalizeBars(realtimeBars, safeCount);
+            if (!realtimeBars.isEmpty()) {
+                return realtimeBars;
+            }
+        }
+
+        return fetchHistoricalBarsFromApi(symbol, timeframe, safeCount);
+    }
+
+    private List<Bar> fetchHistoricalBarsFromDatabase(String symbol, Timeframe timeframe, int barCount) {
+        if (marketDataLoader == null || !marketDataLoader.isInitialized()) {
+            return new ArrayList<>();
+        }
+
+        String interval = toDatabaseInterval(timeframe);
+        List<String> candidates = new ArrayList<>();
+        candidates.add(symbol);
+        if (symbol != null && !symbol.contains(".") && symbol.matches("\\d{4,6}")) {
+            candidates.add(symbol + ".TW");
+        }
+
+        for (String candidate : candidates) {
+            try {
+                List<Bar> bars = marketDataLoader.loadLatestBars(candidate, interval, barCount);
+                bars = MarketDataNormalizer.normalizeBars(bars, barCount);
+                if (!bars.isEmpty()) {
+                    logger.info("{} - 從資料庫同步取得 {} 根 {} K線", candidate, bars.size(), timeframe.getLabel());
+                    return bars;
+                }
+            } catch (Exception e) {
+                logger.debug("{} - 資料庫同步K線查詢失敗: {}", candidate, e.getMessage());
+            }
+        }
+
+        return new ArrayList<>();
+    }
+
+    private List<Bar> fetchHistoricalBarsFromApi(String symbol, Timeframe timeframe, int barCount) {
+        try {
+            String stockId = convertToFinMindSymbol(symbol);
+            String dataset;
+            LocalDateTime startDate;
+            LocalDateTime endDate = queryDate.atTime(23, 59, 59);
+
+            if (timeframe == Timeframe.D1 || timeframe == Timeframe.W1) {
+                dataset = "TaiwanStockPrice";
+                startDate = endDate.minusDays(Math.max(barCount * 2L, 30L));
+            } else {
+                dataset = "TaiwanStockKBar";
+                startDate = endDate;
+            }
+
+            String url = DATA_ENDPOINT
+                + "?dataset=" + dataset
+                + "&data_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8)
+                + "&start_date=" + startDate.format(DATE_FORMATTER);
+
+            if (!dataset.equals("TaiwanStockKBar")) {
+                url += "&end_date=" + endDate.format(DATE_FORMATTER);
+            }
+            if (!apiToken.isEmpty()) {
+                url += "&token=" + apiToken;
+            }
+
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("User-Agent", "Mozilla/5.0")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                logger.warn("{} - 同步歷史K線 API 失敗: HTTP {}", symbol, response.statusCode());
+                return new ArrayList<>();
+            }
+
+            List<Bar> bars = dataset.equals("TaiwanStockKBar")
+                ? parseKBarResponseToBars(symbol, response.body(), timeframe)
+                : parseDailyResponseToBars(symbol, response.body(), timeframe);
+
+            bars = MarketDataNormalizer.normalizeBars(bars, barCount);
+            logger.info("{} - 從 FinMind API 同步取得 {} 根 {} K線",
+                symbol, bars.size(), timeframe.getLabel());
+            return bars;
+        } catch (Exception e) {
+            logger.warn("{} - 同步歷史K線查詢失敗: {}", symbol, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    private List<Bar> parseKBarResponseToBars(String symbol, String jsonResponse, Timeframe timeframe) throws Exception {
+        JsonNode root = objectMapper.readTree(jsonResponse);
+        int status = root.path("status").asInt(-1);
+        if (status != 200) {
+            logger.warn("{} - FinMind KBar API 錯誤: {}", symbol, root.path("msg").asText("未知錯誤"));
+            return new ArrayList<>();
+        }
+
+        JsonNode dataArray = root.path("data");
+        if (!dataArray.isArray() || dataArray.size() == 0) {
+            return new ArrayList<>();
+        }
+
+        List<KBarData> oneMinuteBars = new ArrayList<>();
+        for (JsonNode bar : dataArray) {
+            LocalDateTime time = parseKBarTime(bar.path("date").asText(), bar.path("minute").asText("").trim());
+            if (time == null) {
+                continue;
+            }
+            oneMinuteBars.add(new KBarData(
+                time,
+                bar.path("open").asDouble(),
+                bar.path("high").asDouble(),
+                bar.path("low").asDouble(),
+                bar.path("close").asDouble(),
+                bar.path("volume").asLong()));
+        }
+
+        List<KBarData> finalBars = timeframe == Timeframe.M1
+            ? oneMinuteBars
+            : aggregateBars(oneMinuteBars, timeframe.getMinutes());
+        return toModelBars(finalBars);
+    }
+
+    private List<Bar> parseDailyResponseToBars(String symbol, String jsonResponse, Timeframe timeframe) throws Exception {
+        JsonNode root = objectMapper.readTree(jsonResponse);
+        int status = root.path("status").asInt(-1);
+        if (status != 200) {
+            logger.warn("{} - FinMind Daily API 錯誤: {}", symbol, root.path("msg").asText("未知錯誤"));
+            return new ArrayList<>();
+        }
+
+        JsonNode dataArray = root.path("data");
+        if (!dataArray.isArray() || dataArray.size() == 0) {
+            return new ArrayList<>();
+        }
+
+        List<KBarData> dailyBars = new ArrayList<>();
+        for (JsonNode bar : dataArray) {
+            String dateStr = bar.path("date").asText();
+            dailyBars.add(new KBarData(
+                LocalDateTime.parse(dateStr + "T09:00:00"),
+                bar.path("open").asDouble(),
+                bar.path("max").asDouble(),
+                bar.path("min").asDouble(),
+                bar.path("close").asDouble(),
+                bar.path("Trading_Volume").asLong()));
+        }
+
+        List<KBarData> finalBars = timeframe == Timeframe.W1 ? aggregateDailyToWeekly(dailyBars) : dailyBars;
+        return toModelBars(finalBars);
+    }
+
+    private LocalDateTime parseKBarTime(String dateStr, String timeStr) {
+        try {
+            if (timeStr == null || timeStr.isEmpty()) {
+                return LocalDateTime.parse(dateStr + " 09:00:00",
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+            if (timeStr.length() == 5) {
+                return LocalDateTime.parse(dateStr + " " + timeStr + ":00",
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+            if (timeStr.length() == 8) {
+                return LocalDateTime.parse(dateStr + " " + timeStr,
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+            return LocalDateTime.parse(dateStr + " " + timeStr,
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        } catch (Exception e) {
+            logger.debug("解析 KBar 時間失敗 date={}, minute={}: {}", dateStr, timeStr, e.getMessage());
+            return null;
+        }
+    }
+
+    private List<Bar> toModelBars(List<KBarData> kBars) {
+        List<Bar> bars = new ArrayList<>();
+        for (KBarData bar : kBars) {
+            bars.add(new Bar(bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume));
+        }
+        return bars;
+    }
+
+    private String toDatabaseInterval(Timeframe timeframe) {
+        return switch (timeframe) {
+            case M1 -> "1m";
+            case M5 -> "5m";
+            case M15 -> "15m";
+            case M30 -> "30m";
+            case H1 -> "1h";
+            case D1 -> "1d";
+            case W1 -> "1wk";
+        };
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
+        }
     }
 
     /**
@@ -1429,7 +1649,7 @@ public class FinMindFeed implements MarketDataFeed {
                     timestamp = LocalDateTime.now();
                 }
 
-                NewsItem newsItem = new NewsItem(timestamp, source, title, link);
+                NewsItem newsItem = new NewsItem(symbol, timestamp, source, title, link);
 
                 // 通知監聽器
                 SwingUtilities.invokeLater(() -> {

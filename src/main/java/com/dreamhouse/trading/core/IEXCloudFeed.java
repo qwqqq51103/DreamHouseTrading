@@ -37,7 +37,7 @@ public class IEXCloudFeed implements MarketDataFeed {
     private final ObjectMapper objectMapper;
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+    private ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
     private final Random random = new Random();
 
     private boolean connected = false;
@@ -81,6 +81,7 @@ public class IEXCloudFeed implements MarketDataFeed {
 
     @Override
     public void start() {
+        ensureExecutor();
         connected = true;
         logger.info("Starting IEX Cloud feed...");
 
@@ -89,12 +90,18 @@ public class IEXCloudFeed implements MarketDataFeed {
             loadHistoricalData();
 
             // 開始定期更新實時數據
-            updateTask = executor.scheduleAtFixedRate(
-                this::updateRealTimeData,
-                0,
-                UPDATE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS
-            );
+            if (connected && !executor.isShutdown()) {
+                try {
+                    updateTask = executor.scheduleAtFixedRate(
+                        this::updateRealTimeData,
+                        0,
+                        UPDATE_INTERVAL_MS,
+                        TimeUnit.MILLISECONDS
+                    );
+                } catch (RejectedExecutionException e) {
+                    logger.debug("IEX Cloud feed stopped before realtime scheduler started");
+                }
+            }
         }, "IEXCloud-Startup").start();
     }
 
@@ -104,6 +111,7 @@ public class IEXCloudFeed implements MarketDataFeed {
 
         if (updateTask != null) {
             updateTask.cancel(false);
+            updateTask = null;
         }
 
         if (executor != null) {
@@ -111,6 +119,12 @@ public class IEXCloudFeed implements MarketDataFeed {
         }
 
         logger.info("IEX Cloud feed stopped");
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
+        }
     }
 
     @Override

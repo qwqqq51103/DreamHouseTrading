@@ -1,7 +1,9 @@
 package com.dreamhouse.trading.ui.dock;
 
+import com.dreamhouse.trading.core.decision.classifier.ClassificationConfig;
 import com.dreamhouse.trading.core.decision.classifier.ClassificationResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
+import com.dreamhouse.trading.core.decision.classifier.TradeModeClassifier;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -486,7 +488,8 @@ public class ModeRecommendationDock extends JPanel {
             decisionEngine.getLastTrendAnalysis();
 
         // 構造 ClassificationResult
-        ClassificationResult result = buildClassificationFromAnalysis(regime, trend);
+        TradeModeClassifier classifier = new TradeModeClassifier(ClassificationConfig.createDefault());
+        ClassificationResult result = classifier.classify(regime, trend, null);
 
         // 更新顯示
         updateRecommendation(result);

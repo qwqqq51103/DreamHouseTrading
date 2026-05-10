@@ -8,11 +8,19 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class SimulatorFeed implements MarketDataFeed {
+    private static final double REALTIME_MAX_CHANGE_RATIO = 0.018;
+    private static final double REALTIME_SHOCK_PROBABILITY = 0.15;
+    private static final double REALTIME_SHOCK_RATIO = 0.05;
+    private static final double HISTORICAL_BAR_CHANGE_RATIO = 0.035;
+    private static final double HISTORICAL_WICK_RATIO = 0.015;
+    private static final int MAX_SIMULATED_M1_BARS = 500;
+
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+    private ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
     private final Random random = new Random();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
     private final Map<String, List<DepthLevel>> orderBooks = new ConcurrentHashMap<>();
+    private final Map<String, Map<Timeframe, List<Bar>>> historicalBars = new ConcurrentHashMap<>();
     private boolean connected = false;
     private boolean paused = false;  // 新增：暫停狀態
     private ScheduledFuture<?> marketDataTask;  // 新增：任務引用
@@ -86,6 +94,7 @@ public class SimulatorFeed implements MarketDataFeed {
     
     @Override
     public void start() {
+        ensureExecutor();
         connected = true;
         
         // 在背景執行緒中生成歷史數據，避免阻塞 EDT
@@ -93,7 +102,13 @@ public class SimulatorFeed implements MarketDataFeed {
             generateHistoricalData();
             
             // 歷史數據生成完畢後，開始即時數據更新
-            marketDataTask = executor.scheduleAtFixedRate(this::generateMarketData, 0, 1000, TimeUnit.MILLISECONDS);
+            if (connected && !executor.isShutdown()) {
+                try {
+                    marketDataTask = executor.scheduleAtFixedRate(this::generateMarketData, 0, 1000, TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.RejectedExecutionException ignored) {
+                    // stop() can race with initial historical generation during tests or fast reconnects.
+                }
+            }
         }, "HistoricalDataGenerator").start();
     }
     
@@ -163,57 +178,29 @@ public class SimulatorFeed implements MarketDataFeed {
 
         System.out.println("[SimulatorFeed] 找到 " + symbolListeners.size() + " 個監聽器");
 
-        // 為每個商品生成獨立且合理的基準價格
-        double basePrice = getReasonableBasePrice(symbol);
-        lastPrices.put(symbol, basePrice);
-        System.out.println("[SimulatorFeed] " + symbol + " 基準價格: " + basePrice);
+        List<Bar> bars = fetchHistoricalBars(symbol, timeframe, barCount);
 
-        int intervalMinutes = timeframe.getMinutes();
-        LocalDateTime startTime = LocalDateTime.now().minusMinutes((long) barCount * intervalMinutes);
-
-        // 起始價格在基準價格附近浮動（±5%）
-        double priceVariation = basePrice * 0.05;
-        double currentPrice = basePrice - priceVariation + random.nextDouble() * (priceVariation * 2);
-
-        // 生成歷史K線
-        for (int i = 0; i < barCount; i++) {
-            LocalDateTime barTime = startTime.plusMinutes((long) i * intervalMinutes);
-
-            // 模擬K線的開高低收
-            double open = currentPrice;
-            // 價格變化幅度根據週期調整
-            double maxChange = currentPrice * 0.01 * Math.sqrt(intervalMinutes / 60.0);
-            double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
-            double close = round(open + change);
-
-            // 高低價（最大波動根據週期調整）
-            double maxWick = currentPrice * 0.005 * Math.sqrt(intervalMinutes / 60.0);
-            double high = round(Math.max(open, close) + random.nextDouble() * maxWick);
-            double low = round(Math.min(open, close) - random.nextDouble() * maxWick);
-
-            // 成交量（根據週期調整）
-            long baseVolume = 5000 + random.nextInt(15000);
-            long volume = (long) (baseVolume * (intervalMinutes / 1.0));
-
+        for (Bar bar : bars) {
             // 根據週期決定發送的tick數量
+            int intervalMinutes = timeframe.getMinutes();
             int ticksPerBar = Math.max(1, Math.min(4, 4 / (intervalMinutes / 60 + 1)));
 
             // 生成這個週期內的 Tick 數據
             for (int j = 0; j < ticksPerBar; j++) {
                 long secondsInterval = (intervalMinutes * 60L) / ticksPerBar;
-                LocalDateTime tickTime = barTime.plusSeconds(j * secondsInterval);
+                LocalDateTime tickTime = bar.getTimestamp().plusSeconds(j * secondsInterval);
                 double tickPrice;
 
                 if (j == 0) {
-                    tickPrice = open;
+                    tickPrice = bar.getOpen();
                 } else if (j == ticksPerBar - 1) {
-                    tickPrice = close;
+                    tickPrice = bar.getClose();
                 } else {
                     // 中間的 tick 在 low 和 high 之間
-                    tickPrice = round(low + random.nextDouble() * (high - low));
+                    tickPrice = round(bar.getLow() + random.nextDouble() * (bar.getHigh() - bar.getLow()));
                 }
 
-                long tickVolume = volume / ticksPerBar;
+                long tickVolume = bar.getVolume() / ticksPerBar;
                 Tick tick = new Tick(symbol, tickTime, tickPrice, tickVolume);
 
                 // 在 Swing 執行緒中通知
@@ -224,7 +211,7 @@ public class SimulatorFeed implements MarketDataFeed {
                 });
 
                 // 每個 tick 之間暫停一小段時間，讓UI有時間更新
-                if (i < barCount - 1 || j < ticksPerBar - 1) {
+                if (j < ticksPerBar - 1) {
                     try {
                         Thread.sleep(5); // 5ms
                     } catch (InterruptedException e) {
@@ -234,20 +221,40 @@ public class SimulatorFeed implements MarketDataFeed {
                 }
             }
 
-            // 更新當前價格為本K線的收盤價
-            currentPrice = close;
         }
 
         // 更新最後價格
-        lastPrices.put(symbol, currentPrice);
+        if (!bars.isEmpty()) {
+            lastPrices.put(symbol, bars.get(bars.size() - 1).getClose());
+        }
 
-        System.out.println("[SimulatorFeed] " + symbol + " " + timeframe.getLabel() + " 歷史數據生成完成，共 " + barCount + " 根K線，最終價格: " + currentPrice);
+        System.out.println("[SimulatorFeed] " + symbol + " " + timeframe.getLabel() + " 歷史數據生成完成，共 " + bars.size() + " 根K線");
+    }
+
+    @Override
+    public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        int safeCount = Math.max(2, barCount);
+        Map<Timeframe, List<Bar>> byTimeframe =
+            historicalBars.computeIfAbsent(symbol, key -> new ConcurrentHashMap<>());
+
+        List<Bar> cached = byTimeframe.get(timeframe);
+        if (cached == null || cached.size() < safeCount) {
+            cached = generateBars(symbol, timeframe, safeCount);
+            byTimeframe.put(timeframe, cached);
+        }
+
+        return MarketDataNormalizer.normalizeBars(cached, safeCount);
     }
     
     @Override
     public void stop() {
         connected = false;
-        executor.shutdown();
+        if (marketDataTask != null) {
+            marketDataTask.cancel(false);
+        }
+        if (executor != null) {
+            executor.shutdown();
+        }
     }
     
     @Override
@@ -289,8 +296,11 @@ public class SimulatorFeed implements MarketDataFeed {
             double lastPrice = lastPrices.get(symbol);
 
             // 生成新價格（隨機遊走）- 變化幅度為當前價格的±0.2%
-            double maxChange = lastPrice * 0.002;
-            double change = (random.nextDouble() - 0.5) * maxChange;
+            double maxChange = lastPrice * REALTIME_MAX_CHANGE_RATIO;
+            double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
+            if (random.nextDouble() < REALTIME_SHOCK_PROBABILITY) {
+                change += random.nextGaussian() * lastPrice * REALTIME_SHOCK_RATIO;
+            }
             double newPrice = round(Math.max(1.0, lastPrice + change));
             lastPrices.put(symbol, newPrice);
             
@@ -298,6 +308,7 @@ public class SimulatorFeed implements MarketDataFeed {
             
             // 生成 Tick
             Tick tick = new Tick(symbol, now, newPrice, 100 + random.nextInt(500));
+            updateRealtimeBar(symbol, tick);
             
             // 生成 Trade
             Trade.Side side = random.nextBoolean() ? Trade.Side.BID : Trade.Side.ASK;
@@ -337,6 +348,92 @@ public class SimulatorFeed implements MarketDataFeed {
     
     private double round(double value) {
         return Math.round(value * 100.0) / 100.0;
+    }
+
+    private void updateRealtimeBar(String symbol, Tick tick) {
+        Map<Timeframe, List<Bar>> byTimeframe =
+            historicalBars.computeIfAbsent(symbol, key -> new ConcurrentHashMap<>());
+        List<Bar> bars = byTimeframe.computeIfAbsent(Timeframe.M1, key -> new CopyOnWriteArrayList<>());
+
+        LocalDateTime minute = tick.getTimestamp().withSecond(0).withNano(0);
+        double price = tick.getPrice();
+        long volume = tick.getVolume();
+
+        synchronized (bars) {
+            if (bars.isEmpty()) {
+                bars.add(new Bar(minute, price, price, price, price, volume));
+                return;
+            }
+
+            Bar last = bars.get(bars.size() - 1);
+            if (last.getTimestamp().equals(minute)) {
+                bars.set(bars.size() - 1, new Bar(
+                    last.getTimestamp(),
+                    last.getOpen(),
+                    Math.max(last.getHigh(), price),
+                    Math.min(last.getLow(), price),
+                    price,
+                    last.getVolume() + volume
+                ));
+            } else if (last.getTimestamp().isBefore(minute)) {
+                double open = last.getClose();
+                bars.add(new Bar(minute, open, Math.max(open, price), Math.min(open, price), price, volume));
+                trimBars(bars, MAX_SIMULATED_M1_BARS);
+            } else {
+                bars.add(new Bar(minute, price, price, price, price, volume));
+                bars.sort(Comparator.comparing(Bar::getTimestamp));
+                trimBars(bars, MAX_SIMULATED_M1_BARS);
+            }
+        }
+    }
+
+    private void trimBars(List<Bar> bars, int maxSize) {
+        while (bars.size() > maxSize) {
+            bars.remove(0);
+        }
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(1);
+        }
+    }
+
+    private List<Bar> generateBars(String symbol, Timeframe timeframe, int barCount) {
+        double basePrice = lastPrices.getOrDefault(symbol, getReasonableBasePrice(symbol));
+        lastPrices.put(symbol, basePrice);
+
+        int intervalMinutes = timeframe.getMinutes();
+        LocalDateTime startTime = LocalDateTime.now()
+            .withSecond(0)
+            .withNano(0)
+            .minusMinutes((long) barCount * intervalMinutes);
+
+        double priceVariation = basePrice * 0.05;
+        double currentPrice = basePrice - priceVariation + random.nextDouble() * (priceVariation * 2);
+        List<Bar> bars = new ArrayList<>();
+
+        for (int i = 0; i < barCount; i++) {
+            LocalDateTime barTime = startTime.plusMinutes((long) i * intervalMinutes);
+            double open = currentPrice;
+            double maxChange = currentPrice * HISTORICAL_BAR_CHANGE_RATIO * Math.sqrt(Math.max(1.0, intervalMinutes) / 5.0);
+            double change = (random.nextDouble() - 0.5) * 2.0 * maxChange;
+            if (random.nextDouble() < 0.12) {
+                change += random.nextGaussian() * currentPrice * HISTORICAL_BAR_CHANGE_RATIO;
+            }
+            double close = round(Math.max(1.0, open + change));
+            double maxWick = currentPrice * HISTORICAL_WICK_RATIO * Math.sqrt(Math.max(1.0, intervalMinutes) / 5.0);
+            double high = round(Math.max(open, close) + random.nextDouble() * maxWick);
+            double low = round(Math.max(0.01, Math.min(open, close) - random.nextDouble() * maxWick));
+            long baseVolume = 5000 + random.nextInt(15000);
+            long volume = (long) (baseVolume * (intervalMinutes / 1.0));
+
+            bars.add(new Bar(barTime, round(open), high, low, close, volume));
+            currentPrice = close;
+        }
+
+        lastPrices.put(symbol, currentPrice);
+        return bars;
     }
     
     /**

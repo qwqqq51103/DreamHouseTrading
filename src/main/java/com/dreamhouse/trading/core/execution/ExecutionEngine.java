@@ -18,7 +18,11 @@ public class ExecutionEngine {
     private final Portfolio portfolio;
     private final double commissionRate;
     private final AtomicLong orderIdCounter;
+    private final AtomicLong tradeIdCounter;
     private final Map<String, ExecutionResult> executionHistory;
+    private final Map<String, Double> activeStopLosses;
+    private final Map<String, Double> activeTakeProfits;
+    private final Map<String, String> activeTradeIds;
 
     /**
      * 建構子
@@ -32,7 +36,11 @@ public class ExecutionEngine {
         this.portfolio = portfolio;
         this.commissionRate = commissionRate;
         this.orderIdCounter = new AtomicLong(1);
+        this.tradeIdCounter = new AtomicLong(1);
         this.executionHistory = new HashMap<>();
+        this.activeStopLosses = new HashMap<>();
+        this.activeTakeProfits = new HashMap<>();
+        this.activeTradeIds = new HashMap<>();
     }
 
     /**
@@ -44,7 +52,7 @@ public class ExecutionEngine {
      * @return 執行結果
      */
     public ExecutionResult openPosition(String symbol, int quantity, double price) {
-        return openPosition(symbol, quantity, price, OrderType.MARKET);
+        return openPosition(symbol, quantity, price, OrderType.MARKET, null, null);
     }
 
     /**
@@ -57,15 +65,26 @@ public class ExecutionEngine {
      * @return 執行結果
      */
     public ExecutionResult openPosition(String symbol, int quantity, double price, OrderType orderType) {
+        return openPosition(symbol, quantity, price, orderType, null, null);
+    }
+
+    public ExecutionResult openPosition(String symbol, int quantity, double price, Double stopLoss, Double takeProfit) {
+        return openPosition(symbol, quantity, price, OrderType.MARKET, stopLoss, takeProfit);
+    }
+
+    public ExecutionResult openPosition(String symbol, int quantity, double price, OrderType orderType,
+                                        Double stopLoss, Double takeProfit) {
         String orderId = generateOrderId();
 
         // 乾跑模式：不執行交易
         if (mode == ExecutionMode.DRY_RUN) {
+            String tradeId = generateTradeId();
             return new ExecutionResult.Builder()
                     .status(ExecutionResult.Status.SUCCESS)
                     .orderId(orderId)
                     .symbol(symbol)
                     .orderType(orderType)
+                    .tradeId(tradeId)
                     .requestedQuantity(quantity)
                     .executedQuantity(0)
                     .requestedPrice(price)
@@ -82,10 +101,18 @@ public class ExecutionEngine {
                 return ExecutionResult.failure(orderId, symbol, msg);
             }
 
+            String tradeId = activeTradeIds.computeIfAbsent(symbol, key -> generateTradeId());
+
             // 執行買入
             if (mode == ExecutionMode.BACKTEST || mode == ExecutionMode.PAPER_TRADING) {
                 // 回測模式或模擬盤：直接更新 Portfolio
                 portfolio.addPosition(symbol, quantity, price, commissionRate);
+                if (stopLoss != null) {
+                    activeStopLosses.put(symbol, stopLoss);
+                }
+                if (takeProfit != null) {
+                    activeTakeProfits.put(symbol, takeProfit);
+                }
             } else if (mode == ExecutionMode.LIVE_TRADING) {
                 // 實盤模式：調用實盤 API（未實作）
                 throw new UnsupportedOperationException("實盤交易功能尚未實作");
@@ -103,6 +130,11 @@ public class ExecutionEngine {
                     .executedPrice(price)
                     .commission(commissionRate)
                     .executionTime(LocalDateTime.now())
+                    .action("開倉")
+                    .tradeId(tradeId)
+                    .realizedPnL(0.0)
+                    .stopLoss(stopLoss)
+                    .takeProfit(takeProfit)
                     .message("開倉成功")
                     .build();
 
@@ -171,10 +203,21 @@ public class ExecutionEngine {
                 return ExecutionResult.failure(orderId, symbol, msg);
             }
 
+            double realizedPnL = position.calculateProfit(quantity, price, commissionRate);
+            Double stopLoss = activeStopLosses.get(symbol);
+            Double takeProfit = activeTakeProfits.get(symbol);
+            String tradeId = activeTradeIds.getOrDefault(symbol, "");
+
             // 執行賣出
             if (mode == ExecutionMode.BACKTEST || mode == ExecutionMode.PAPER_TRADING) {
                 // 回測模式或模擬盤：直接更新 Portfolio
                 portfolio.reducePosition(symbol, quantity, price, commissionRate);
+                Position remainingPosition = portfolio.getPosition(symbol);
+                if (remainingPosition == null || remainingPosition.getQuantity() <= 0) {
+                    activeStopLosses.remove(symbol);
+                    activeTakeProfits.remove(symbol);
+                    activeTradeIds.remove(symbol);
+                }
             } else if (mode == ExecutionMode.LIVE_TRADING) {
                 // 實盤模式：調用實盤 API（未實作）
                 throw new UnsupportedOperationException("實盤交易功能尚未實作");
@@ -192,7 +235,12 @@ public class ExecutionEngine {
                     .executedPrice(price)
                     .commission(commissionRate)
                     .executionTime(LocalDateTime.now())
-                    .message("平倉成功")
+                    .action("平倉")
+                    .tradeId(tradeId)
+                    .realizedPnL(realizedPnL)
+                    .stopLoss(stopLoss)
+                    .takeProfit(takeProfit)
+                    .message(String.format("平倉成功，損益 %.2f", realizedPnL))
                     .build();
 
             executionHistory.put(orderId, result);
@@ -290,6 +338,10 @@ public class ExecutionEngine {
                 orderIdCounter.getAndIncrement());
     }
 
+    private String generateTradeId() {
+        return String.format("T%04d", tradeIdCounter.getAndIncrement());
+    }
+
     /**
      * 獲取執行歷史
      */
@@ -309,6 +361,9 @@ public class ExecutionEngine {
      */
     public void clearHistory() {
         executionHistory.clear();
+        activeStopLosses.clear();
+        activeTakeProfits.clear();
+        activeTradeIds.clear();
     }
 
     // Getters

@@ -69,6 +69,12 @@ public class DecisionConfig {
      */
     private boolean riskManagementEnabled = true;
 
+    private boolean shortSellingEnabled = false;
+    private double minRiskRewardRatio = 0.0;
+    private double minEntryAtrPercent = 0.0;
+    private double maxEntryAtrPercent = Double.MAX_VALUE;
+    private int atrFilterPeriod = 14;
+
     /**
      * 日誌詳細程度
      * 0 = 關閉, 1 = 基本, 2 = 詳細, 3 = 除錯
@@ -186,6 +192,46 @@ public class DecisionConfig {
 
     public void setRiskManagementEnabled(boolean riskManagementEnabled) {
         this.riskManagementEnabled = riskManagementEnabled;
+    }
+
+    public boolean isShortSellingEnabled() {
+        return shortSellingEnabled;
+    }
+
+    public void setShortSellingEnabled(boolean shortSellingEnabled) {
+        this.shortSellingEnabled = shortSellingEnabled;
+    }
+
+    public double getMinRiskRewardRatio() {
+        return minRiskRewardRatio;
+    }
+
+    public void setMinRiskRewardRatio(double minRiskRewardRatio) {
+        this.minRiskRewardRatio = Math.max(0.0, minRiskRewardRatio);
+    }
+
+    public double getMinEntryAtrPercent() {
+        return minEntryAtrPercent;
+    }
+
+    public void setMinEntryAtrPercent(double minEntryAtrPercent) {
+        this.minEntryAtrPercent = Math.max(0.0, minEntryAtrPercent);
+    }
+
+    public double getMaxEntryAtrPercent() {
+        return maxEntryAtrPercent;
+    }
+
+    public void setMaxEntryAtrPercent(double maxEntryAtrPercent) {
+        this.maxEntryAtrPercent = maxEntryAtrPercent > 0.0 ? maxEntryAtrPercent : Double.MAX_VALUE;
+    }
+
+    public int getAtrFilterPeriod() {
+        return atrFilterPeriod;
+    }
+
+    public void setAtrFilterPeriod(int atrFilterPeriod) {
+        this.atrFilterPeriod = Math.max(2, atrFilterPeriod);
     }
 
     public int getLogLevel() {

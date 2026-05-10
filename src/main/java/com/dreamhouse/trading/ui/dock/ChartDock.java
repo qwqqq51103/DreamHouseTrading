@@ -94,7 +94,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
     
     // 交易標記
     private List<TradeMarker> tradeMarkers = new ArrayList<>();
-    private TradeMarkerManager markerManager;
+    private TradeMarkerManager markerManager;        // 主圖標記管理器
+    private TradeMarkerManager indicatorMarkerManager; // 副圖標記管理器
 
     // 其他 Dock 引用
     private TimeSalesDock timeSalesDock;
@@ -127,6 +128,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         MINUTE, HOUR, DAY, WEEK, MONTH
     }
     private TimeFrame detectedTimeFrame = TimeFrame.MINUTE;
+    private int detectedIntervalMinutes = 1; // 檢測到的實際時間間隔（分鐘）
     
     // 主題顏色（會根據 FlatLaf 主題自動調整）
     private Color plotBackgroundColor;
@@ -684,7 +686,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
         }
         
         long avgMinutes = totalMinutes / count;
-        
+        detectedIntervalMinutes = (int) avgMinutes; // 保存實際間隔
+
         // 根據平均時間間隔判斷週期類型
         if (avgMinutes >= 20000) { // 約 14 天以上
             detectedTimeFrame = TimeFrame.MONTH;
@@ -702,6 +705,14 @@ public class ChartDock extends JPanel implements MarketDataListener {
             detectedTimeFrame = TimeFrame.MINUTE;
             System.out.println("[ChartDock] 檢測到分鐘線數據 (平均間隔: " + avgMinutes + " 分鐘)");
         }
+    }
+
+    /**
+     * 獲取當前數據的時間間隔（分鐘）
+     * 用於驗證策略是否適用於當前數據
+     */
+    public int getDetectedIntervalMinutes() {
+        return detectedIntervalMinutes;
     }
     
     private void addNewBar() {
@@ -1311,19 +1322,24 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     /**
-     * 顯示交易標記
+     * 顯示交易標記（主圖和副圖）
      */
     public void showTradeMarkers(List<com.dreamhouse.trading.core.backtest.Trade> trades) {
         if (trades == null || trades.isEmpty()) {
             clearTradeMarkers();
             return;
         }
-        
+
         // 使用新的標記管理器
         TradeMarker.TimeFrameConverter converter = this::createTimePeriod;
+
+        // 在主圖顯示標記
         markerManager.setTrades(trades, converter);
-        
-        System.out.println("[ChartDock] 顯示 " + trades.size() + " 個交易標記");
+
+        // 在副圖也顯示標記
+        indicatorMarkerManager.setTrades(trades, converter);
+
+        System.out.println("[ChartDock] 顯示 " + trades.size() + " 個交易標記（主圖 + 副圖）");
     }
     
     /**
@@ -1337,6 +1353,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
     
     /**
      * 顯示交易標記篩選對話框
+     * 注意：目前篩選僅影響主圖標記
+     * TODO: 未來可考慮同步主圖和副圖的篩選設定
      */
     public void showTradeMarkerFilter() {
         if (markerManager != null) {
@@ -1345,13 +1363,16 @@ public class ChartDock extends JPanel implements MarketDataListener {
     }
     
     /**
-     * 清除交易標記
+     * 清除交易標記（主圖和副圖）
      */
     public void clearTradeMarkers() {
         if (markerManager != null) {
             markerManager.clearMarkers();
-            System.out.println("[ChartDock] 清除所有交易標記");
         }
+        if (indicatorMarkerManager != null) {
+            indicatorMarkerManager.clearMarkers();
+        }
+        System.out.println("[ChartDock] 清除所有交易標記（主圖 + 副圖）");
     }
     
     /**
@@ -1486,8 +1507,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
         chartOverlay = new ChartOverlay(drawingManager);
         pricePlot.addAnnotation(chartOverlay);
         
-        // 初始化交易標記管理器
+        // 初始化交易標記管理器（主圖和副圖）
         markerManager = new TradeMarkerManager(chartPanel, pricePlot);
+        indicatorMarkerManager = new TradeMarkerManager(chartPanel, indicatorPlot);
         
         // 添加滑鼠事件監聽器
         chartPanel.addChartMouseListener(new ChartMouseListener() {
