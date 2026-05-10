@@ -1,7 +1,7 @@
 # DreamHouseTrading 專案記憶與開發規範
 
-> **用途**: 本文件為 AI 助手（Claude、Cursor 等）提供專案背景、開發規範和最佳實踐指南
-> **最後更新**: 2025-11-25
+> **用途**: 本文件為 AI 助手（Codex、Cursor 等）提供專案背景、開發規範和最佳實踐指南
+> **最後更新**: 2026-05-10
 
 ---
 
@@ -15,6 +15,7 @@
 - [代碼風格](#代碼風格)
 - [測試要求](#測試要求)
 - [文檔更新規則](#文檔更新規則)
+- [Skill 使用工作流](#skill-使用工作流)
 - [常見任務](#常見任務)
 - [重要注意事項](#重要注意事項)
 - [疑難排解](#疑難排解)
@@ -126,7 +127,7 @@ DreamHouseTrading/
 ├── pom.xml                               # Maven 配置
 ├── README.md                             # 專案說明
 ├── PROJECT_DOCUMENTATION.md              # 完整文檔
-└── CLAUDE.md                             # 本文件
+└── AGENTS.md                             # 本文件
 ```
 
 ### 關鍵套件說明
@@ -333,9 +334,9 @@ feat: 整合 MarketDataCollector 資料庫載入功能與完整修復
 - MainFrameWithDocking.java (手動載入按鈕)
 - PROJECT_DOCUMENTATION.md (新增第 I 章)
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+🤖 Generated with [Codex](https://Codex.com/Codex)
 
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Codex <noreply@anthropic.com>
 ```
 
 ### Commit 前檢查清單
@@ -365,9 +366,9 @@ feat: 整合 MarketDataCollector 資料庫載入功能
 - 與 MarketDataCollector 整合
 - 自動載入歷史數據
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+🤖 Generated with [Codex](https://Codex.com/Codex)
 
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Codex <noreply@anthropic.com>
 EOF
 )"
 
@@ -377,11 +378,24 @@ git push origin main
 
 ### Branch 策略
 
-- **main**: 穩定版本，直接開發
-- **feature/xxx**: 大型功能開發（如需要）
-- **hotfix/xxx**: 緊急修復（如需要）
+- **main**: 唯一長期保留主線，GitHub 上的正式版本只認 `main`
+- **feature/xxx**: 短期功能分支，完成後必須合併並刪除
+- **hotfix/xxx**: 緊急修復分支，完成後必須合併並刪除
 
-當前專案使用簡單的 main branch 策略，直接提交到 main。
+### GitHub 倉庫整理規則
+
+1. **GitHub 只保留一個正式專案來源**
+   - 正式倉庫為 `qwqqq51103/DreamHouseTrading`
+   - 不再建立第二份同用途 repo 作為平行主線
+
+2. **GitHub 只保留一條長期主線**
+   - `main` 是唯一長期保留分支
+   - `feature/*`、`hotfix/*`、`issue-*`、`codex-*` 都視為臨時分支
+   - 功能完成後要合併回 `main`，再刪除遠端分支
+
+3. **不要把文檔整理工作拆成多個平行分支**
+   - 文檔、規範、進度狀態都應回到 `main`
+   - 避免不同分支維護不同版本的 README 或進度文檔
 
 ---
 
@@ -581,11 +595,27 @@ mvn test -q || exit 1
 README.md                      # 專案概覽、快速開始（對外）
     ↓ 詳細內容連結
 PROJECT_DOCUMENTATION.md       # 完整技術文檔（內部）
-    ├── 章節 A: 功能說明
-    ├── 章節 B: API 文檔
-    ├── ...
-    └── 章節 I: 資料庫整合與修復記錄
+    ├── 當前功能與架構
+    ├── 開發與測試流程
+    ├── 重要修復記錄
+    └── 目前進度與下一步
+AGENTS.md                      # AI 助手規範與工作流
 ```
+
+### 文檔精簡規則
+
+1. **只維護三份核心文檔**
+   - `README.md`
+   - `PROJECT_DOCUMENTATION.md`
+   - `AGENTS.md`
+
+2. **避免產生平行進度文檔**
+   - 不要再新增 `*_progress.md`、`*_UPDATED.md`、`*_summary.md` 這類重複文件
+   - 進度統一寫進 `PROJECT_DOCUMENTATION.md`
+
+3. **避免把一次性操作說明留成獨立文檔**
+   - 測試、覆蓋率、安裝、診斷、整合步驟若仍有效，併入 `PROJECT_DOCUMENTATION.md`
+   - 若已過時或已完成，直接刪除，不保留歷史包袱
 
 ### 更新文檔的時機
 
@@ -661,6 +691,137 @@ cd DreamHouseTrading
 
 詳見 [PROJECT_DOCUMENTATION.md - 第 I 章](PROJECT_DOCUMENTATION.md#i-資料庫整合與修復記錄)
 ```
+
+---
+
+## Skill 使用工作流
+
+### 核心原則
+
+1. **先判斷工作型態，再選 skill**
+   - 不要看到「新增功能」就直接套固定 skill
+   - 要先分辨是 Java 核心邏輯、Swing UI、GitHub 流程、CI 修復、文件整理，還是圖片生成
+
+2. **此專案大多數開發任務不需要額外 skill**
+   - DreamHouseTrading 是 Java Swing 專案
+   - 純 Java 功能開發、Bug 修復、重構、測試補強，通常直接閱讀現有代碼並修改即可
+   - 只有在任務明確涉及 GitHub、官方文件、圖片、瀏覽器驗證等情境時，才追加對應 skill
+
+3. **優先使用最少 skill 組合**
+   - 一次只啟用能推進任務的 skill
+   - 避免把 skill 當成固定流程中的必選項
+
+### 場景判斷流程
+
+```text
+1. 這次任務是否只是修改 Java / Swing 現有功能？
+   - 是：通常不需要 skill，直接讀碼、修改、編譯、測試
+   - 否：進入下一步
+
+2. 是否涉及 GitHub PR、review comments、CI、issue 脈絡？
+   - 是：使用 GitHub 類 skill
+
+3. 是否涉及 OpenAI 官方能力、模型、API 文件？
+   - 是：使用 openai-docs
+
+4. 是否需要產生圖片、示意圖、視覺素材？
+   - 是：使用 imagegen
+
+5. 是否需要驗證瀏覽器頁面、localhost Web UI？
+   - 是：使用 browser 或 Vercel 驗證類 skill
+   - 否：Swing 視窗任務通常不用這類 skill
+```
+
+### 場景對應表
+
+| 場景 | 是否通常需要 skill | 建議 skill | 說明 |
+|------|-------------------|-----------|------|
+| 新增 Java 核心功能 | 否 | 無 | 直接修改 `core`、`model`、`strategy`、`util` 相關現有類別 |
+| 修復 Java Bug | 否 | 無 | 先重現問題，再讀碼、修正、執行 `mvn test` 或特定測試 |
+| 調整 Swing UI | 否 | 無 | 直接修改 `ui` 套件，必要時手動執行桌面程式驗證 |
+| 補測試 | 否 | 無 | 直接在 `src/test/java` 補測試案例 |
+| 整理 GitHub 倉庫 / PR / issue 脈絡 | 是 | `github:github` | 當任務和遠端 GitHub 上下文有關時使用 |
+| 修 PR review comments | 是 | `github:gh-address-comments` | 先抓 actionable comments，再實作修正 |
+| 修 GitHub Actions / CI | 是 | `github:gh-fix-ci` | 用於失敗 workflow、job、log 排查 |
+| 完工後準備提交 PR | 是 | `github:yeet` | 用於整理提交、推送、開 draft PR |
+| 查 OpenAI 官方文件 | 是 | `openai-docs` | 僅限涉及 OpenAI API、模型、官方能力 |
+| 產生圖片、示意圖、視覺稿 | 是 | `imagegen` | 例如 README 圖、功能示意圖、素材草圖 |
+| 驗證 Web 頁面或 localhost | 視情況 | `browser-use:browser`、`vercel:agent-browser-verify` | 這類 skill 偏瀏覽器，不適用 Swing 桌面 UI |
+
+### 常見工作流範本
+
+#### 1. 新增 Java 功能
+
+**適用場景**: 新增策略、資料處理邏輯、DecisionEngine 行為、MarketData 載入流程
+
+**Skill**: 通常不需要
+
+**執行步驟**:
+1. 閱讀相關現有類別
+2. 找出應擴展的既有類別，避免新增重複類別
+3. 做最小修改
+4. 執行 `mvn compile -q`
+5. 必要時補測試並執行 `mvn test -q`
+
+#### 2. 修復 Bug
+
+**適用場景**: 資料載入異常、策略結果錯誤、UI 行為不一致、例外處理缺失
+
+**Skill**: 通常不需要
+
+**執行步驟**:
+1. 先確認重現方式
+2. 搜尋相關類別與日誌
+3. 修正最接近根因的位置
+4. 補回歸測試或最小驗證
+5. 執行編譯與測試
+
+#### 3. 處理 PR Review Comments
+
+**適用場景**: 使用者要求「處理 review comments」或「修 reviewer 提到的問題」
+
+**Skill**: `github:gh-address-comments`
+
+**執行步驟**:
+1. 讀取 PR 與 review thread
+2. 篩出可執行的 comment
+3. 在本地修改代碼
+4. 跑必要測試
+5. 回覆 comment 或整理變更摘要
+
+#### 4. 修復 CI / GitHub Actions
+
+**適用場景**: PR check 失敗、workflow fail、測試在 GitHub 上出錯
+
+**Skill**: `github:gh-fix-ci`
+
+**執行步驟**:
+1. 讀取失敗 workflow / job / logs
+2. 區分是環境問題、測試問題還是程式問題
+3. 在本地重現
+4. 修正後重新驗證
+
+#### 5. 完工後提交與開 PR
+
+**適用場景**: 使用者要求推送、開 PR、整理提交
+
+**Skill**: `github:yeet`
+
+**執行步驟**:
+1. 確認修改範圍
+2. 執行編譯與測試
+3. 依 Conventional Commits 建立 commit
+4. 推送分支
+5. 建立 draft PR
+
+### 本專案的 skill 選擇建議
+
+- **Java / Swing 任務優先直接做，不要過度依賴 skill**
+- **只要牽涉 GitHub 遠端上下文，再加 GitHub 類 skill**
+- **只要牽涉 OpenAI 官方資訊，再加 `openai-docs`**
+- **只要牽涉圖片，再加 `imagegen`**
+- **瀏覽器驗證類 skill 不適合直接拿來驗 Swing 桌面程式**
+- **若未來新增 Web 前端模組，再大量使用 browser / Vercel 類 skill**
 
 ---
 
@@ -957,6 +1118,13 @@ git commit ...
 
 ## 最後更新記錄
 
+### 2026-05-10
+
+1. **新增 Skill 使用工作流**
+   - 補充「場景 -> skill -> 執行步驟」決策規則
+   - 明確區分 Java Swing 任務與 GitHub / OpenAI / 圖片 / 瀏覽器任務
+   - 強調大多數本專案任務不需要額外 skill
+
 ### 2025-11-25
 
 1. **新增資料庫整合功能**
@@ -972,7 +1140,7 @@ git commit ...
 3. **文檔更新**
    - PROJECT_DOCUMENTATION.md 新增第 I 章
    - README.md 新增資料庫整合說明
-   - 創建 CLAUDE.md 專案記憶文件
+   - 創建 AGENTS.md 專案記憶文件
 
 ---
 
@@ -987,6 +1155,6 @@ git commit ...
 
 ---
 
-**文件版本**: 1.0
-**最後更新**: 2025-11-25
+**文件版本**: 1.1
+**最後更新**: 2026-05-10
 **維護者**: DreamHouse Trading Team

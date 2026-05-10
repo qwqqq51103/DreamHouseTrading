@@ -63,6 +63,17 @@ datasource.properties
 # IDE - Claude & Cursor
 .claude/
 .cursor/
+.codex/
 
 # Data files
 data/
+
+# Local agent / issue exports
+.github-issues/
+agency-agents-zh/
+
+# Local scratch files
+nul
+DreamHouseTrading_優化完成與使用說明.txt
+install-github-cli.bat
+setup-github-issues-complete.bat
