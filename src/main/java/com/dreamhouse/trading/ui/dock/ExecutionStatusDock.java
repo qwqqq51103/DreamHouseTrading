@@ -6,6 +6,7 @@ import com.dreamhouse.trading.core.execution.ExecutionResult;
 import com.dreamhouse.trading.core.execution.OrderSide;
 import com.dreamhouse.trading.core.execution.OrderStatus;
 import com.dreamhouse.trading.core.execution.OrderType;
+import com.dreamhouse.trading.core.backtest.Position;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -46,6 +47,13 @@ public class ExecutionStatusDock extends JPanel {
     private JLabel successOrdersLabel;
     private JLabel failedOrdersLabel;
     private JLabel successRateLabel;
+    private JLabel cashLabel;
+    private JLabel positionValueLabel;
+    private JLabel totalEquityLabel;
+    private JLabel realizedPnLLabel;
+    private JLabel unrealizedPnLLabel;
+    private JLabel totalPnLLabel;
+    private JLabel commissionLabel;
     private JProgressBar successRateBar;
     private DefaultTableModel tableModel;
     private final Map<String, Double> markPrices = new HashMap<>();
@@ -123,6 +131,14 @@ public class ExecutionStatusDock extends JPanel {
         ratePanel.add(successRateLabel, BorderLayout.WEST);
         ratePanel.add(successRateBar, BorderLayout.CENTER);
         panel.add(ratePanel, gbc);
+
+        addStatRow(panel, gbc, 4, "可用現金", cashLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 5, "持倉市值", positionValueLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 6, "總資產估值", totalEquityLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 7, "已實現損益", realizedPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 8, "未實現損益", unrealizedPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 9, "總損益", totalPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 10, "累計手續費", commissionLabel = createValueLabel(Color.LIGHT_GRAY));
 
         return panel;
     }
@@ -206,6 +222,7 @@ public class ExecutionStatusDock extends JPanel {
                 failedOrdersLabel.setText("0");
                 successRateLabel.setText("0%");
                 successRateBar.setValue(0);
+                resetPortfolioStats();
                 tableModel.setRowCount(0);
                 return;
             }
@@ -231,9 +248,57 @@ public class ExecutionStatusDock extends JPanel {
             successRateLabel.setText(successRate + "%");
             successRateBar.setValue(successRate);
             successRateBar.setForeground(getSuccessRateColor(successRate));
+            updatePortfolioStats();
 
             updateOrderHistoryTable(results);
         });
+    }
+
+    private void updatePortfolioStats() {
+        if (executionEngine == null || executionEngine.getPortfolio() == null) {
+            resetPortfolioStats();
+            return;
+        }
+
+        Map<String, Double> effectiveMarkPrices = new HashMap<>();
+        double positionValue = 0.0;
+        for (Position position : executionEngine.getPortfolio().getPositions()) {
+            double markPrice = markPrices.getOrDefault(position.getSymbol(), position.getAveragePrice());
+            effectiveMarkPrices.put(position.getSymbol(), markPrice);
+            positionValue += position.getQuantity() * markPrice;
+        }
+
+        double cash = executionEngine.getPortfolio().getCash();
+        double totalEquity = cash + positionValue;
+        double realizedPnL = executionEngine.getPortfolio().getRealizedPnL();
+        double unrealizedPnL = executionEngine.getPortfolio().getUnrealizedPnL(effectiveMarkPrices);
+        double totalPnL = totalEquity - executionEngine.getPortfolio().getInitialCash();
+        double commission = executionEngine.getPortfolio().getTotalCommission();
+
+        cashLabel.setText(formatMoney(cash));
+        positionValueLabel.setText(formatMoney(positionValue));
+        totalEquityLabel.setText(formatMoney(totalEquity));
+        realizedPnLLabel.setText(formatPnL(realizedPnL));
+        unrealizedPnLLabel.setText(formatPnL(unrealizedPnL));
+        totalPnLLabel.setText(formatPnL(totalPnL));
+        commissionLabel.setText(formatMoney(commission));
+
+        realizedPnLLabel.setForeground(getPnLColor(realizedPnL));
+        unrealizedPnLLabel.setForeground(getPnLColor(unrealizedPnL));
+        totalPnLLabel.setForeground(getPnLColor(totalPnL));
+    }
+
+    private void resetPortfolioStats() {
+        cashLabel.setText("0.00");
+        positionValueLabel.setText("0.00");
+        totalEquityLabel.setText("0.00");
+        realizedPnLLabel.setText("0.00");
+        unrealizedPnLLabel.setText("0.00");
+        totalPnLLabel.setText("0.00");
+        commissionLabel.setText("0.00");
+        realizedPnLLabel.setForeground(Color.WHITE);
+        unrealizedPnLLabel.setForeground(Color.WHITE);
+        totalPnLLabel.setForeground(Color.WHITE);
     }
 
     private void updateOrderHistoryTable(List<ExecutionResult> results) {
@@ -440,6 +505,16 @@ public class ExecutionStatusDock extends JPanel {
             return new Color(255, 215, 0);
         }
         return new Color(255, 100, 0);
+    }
+
+    private Color getPnLColor(double value) {
+        if (value > 0.005) {
+            return new Color(90, 230, 130);
+        }
+        if (value < -0.005) {
+            return new Color(255, 120, 120);
+        }
+        return Color.WHITE;
     }
 
     private String valueOrDash(String value) {
