@@ -5,19 +5,34 @@ import ca.odell.glazedlists.EventList;
 import ca.odell.glazedlists.gui.TableFormat;
 import ca.odell.glazedlists.swing.EventTableModel;
 import com.dreamhouse.trading.core.cache.MarketDataCache;
+import com.dreamhouse.trading.core.decision.DecisionResult;
+import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.util.I18n;
 
-import javax.swing.*;
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTable;
+import javax.swing.SwingUtilities;
 import javax.swing.table.DefaultTableCellRenderer;
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.FlowLayout;
 import java.text.DecimalFormat;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.function.Consumer;
 
 public class WatchlistPanel extends JPanel {
+    private static final DateTimeFormatter SCAN_TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
+
     private final EventList<WatchlistItem> items = new BasicEventList<>();
     private final EventTableModel<WatchlistItem> tableModel;
     private final JTable table;
+
     private Consumer<String> onSymbolDoubleClick;
     private Consumer<String> onSymbolAdded;
     private Consumer<String> onSymbolRemoved;
@@ -25,81 +40,94 @@ public class WatchlistPanel extends JPanel {
 
     public WatchlistPanel() {
         setLayout(new BorderLayout());
-        setBorder(BorderFactory.createTitledBorder("Watchlist"));
+        setBorder(BorderFactory.createTitledBorder("觀察清單"));
 
-        // 初始化緩存
         try {
             cache = new MarketDataCache();
             loadWatchlistFromCache();
         } catch (Exception e) {
             System.err.println("Failed to initialize cache: " + e.getMessage());
-            // 初始化範例資料
-//            items.add(new WatchlistItem("AAPL", 180.50, 2.5, 1500000));
-//            items.add(new WatchlistItem("TSLA", 245.30, -1.2, 2300000));
-//            items.add(new WatchlistItem("MSFT", 380.20, 0.8, 980000));
         }
-        
+
         tableModel = new EventTableModel<>(items, new WatchlistTableFormat());
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
         table.setRowHeight(24);
-        
-        // 雙擊切換商品
+        table.setAutoCreateRowSorter(true);
+
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mouseClicked(java.awt.event.MouseEvent e) {
                 if (e.getClickCount() == 2 && onSymbolDoubleClick != null) {
-                    int row = table.getSelectedRow();
-                    if (row >= 0) {
-                        WatchlistItem item = items.get(row);
+                    int viewRow = table.getSelectedRow();
+                    if (viewRow >= 0) {
+                        int modelRow = table.convertRowIndexToModel(viewRow);
+                        WatchlistItem item = items.get(modelRow);
                         onSymbolDoubleClick.accept(item.symbol);
                     }
                 }
             }
         });
-        
-        // 自訂渲染器（顏色）
+
         table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             private final DecimalFormat priceFmt = new DecimalFormat("0.00");
             private final DecimalFormat pctFmt = new DecimalFormat("0.00%");
-            
+            private final DecimalFormat scoreFmt = new DecimalFormat("0.0%");
+            private final DecimalFormat ratioFmt = new DecimalFormat("0.00");
+
             @Override
-            public Component getTableCellRendererComponent(JTable table, Object value, 
-                    boolean isSelected, boolean hasFocus, int row, int column) {
-                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                
-                if (column == 2 && value instanceof Double) { // Chg%
-                    double chg = (Double) value;
-                    setText(pctFmt.format(chg / 100.0));
-                    setForeground(chg >= 0 ? new Color(34, 177, 76) : new Color(237, 28, 36));
-                } else if (column == 1 && value instanceof Double) { // Last
-                    setText(priceFmt.format((Double) value));
+            public Component getTableCellRendererComponent(
+                    JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+                Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+
+                if (!isSelected) {
+                    setForeground(table.getForeground());
                 }
-                
-                return c;
+
+                if (column == 1 && value instanceof Double last) {
+                    setText(priceFmt.format(last));
+                } else if (column == 2 && value instanceof Double chg) {
+                    setText(pctFmt.format(chg / 100.0));
+                    if (!isSelected) {
+                        setForeground(chg >= 0 ? new Color(34, 177, 76) : new Color(237, 28, 36));
+                    }
+                } else if ((column == 6 || column == 7) && value instanceof Double score) {
+                    setText(scoreFmt.format(score));
+                } else if (column == 8 && value instanceof Double ratio) {
+                    setText(ratio > 0 ? ratioFmt.format(ratio) : "--");
+                } else if (value == null) {
+                    setText("--");
+                }
+
+                if (!isSelected && column == 5 && value != null) {
+                    String text = value.toString().toUpperCase();
+                    if (text.contains("LONG")) {
+                        setForeground(new Color(0, 150, 70));
+                    } else if (text.contains("SHORT")) {
+                        setForeground(new Color(190, 50, 50));
+                    }
+                }
+
+                return component;
             }
         });
-        
+
         add(new JScrollPane(table), BorderLayout.CENTER);
 
-        // 底部按鈕
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addBtn = new JButton(I18n.get("watchlist.add"));
         JButton removeBtn = new JButton(I18n.get("watchlist.remove"));
-
         addBtn.addActionListener(e -> addSymbol());
         removeBtn.addActionListener(e -> removeSelectedSymbol());
-
         buttonPanel.add(addBtn);
         buttonPanel.add(removeBtn);
         add(buttonPanel, BorderLayout.SOUTH);
     }
 
-    /**
-     * 從緩存加載觀察清單
-     */
     private void loadWatchlistFromCache() {
-        if (cache == null) return;
+        if (cache == null) {
+            return;
+        }
 
         List<String> symbols = cache.getWatchlist();
         for (String symbol : symbols) {
@@ -108,93 +136,73 @@ public class WatchlistPanel extends JPanel {
         System.out.println("Loaded " + symbols.size() + " symbols from watchlist cache");
     }
 
-    /**
-     * 添加商品對話框
-     */
     private void addSymbol() {
         String symbol = JOptionPane.showInputDialog(
-            this,
-            I18n.get("watchlist.add.prompt"),
-            I18n.get("watchlist.add.title"),
-            JOptionPane.PLAIN_MESSAGE
-        );
+                this,
+                I18n.get("watchlist.add.prompt"),
+                I18n.get("watchlist.add.title"),
+                JOptionPane.PLAIN_MESSAGE);
 
-        if (symbol != null && !symbol.trim().isEmpty()) {
-            symbol = symbol.trim().toUpperCase();
+        if (symbol == null || symbol.trim().isEmpty()) {
+            return;
+        }
 
-            // 檢查是否已存在
-            for (WatchlistItem item : items) {
-                if (item.symbol.equals(symbol)) {
-                    JOptionPane.showMessageDialog(
+        symbol = symbol.trim().toUpperCase();
+        for (WatchlistItem item : items) {
+            if (item.symbol.equals(symbol)) {
+                JOptionPane.showMessageDialog(
                         this,
                         I18n.get("watchlist.add.duplicate"),
                         I18n.get("watchlist.add.title"),
-                        JOptionPane.WARNING_MESSAGE
-                    );
-                    return;
-                }
+                        JOptionPane.WARNING_MESSAGE);
+                return;
             }
-
-            // 添加到列表
-            items.add(new WatchlistItem(symbol, 0, 0, 0));
-            tableModel.fireTableDataChanged();
-
-            // 保存到緩存
-            if (cache != null) {
-                cache.addToWatchlist(symbol);
-            }
-
-            // 觸發回調
-            if (onSymbolAdded != null) {
-                onSymbolAdded.accept(symbol);
-            }
-
-            System.out.println("Added " + symbol + " to watchlist");
         }
+
+        items.add(new WatchlistItem(symbol, 0, 0, 0));
+        tableModel.fireTableDataChanged();
+
+        if (cache != null) {
+            cache.addToWatchlist(symbol);
+        }
+        if (onSymbolAdded != null) {
+            onSymbolAdded.accept(symbol);
+        }
+        System.out.println("Added " + symbol + " to watchlist");
     }
 
-    /**
-     * 刪除選中的商品
-     */
     private void removeSelectedSymbol() {
         int selectedRow = table.getSelectedRow();
         if (selectedRow < 0) {
             JOptionPane.showMessageDialog(
-                this,
-                I18n.get("watchlist.remove.noselection"),
-                I18n.get("watchlist.remove.title"),
-                JOptionPane.WARNING_MESSAGE
-            );
+                    this,
+                    I18n.get("watchlist.remove.noselection"),
+                    I18n.get("watchlist.remove.title"),
+                    JOptionPane.WARNING_MESSAGE);
             return;
         }
 
-        WatchlistItem item = items.get(selectedRow);
-
+        int modelRow = table.convertRowIndexToModel(selectedRow);
+        WatchlistItem item = items.get(modelRow);
         int confirm = JOptionPane.showConfirmDialog(
-            this,
-            I18n.get("watchlist.remove.confirm") + " " + item.symbol + "?",
-            I18n.get("watchlist.remove.title"),
-            JOptionPane.YES_NO_OPTION
-        );
+                this,
+                I18n.get("watchlist.remove.confirm") + " " + item.symbol + "?",
+                I18n.get("watchlist.remove.title"),
+                JOptionPane.YES_NO_OPTION);
 
         if (confirm == JOptionPane.YES_OPTION) {
-            items.remove(selectedRow);
+            items.remove(modelRow);
             tableModel.fireTableDataChanged();
-
-            // 從緩存刪除
             if (cache != null) {
                 cache.removeFromWatchlist(item.symbol);
             }
-
-            // 觸發回調
             if (onSymbolRemoved != null) {
                 onSymbolRemoved.accept(item.symbol);
             }
-
             System.out.println("Removed " + item.symbol + " from watchlist");
         }
     }
-    
+
     public void setOnSymbolDoubleClick(Consumer<String> callback) {
         this.onSymbolDoubleClick = callback;
     }
@@ -212,11 +220,11 @@ public class WatchlistPanel extends JPanel {
     }
 
     public void addSymbolProgrammatically(String symbol) {
-        if (symbol == null || symbol.trim().isEmpty()) return;
+        if (symbol == null || symbol.trim().isEmpty()) {
+            return;
+        }
 
         symbol = symbol.trim().toUpperCase();
-
-        // 檢查是否已存在
         for (WatchlistItem item : items) {
             if (item.symbol.equals(symbol)) {
                 return;
@@ -225,12 +233,11 @@ public class WatchlistPanel extends JPanel {
 
         items.add(new WatchlistItem(symbol, 0, 0, 0));
         tableModel.fireTableDataChanged();
-
         if (cache != null) {
             cache.addToWatchlist(symbol);
         }
     }
-    
+
     public void updateItem(String symbol, double last, double changePct, long volume) {
         for (WatchlistItem item : items) {
             if (item.symbol.equals(symbol)) {
@@ -242,25 +249,67 @@ public class WatchlistPanel extends JPanel {
             }
         }
     }
-    
+
+    public void updateScanResult(MarketScanResult result) {
+        if (result == null || result.getSymbol() == null) {
+            return;
+        }
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            applyScanResult(result);
+        } else {
+            SwingUtilities.invokeLater(() -> applyScanResult(result));
+        }
+    }
+
+    private void applyScanResult(MarketScanResult result) {
+        for (WatchlistItem item : items) {
+            if (item.symbol.equals(result.getSymbol())) {
+                item.tradeMode = result.getTradeMode() != null ? result.getTradeMode().getDisplayName() : "";
+                item.scanScore = result.getScore();
+                DecisionResult decision = result.getDecisionResult();
+                item.signal = decision != null ? decision.getAction().getDisplayName() : "";
+                item.confidence = result.getConfidence();
+                item.riskRewardRatio = result.getRiskRewardRatio() != null ? result.getRiskRewardRatio() : 0.0;
+                item.lastScanTime = result.getScannedAt() != null ? result.getScannedAt().format(SCAN_TIME_FMT) : "";
+                tableModel.fireTableDataChanged();
+                return;
+            }
+        }
+    }
+
     public static class WatchlistItem {
         String symbol;
         double last;
         double changePct;
         long volume;
-        
+        String tradeMode;
+        double scanScore;
+        String signal;
+        double confidence;
+        double riskRewardRatio;
+        String lastScanTime;
+
         public WatchlistItem(String symbol, double last, double changePct, long volume) {
             this.symbol = symbol;
             this.last = last;
             this.changePct = changePct;
             this.volume = volume;
+            this.tradeMode = "";
+            this.scanScore = 0.0;
+            this.signal = "";
+            this.confidence = 0.0;
+            this.riskRewardRatio = 0.0;
+            this.lastScanTime = "";
         }
     }
-    
+
     private static class WatchlistTableFormat implements TableFormat<WatchlistItem> {
         @Override
-        public int getColumnCount() { return 4; }
-        
+        public int getColumnCount() {
+            return 10;
+        }
+
         @Override
         public String getColumnName(int column) {
             return switch (column) {
@@ -268,10 +317,16 @@ public class WatchlistPanel extends JPanel {
                 case 1 -> I18n.get("watchlist.last");
                 case 2 -> I18n.get("watchlist.change");
                 case 3 -> I18n.get("watchlist.volume");
+                case 4 -> "模式";
+                case 5 -> "訊號";
+                case 6 -> "分數";
+                case 7 -> "信心";
+                case 8 -> "風報比";
+                case 9 -> "掃描";
                 default -> "";
             };
         }
-        
+
         @Override
         public Object getColumnValue(WatchlistItem item, int column) {
             return switch (column) {
@@ -279,9 +334,14 @@ public class WatchlistPanel extends JPanel {
                 case 1 -> item.last;
                 case 2 -> item.changePct;
                 case 3 -> item.volume;
+                case 4 -> item.tradeMode;
+                case 5 -> item.signal;
+                case 6 -> item.scanScore;
+                case 7 -> item.confidence;
+                case 8 -> item.riskRewardRatio;
+                case 9 -> item.lastScanTime;
                 default -> null;
             };
         }
     }
 }
-

@@ -1,25 +1,24 @@
 package com.dreamhouse.trading.core.decision;
 
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.decision.regime.RegimeAnalysis;
+import com.dreamhouse.trading.core.decision.risk.RiskViolation;
 import com.dreamhouse.trading.core.decision.trend.TrendAnalysis;
 import com.dreamhouse.trading.core.decision.voting.VotingResult;
-import com.dreamhouse.trading.core.decision.risk.RiskViolation;
+import com.dreamhouse.trading.core.execution.OrderSide;
+import com.dreamhouse.trading.core.execution.OrderType;
 
 /**
- * 決策結果
- * DecisionEngine 的最終輸出，包含所有決策資訊
+ * Normalized decision payload produced by DecisionEngine.
  */
 public class DecisionResult {
 
-    /**
-     * 決策動作
-     */
     public enum Action {
-        OPEN_LONG("開多"),
-        OPEN_SHORT("開空"),
+        OPEN_LONG("做多進場"),
+        OPEN_SHORT("做空訊號"),
         CLOSE_POSITION("平倉"),
         HOLD("持有"),
-        NO_ACTION("無動作");
+        NO_ACTION("不動作");
 
         private final String displayName;
 
@@ -32,17 +31,14 @@ public class DecisionResult {
         }
     }
 
-    /**
-     * 決策來源（是哪個模組觸發的）
-     */
     public enum Source {
-        RISK_MANAGER("風險管理"),
+        RISK_MANAGER("風控管理"),
         STOP_MANAGER("停損停利"),
-        VOTING_EXIT("策略出場投票"),
-        VOTING_ENTRY("策略進場投票"),
-        REGIME_FILTER("週線濾網"),
-        TREND_FILTER("日線濾網"),
-        TECHNICAL("技術性"),
+        VOTING_EXIT("投票出場"),
+        VOTING_ENTRY("投票進場"),
+        REGIME_FILTER("市場狀態過濾"),
+        TREND_FILTER("趨勢過濾"),
+        TECHNICAL("技術面"),
         MANUAL("手動");
 
         private final String displayName;
@@ -58,31 +54,35 @@ public class DecisionResult {
 
     private final Action action;
     private final Source source;
+    private final String symbol;
+    private final TradeMode tradeMode;
     private final String reason;
     private final long timestamp;
-
-    // 價格建議
+    private final OrderType orderType;
+    private final OrderSide orderSide;
     private final Double suggestedStopLoss;
     private final Double suggestedTakeProfit;
     private final Integer suggestedQuantity;
-
-    // 各模組狀態
+    private final Double riskRewardRatio;
     private final RegimeAnalysis regimeAnalysis;
     private final TrendAnalysis trendAnalysis;
     private final VotingResult votingResult;
     private final RiskViolation riskViolation;
-
-    // 信心度
     private final double confidence;
 
     private DecisionResult(Builder builder) {
         this.action = builder.action;
         this.source = builder.source;
+        this.symbol = builder.symbol;
+        this.tradeMode = builder.tradeMode;
         this.reason = builder.reason;
         this.timestamp = builder.timestamp;
+        this.orderType = builder.orderType;
+        this.orderSide = builder.orderSide;
         this.suggestedStopLoss = builder.suggestedStopLoss;
         this.suggestedTakeProfit = builder.suggestedTakeProfit;
         this.suggestedQuantity = builder.suggestedQuantity;
+        this.riskRewardRatio = builder.riskRewardRatio;
         this.regimeAnalysis = builder.regimeAnalysis;
         this.trendAnalysis = builder.trendAnalysis;
         this.votingResult = builder.votingResult;
@@ -98,12 +98,28 @@ public class DecisionResult {
         return source;
     }
 
+    public String getSymbol() {
+        return symbol;
+    }
+
+    public TradeMode getTradeMode() {
+        return tradeMode;
+    }
+
     public String getReason() {
         return reason;
     }
 
     public long getTimestamp() {
         return timestamp;
+    }
+
+    public OrderType getOrderType() {
+        return orderType;
+    }
+
+    public OrderSide getOrderSide() {
+        return orderSide;
     }
 
     public Double getSuggestedStopLoss() {
@@ -116,6 +132,10 @@ public class DecisionResult {
 
     public Integer getSuggestedQuantity() {
         return suggestedQuantity;
+    }
+
+    public Double getRiskRewardRatio() {
+        return riskRewardRatio;
     }
 
     public RegimeAnalysis getRegimeAnalysis() {
@@ -138,118 +158,108 @@ public class DecisionResult {
         return confidence;
     }
 
-    /**
-     * 是否應該執行交易
-     */
     public boolean shouldTrade() {
         return action == Action.OPEN_LONG || action == Action.OPEN_SHORT || action == Action.CLOSE_POSITION;
     }
 
-    /**
-     * 是否為開倉動作
-     */
     public boolean isEntry() {
         return action == Action.OPEN_LONG || action == Action.OPEN_SHORT;
     }
 
-    /**
-     * 是否為平倉動作
-     */
     public boolean isExit() {
         return action == Action.CLOSE_POSITION;
     }
 
-    /**
-     * 是否為做多
-     */
     public boolean isLong() {
         return action == Action.OPEN_LONG;
     }
 
-    /**
-     * 是否為做空
-     */
     public boolean isShort() {
         return action == Action.OPEN_SHORT;
     }
 
+    public MarketScanResult toMarketScanResult() {
+        return new MarketScanResult(
+                symbol,
+                tradeMode,
+                action,
+                confidence,
+                reason,
+                suggestedStopLoss,
+                suggestedTakeProfit,
+                riskRewardRatio,
+                timestamp);
+    }
+
     @Override
     public String toString() {
-        return String.format("[決策] %s | 來源:%s | 信心度:%.2f - %s",
+        return String.format(
+                "[Decision] %s %s | mode=%s | source=%s | confidence=%.2f | %s",
+                symbol != null ? symbol : "-",
                 action.getDisplayName(),
+                tradeMode != null ? tradeMode.getShortCode() : "NONE",
                 source.getDisplayName(),
                 confidence,
                 reason);
     }
 
-    /**
-     * 詳細報告
-     */
     public String toDetailedString() {
         StringBuilder sb = new StringBuilder();
-        sb.append("========== 決策報告 ==========\n");
-        sb.append(String.format("動作: %s\n", action.getDisplayName()));
-        sb.append(String.format("來源: %s\n", source.getDisplayName()));
-        sb.append(String.format("原因: %s\n", reason));
-        sb.append(String.format("信心度: %.2f\n", confidence));
+        sb.append("========== Decision ==========\n");
+        sb.append(String.format("symbol: %s%n", symbol));
+        sb.append(String.format("mode: %s%n",
+                tradeMode != null ? tradeMode.getDisplayName() : "NONE"));
+        sb.append(String.format("action: %s%n", action.getDisplayName()));
+        sb.append(String.format("source: %s%n", source.getDisplayName()));
+        sb.append(String.format("order: %s %s%n", orderSide, orderType));
+        sb.append(String.format("reason: %s%n", reason));
+        sb.append(String.format("confidence: %.2f%n", confidence));
 
         if (suggestedStopLoss != null) {
-            sb.append(String.format("建議停損: %.2f\n", suggestedStopLoss));
+            sb.append(String.format("stop loss: %.2f%n", suggestedStopLoss));
         }
         if (suggestedTakeProfit != null) {
-            sb.append(String.format("建議停利: %.2f\n", suggestedTakeProfit));
+            sb.append(String.format("take profit: %.2f%n", suggestedTakeProfit));
         }
         if (suggestedQuantity != null) {
-            sb.append(String.format("建議數量: %d\n", suggestedQuantity));
+            sb.append(String.format("quantity: %d%n", suggestedQuantity));
         }
-
-        sb.append("\n--- 週線環境 ---\n");
+        if (riskRewardRatio != null) {
+            sb.append(String.format("risk/reward: %.2f%n", riskRewardRatio));
+        }
         if (regimeAnalysis != null) {
-            sb.append(regimeAnalysis.toString()).append("\n");
-        } else {
-            sb.append("未分析\n");
+            sb.append("\n--- Regime ---\n").append(regimeAnalysis).append('\n');
         }
-
-        sb.append("\n--- 日線趨勢 ---\n");
         if (trendAnalysis != null) {
-            sb.append(trendAnalysis.toString()).append("\n");
-        } else {
-            sb.append("未分析\n");
+            sb.append("\n--- Trend ---\n").append(trendAnalysis).append('\n');
         }
-
-        sb.append("\n--- 投票結果 ---\n");
         if (votingResult != null) {
-            sb.append(votingResult.toString()).append("\n");
-        } else {
-            sb.append("無投票\n");
+            sb.append("\n--- Voting ---\n").append(votingResult).append('\n');
         }
-
-        sb.append("\n--- 風險違規 ---\n");
         if (riskViolation != null) {
-            sb.append(riskViolation.toString()).append("\n");
-        } else {
-            sb.append("無違規\n");
+            sb.append("\n--- Risk ---\n").append(riskViolation).append('\n');
         }
-
         sb.append("==============================\n");
         return sb.toString();
     }
 
-    /**
-     * Builder 建造者模式
-     */
     public static class Builder {
         private Action action = Action.NO_ACTION;
         private Source source = Source.MANUAL;
+        private String symbol = "";
+        private TradeMode tradeMode = TradeMode.NO_TRADE;
         private String reason = "";
         private long timestamp = System.currentTimeMillis();
-        private Double suggestedStopLoss = null;
-        private Double suggestedTakeProfit = null;
-        private Integer suggestedQuantity = null;
-        private RegimeAnalysis regimeAnalysis = null;
-        private TrendAnalysis trendAnalysis = null;
-        private VotingResult votingResult = null;
-        private RiskViolation riskViolation = null;
+        private OrderType orderType = OrderType.MARKET;
+        private OrderSide orderSide = OrderSide.BUY;
+        private Double suggestedStopLoss;
+        private Double suggestedTakeProfit;
+        private Integer suggestedQuantity;
+        private Double riskRewardRatio;
+        private RegimeAnalysis regimeAnalysis;
+        private TrendAnalysis trendAnalysis;
+        private VotingResult votingResult;
+        private RiskViolation riskViolation;
         private double confidence = 0.5;
 
         public Builder action(Action action) {
@@ -259,6 +269,16 @@ public class DecisionResult {
 
         public Builder source(Source source) {
             this.source = source;
+            return this;
+        }
+
+        public Builder symbol(String symbol) {
+            this.symbol = symbol;
+            return this;
+        }
+
+        public Builder tradeMode(TradeMode tradeMode) {
+            this.tradeMode = tradeMode;
             return this;
         }
 
@@ -272,18 +292,33 @@ public class DecisionResult {
             return this;
         }
 
-        public Builder suggestedStopLoss(Double stopLoss) {
-            this.suggestedStopLoss = stopLoss;
+        public Builder orderType(OrderType orderType) {
+            this.orderType = orderType;
             return this;
         }
 
-        public Builder suggestedTakeProfit(Double takeProfit) {
-            this.suggestedTakeProfit = takeProfit;
+        public Builder orderSide(OrderSide orderSide) {
+            this.orderSide = orderSide;
             return this;
         }
 
-        public Builder suggestedQuantity(Integer quantity) {
-            this.suggestedQuantity = quantity;
+        public Builder suggestedStopLoss(Double suggestedStopLoss) {
+            this.suggestedStopLoss = suggestedStopLoss;
+            return this;
+        }
+
+        public Builder suggestedTakeProfit(Double suggestedTakeProfit) {
+            this.suggestedTakeProfit = suggestedTakeProfit;
+            return this;
+        }
+
+        public Builder suggestedQuantity(Integer suggestedQuantity) {
+            this.suggestedQuantity = suggestedQuantity;
+            return this;
+        }
+
+        public Builder riskRewardRatio(Double riskRewardRatio) {
+            this.riskRewardRatio = riskRewardRatio;
             return this;
         }
 

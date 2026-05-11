@@ -1,70 +1,63 @@
 package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 
 /**
- * 信號監控配置
+ * 信號監控配置。
  */
 public class SignalMonitorConfig {
 
-    // 掃描間隔（秒）
     private int scanIntervalSeconds = 10;
-
-    // 時間週期
     private Timeframe timeframe = Timeframe.M5;
-
-    // 最小信號間隔（分鐘）- 避免重複提醒
     private int minSignalIntervalMinutes = 5;
-
-    // K 線數量（用於技術分析）
-    private int barCount = 100;
-
-    // 策略參數（可選）
+    private int barCount = 160;
+    private TradeMode tradeMode = TradeMode.DAY_TRADE;
+    private boolean batchScanMode = true;
     private Integer rsiPeriod;
     private Double rsiOversold;
     private Double rsiOverbought;
 
-    /**
-     * 創建預設配置
-     */
     public static SignalMonitorConfig createDefault() {
+        return new SignalMonitorConfig();
+    }
+
+    public static SignalMonitorConfig createAggressiveTemplate() {
         SignalMonitorConfig config = new SignalMonitorConfig();
-        config.setScanIntervalSeconds(10);
-        config.setTimeframe(Timeframe.M5);
-        config.setMinSignalIntervalMinutes(5);
+        config.setScanIntervalSeconds(8);
+        config.setTimeframe(Timeframe.M1);
+        config.setMinSignalIntervalMinutes(2);
+        config.setBarCount(180);
+        config.setTradeMode(TradeMode.DAY_TRADE);
         return config;
     }
 
-    /**
-     * 創建快速配置（更頻繁的掃描）
-     */
-    public static SignalMonitorConfig createFast() {
+    public static SignalMonitorConfig createSimulationTestTemplate() {
         SignalMonitorConfig config = new SignalMonitorConfig();
         config.setScanIntervalSeconds(5);
         config.setTimeframe(Timeframe.M1);
-        config.setMinSignalIntervalMinutes(3);
+        config.setMinSignalIntervalMinutes(1);
+        config.setBarCount(220);
+        config.setTradeMode(TradeMode.DAY_TRADE);
         return config;
     }
 
-    /**
-     * 創建慢速配置（較少的掃描）
-     */
-    public static SignalMonitorConfig createSlow() {
+    public static SignalMonitorConfig createBalancedTemplate() {
         SignalMonitorConfig config = new SignalMonitorConfig();
-        config.setScanIntervalSeconds(30);
-        config.setTimeframe(Timeframe.M15);
-        config.setMinSignalIntervalMinutes(10);
+        config.setScanIntervalSeconds(15);
+        config.setTimeframe(Timeframe.M5);
+        config.setMinSignalIntervalMinutes(5);
+        config.setBarCount(160);
+        config.setTradeMode(TradeMode.DAY_TRADE);
         return config;
     }
-
-    // Getters and Setters
 
     public int getScanIntervalSeconds() {
         return scanIntervalSeconds;
     }
 
     public void setScanIntervalSeconds(int scanIntervalSeconds) {
-        this.scanIntervalSeconds = scanIntervalSeconds;
+        this.scanIntervalSeconds = Math.max(3, scanIntervalSeconds);
     }
 
     public Timeframe getTimeframe() {
@@ -72,7 +65,7 @@ public class SignalMonitorConfig {
     }
 
     public void setTimeframe(Timeframe timeframe) {
-        this.timeframe = timeframe;
+        this.timeframe = timeframe != null ? timeframe : Timeframe.M5;
     }
 
     public int getMinSignalIntervalMinutes() {
@@ -80,7 +73,7 @@ public class SignalMonitorConfig {
     }
 
     public void setMinSignalIntervalMinutes(int minSignalIntervalMinutes) {
-        this.minSignalIntervalMinutes = minSignalIntervalMinutes;
+        this.minSignalIntervalMinutes = Math.max(1, minSignalIntervalMinutes);
     }
 
     public int getBarCount() {
@@ -88,7 +81,23 @@ public class SignalMonitorConfig {
     }
 
     public void setBarCount(int barCount) {
-        this.barCount = barCount;
+        this.barCount = Math.max(20, barCount);
+    }
+
+    public TradeMode getTradeMode() {
+        return tradeMode;
+    }
+
+    public void setTradeMode(TradeMode tradeMode) {
+        this.tradeMode = tradeMode != null ? tradeMode : TradeMode.DAY_TRADE;
+    }
+
+    public boolean isBatchScanMode() {
+        return batchScanMode;
+    }
+
+    public void setBatchScanMode(boolean batchScanMode) {
+        this.batchScanMode = batchScanMode;
     }
 
     public Integer getRsiPeriod() {
