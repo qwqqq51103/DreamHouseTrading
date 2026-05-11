@@ -1,12 +1,12 @@
 package com.dreamhouse.trading.ui.dock;
 
+import com.dreamhouse.trading.core.backtest.Position;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
 import com.dreamhouse.trading.core.execution.OrderSide;
 import com.dreamhouse.trading.core.execution.OrderStatus;
 import com.dreamhouse.trading.core.execution.OrderType;
-import com.dreamhouse.trading.core.backtest.Position;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -29,16 +29,18 @@ import java.awt.Font;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class ExecutionStatusDock extends JPanel {
 
-    private static final int MAX_DISPLAY_ORDERS = 50;
+    private static final int MAX_DISPLAY_TRADES = 50;
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss");
 
     private ExecutionEngine executionEngine;
@@ -74,7 +76,7 @@ public class ExecutionStatusDock extends JPanel {
         topPanel.add(createStatisticsPanel());
 
         mainPanel.add(topPanel, BorderLayout.NORTH);
-        mainPanel.add(createOrderHistoryPanel(), BorderLayout.CENTER);
+        mainPanel.add(createTradeHistoryPanel(), BorderLayout.CENTER);
         add(mainPanel, BorderLayout.CENTER);
 
         updateDisplay();
@@ -109,9 +111,9 @@ public class ExecutionStatusDock extends JPanel {
         panel.setBorder(createBorder("執行統計"));
 
         GridBagConstraints gbc = createConstraints();
-        addStatRow(panel, gbc, 0, "總委託數", totalOrdersLabel = createValueLabel(Color.WHITE));
-        addStatRow(panel, gbc, 1, "成功筆數", successOrdersLabel = createValueLabel(new Color(80, 220, 120)));
-        addStatRow(panel, gbc, 2, "失敗筆數", failedOrdersLabel = createValueLabel(new Color(255, 110, 110)));
+        addStatRow(panel, gbc, 0, "訂單總數", totalOrdersLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 1, "成功訂單", successOrdersLabel = createValueLabel(new Color(80, 220, 120)));
+        addStatRow(panel, gbc, 2, "失敗訂單", failedOrdersLabel = createValueLabel(new Color(255, 110, 110)));
 
         gbc.gridx = 0;
         gbc.gridy = 3;
@@ -143,14 +145,14 @@ public class ExecutionStatusDock extends JPanel {
         return panel;
     }
 
-    private JPanel createOrderHistoryPanel() {
+    private JPanel createTradeHistoryPanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 5));
         panel.setBackground(new Color(50, 50, 50));
-        panel.setBorder(createBorder("訂單歷史（最近 " + MAX_DISPLAY_ORDERS + " 筆）"));
+        panel.setBorder(createBorder("交易紀錄（最近 " + MAX_DISPLAY_TRADES + " 筆）"));
 
         String[] columnNames = {
-                "狀態", "配對", "時間", "商品", "動作", "類型", "數量",
-                "委託價", "成交價", "停損", "停利", "手續費", "損益", "訊息", "策略理由"
+                "狀態", "交易ID", "商品", "方向", "開倉時間", "平倉時間", "數量",
+                "進場價", "出場/現價", "停損", "停利", "損益", "報酬率", "平倉原因", "原始理由"
         };
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
@@ -159,29 +161,29 @@ public class ExecutionStatusDock extends JPanel {
             }
         };
 
-        JTable orderHistoryTable = new JTable(tableModel);
-        orderHistoryTable.setBackground(new Color(40, 40, 40));
-        orderHistoryTable.setForeground(Color.LIGHT_GRAY);
-        orderHistoryTable.setGridColor(new Color(60, 60, 60));
-        orderHistoryTable.setSelectionBackground(new Color(70, 130, 180));
-        orderHistoryTable.setSelectionForeground(Color.WHITE);
-        orderHistoryTable.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
-        orderHistoryTable.getTableHeader().setBackground(new Color(60, 60, 60));
-        orderHistoryTable.getTableHeader().setForeground(Color.WHITE);
-        orderHistoryTable.getTableHeader().setFont(new Font("Microsoft JhengHei", Font.BOLD, 11));
-        orderHistoryTable.setRowHeight(25);
-        orderHistoryTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        configureColumns(orderHistoryTable);
-        orderHistoryTable.setDefaultRenderer(Object.class, new ExecutionRowRenderer());
+        JTable tradeHistoryTable = new JTable(tableModel);
+        tradeHistoryTable.setBackground(new Color(40, 40, 40));
+        tradeHistoryTable.setForeground(Color.LIGHT_GRAY);
+        tradeHistoryTable.setGridColor(new Color(60, 60, 60));
+        tradeHistoryTable.setSelectionBackground(new Color(70, 130, 180));
+        tradeHistoryTable.setSelectionForeground(Color.WHITE);
+        tradeHistoryTable.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
+        tradeHistoryTable.getTableHeader().setBackground(new Color(60, 60, 60));
+        tradeHistoryTable.getTableHeader().setForeground(Color.WHITE);
+        tradeHistoryTable.getTableHeader().setFont(new Font("Microsoft JhengHei", Font.BOLD, 11));
+        tradeHistoryTable.setRowHeight(25);
+        tradeHistoryTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        configureColumns(tradeHistoryTable);
+        tradeHistoryTable.setDefaultRenderer(Object.class, new TradeRowRenderer());
 
-        JScrollPane scrollPane = new JScrollPane(orderHistoryTable);
+        JScrollPane scrollPane = new JScrollPane(tradeHistoryTable);
         scrollPane.setBorder(BorderFactory.createLineBorder(new Color(80, 80, 80)));
         panel.add(scrollPane, BorderLayout.CENTER);
         return panel;
     }
 
     private void configureColumns(JTable table) {
-        int[] widths = {54, 130, 108, 82, 72, 56, 70, 82, 82, 82, 82, 86, 90, 190, 360};
+        int[] widths = {74, 142, 86, 60, 116, 116, 56, 76, 76, 76, 76, 92, 76, 190, 360};
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -231,15 +233,10 @@ public class ExecutionStatusDock extends JPanel {
             executionModeLabel.setText(mode.getDisplayName());
             executionModeLabel.setForeground(getModeColor(mode));
 
-            Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
-            List<ExecutionResult> results = new ArrayList<>(history.values());
-            results.sort(Comparator.comparing(
-                    ExecutionResult::getExecutionTime,
-                    Comparator.nullsLast(Comparator.naturalOrder())));
-
+            List<ExecutionResult> results = getSortedExecutionResults();
             long totalOrders = results.size();
             long successOrders = results.stream().filter(ExecutionResult::isSuccess).count();
-            long failedOrders = results.stream().filter(result -> !result.isSuccess()).count();
+            long failedOrders = results.stream().filter(ExecutionResult::isFailed).count();
             int successRate = totalOrders > 0 ? (int) ((successOrders * 100) / totalOrders) : 0;
 
             totalOrdersLabel.setText(String.valueOf(totalOrders));
@@ -250,8 +247,45 @@ public class ExecutionStatusDock extends JPanel {
             successRateBar.setForeground(getSuccessRateColor(successRate));
             updatePortfolioStats();
 
-            updateOrderHistoryTable(results);
+            updateTradeHistoryTable(buildTradeLifecycleRows(results));
         });
+    }
+
+    private List<ExecutionResult> getSortedExecutionResults() {
+        Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
+        List<ExecutionResult> results = new ArrayList<>(history.values());
+        results.sort(Comparator.comparing(
+                ExecutionResult::getExecutionTime,
+                Comparator.nullsLast(Comparator.naturalOrder())));
+        return results;
+    }
+
+    private List<TradeLifecycleRow> buildTradeLifecycleRows(List<ExecutionResult> results) {
+        Map<String, TradeLifecycleRow> trades = new LinkedHashMap<>();
+        List<TradeLifecycleRow> standaloneRows = new ArrayList<>();
+
+        for (ExecutionResult result : results) {
+            if (!result.isSuccess()) {
+                standaloneRows.add(TradeLifecycleRow.rejected(result));
+                continue;
+            }
+
+            if (result.getOrderSide() == OrderSide.BUY) {
+                String tradeId = nonBlank(result.getPositionId(), result.getOrderId());
+                trades.computeIfAbsent(tradeId, id -> new TradeLifecycleRow(id)).applyOpen(result);
+            } else if (result.getOrderSide() == OrderSide.SELL) {
+                String tradeId = nonBlank(result.getPositionId(), result.getOrderId());
+                trades.computeIfAbsent(tradeId, id -> new TradeLifecycleRow(id)).applyClose(result);
+            } else {
+                standaloneRows.add(TradeLifecycleRow.rejected(result));
+            }
+        }
+
+        List<TradeLifecycleRow> rows = new ArrayList<>(trades.values());
+        rows.addAll(standaloneRows);
+        rows.sort(Comparator.comparing(TradeLifecycleRow::getSortTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .reversed());
+        return rows;
     }
 
     private void updatePortfolioStats() {
@@ -301,70 +335,34 @@ public class ExecutionStatusDock extends JPanel {
         totalPnLLabel.setForeground(Color.WHITE);
     }
 
-    private void updateOrderHistoryTable(List<ExecutionResult> results) {
+    private void updateTradeHistoryTable(List<TradeLifecycleRow> rows) {
         tableModel.setRowCount(0);
-        int startIndex = Math.max(0, results.size() - MAX_DISPLAY_ORDERS);
-        for (int i = results.size() - 1; i >= startIndex; i--) {
-            ExecutionResult result = results.get(i);
+        int endIndex = Math.min(rows.size(), MAX_DISPLAY_TRADES);
+        for (int i = 0; i < endIndex; i++) {
+            TradeLifecycleRow row = rows.get(i);
+            double displayPnL = row.calculateDisplayPnL(markPrices);
             tableModel.addRow(new Object[]{
-                    getStatusText(result),
-                    valueOrDash(result.getPositionId()),
-                    formatTime(result),
-                    valueOrDash(result.getSymbol()),
-                    getSideText(result.getOrderSide()),
-                    getOrderTypeText(result.getOrderType()),
-                    formatQuantity(result.getExecutedQuantity(), result.getRequestedQuantity()),
-                    formatPrice(result.getRequestedPrice()),
-                    formatPrice(result.getExecutedPrice()),
-                    formatNullablePrice(result.getStopLoss()),
-                    formatNullablePrice(result.getTakeProfit()),
-                    formatMoney(result.getCommission()),
-                    formatPnL(calculateDisplayPnL(result)),
-                    valueOrDash(toChineseMessage(result)),
-                    valueOrDash(result.getDecisionReason())
+                    row.getStatusText(),
+                    row.tradeId,
+                    valueOrDash(row.symbol),
+                    row.getDirectionText(),
+                    formatTime(row.openTime),
+                    formatTime(row.closeTime),
+                    row.quantity > 0 ? String.valueOf(row.quantity) : "--",
+                    formatPrice(row.entryPrice),
+                    row.getExitOrMarkPriceText(markPrices),
+                    formatNullablePrice(row.stopLoss),
+                    formatNullablePrice(row.takeProfit),
+                    formatPnL(displayPnL),
+                    formatPercent(row.calculateReturnRate(markPrices)),
+                    valueOrDash(row.getExitMessage(displayPnL)),
+                    valueOrDash(row.reason)
             });
         }
     }
 
-    private String getStatusText(ExecutionResult result) {
-        if (result.getOrderStatus() == OrderStatus.REJECTED || result.isFailed()) {
-            return "失敗";
-        }
-        return switch (result.getStatus()) {
-            case SUCCESS -> "成功";
-            case FAILED -> "失敗";
-            case PARTIAL -> "部分成交";
-            case PENDING -> "等待中";
-            case CANCELLED -> "已取消";
-            case REJECTED -> "已拒絕";
-        };
-    }
-
-    private String getSideText(OrderSide side) {
-        if (side == null) {
-            return "--";
-        }
-        return switch (side) {
-            case BUY -> "開倉";
-            case SELL -> "平倉";
-            case SHORT -> "放空";
-            case COVER -> "回補";
-        };
-    }
-
-    private String getOrderTypeText(OrderType type) {
-        return type != null ? type.getDisplayName() : "--";
-    }
-
-    private String formatTime(ExecutionResult result) {
-        return result.getExecutionTime() != null ? result.getExecutionTime().format(TIME_FORMATTER) : "--";
-    }
-
-    private String formatQuantity(int executedQuantity, int requestedQuantity) {
-        if (executedQuantity == requestedQuantity || requestedQuantity <= 0) {
-            return String.valueOf(executedQuantity);
-        }
-        return executedQuantity + "/" + requestedQuantity;
+    private String formatTime(LocalDateTime time) {
+        return time != null ? time.format(TIME_FORMATTER) : "--";
     }
 
     private String formatPrice(double price) {
@@ -386,66 +384,11 @@ public class ExecutionStatusDock extends JPanel {
         return String.format("%+.2f", value);
     }
 
-    private double calculateDisplayPnL(ExecutionResult result) {
-        if (result.getOrderSide() != OrderSide.BUY || !result.isSuccess()) {
-            return result.getRealizedPnL();
+    private String formatPercent(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value) || Math.abs(value) < 0.00005) {
+            return "0.00%";
         }
-        Double markPrice = markPrices.get(result.getSymbol());
-        if (markPrice == null || markPrice <= 0.0 || result.getExecutedPrice() <= 0.0) {
-            return result.getRealizedPnL();
-        }
-        return (markPrice - result.getExecutedPrice()) * result.getExecutedQuantity() - result.getCommission();
-    }
-
-    private String toChineseMessage(ExecutionResult result) {
-        String message = valueOrDash(result.getMessage());
-        if (!"--".equals(message) && !isKnownEnglishMessage(message)) {
-            return message;
-        }
-        if (result.isFailed()) {
-            return translateFailureMessage(message);
-        }
-        if (result.getOrderSide() == OrderSide.BUY) {
-            return "開倉成功";
-        }
-        if (result.getOrderSide() == OrderSide.SELL) {
-            return String.format("平倉成功，損益 %s", formatPnL(calculateDisplayPnL(result)));
-        }
-        return message;
-    }
-
-    private boolean isKnownEnglishMessage(String message) {
-        return message.contains("Opened")
-                || message.contains("Closed")
-                || message.contains("Required cash")
-                || message.contains("No position")
-                || message.contains("Short selling")
-                || message.contains("Decision")
-                || message.contains("quantity")
-                || message.contains("Live trading")
-                || message.contains("Dry-run");
-    }
-
-    private String translateFailureMessage(String message) {
-        if (message.contains("Required cash")) {
-            return "資金不足，委託已拒絕";
-        }
-        if (message.contains("No position")) {
-            return "沒有可平倉部位";
-        }
-        if (message.contains("Short selling")) {
-            return "目前版本不支援放空";
-        }
-        if (message.contains("quantity")) {
-            return "委託數量不合法";
-        }
-        if (message.contains("Decision")) {
-            return "策略決策不可執行";
-        }
-        if (message.contains("Live trading")) {
-            return "真實下單尚未支援";
-        }
-        return "--".equals(message) ? "委託失敗" : message;
+        return String.format("%+.2f%%", value * 100.0);
     }
 
     private TitledBorder createBorder(String title) {
@@ -521,45 +464,204 @@ public class ExecutionStatusDock extends JPanel {
         return value == null || value.isBlank() ? "--" : value;
     }
 
-    private static class ExecutionRowRenderer extends DefaultTableCellRenderer {
+    private String nonBlank(String preferred, String fallback) {
+        return preferred != null && !preferred.isBlank() ? preferred : fallback;
+    }
+
+    private static class TradeLifecycleRow {
+        private final String tradeId;
+        private String symbol;
+        private int quantity;
+        private double entryPrice;
+        private double exitPrice;
+        private Double stopLoss;
+        private Double takeProfit;
+        private double realizedPnL;
+        private double totalCommission;
+        private LocalDateTime openTime;
+        private LocalDateTime closeTime;
+        private String reason;
+        private String closeReason;
+        private String failedMessage;
+        private boolean rejected;
+
+        private TradeLifecycleRow(String tradeId) {
+            this.tradeId = tradeId;
+        }
+
+        private static TradeLifecycleRow rejected(ExecutionResult result) {
+            TradeLifecycleRow row = new TradeLifecycleRow(nonBlankStatic(result.getPositionId(), result.getOrderId()));
+            row.symbol = result.getSymbol();
+            row.quantity = result.getRequestedQuantity();
+            row.entryPrice = result.getRequestedPrice();
+            row.exitPrice = result.getExecutedPrice();
+            row.stopLoss = result.getStopLoss();
+            row.takeProfit = result.getTakeProfit();
+            row.totalCommission = result.getCommission();
+            row.openTime = result.getExecutionTime();
+            row.reason = result.getDecisionReason();
+            row.failedMessage = translateFailureMessage(result.getMessage());
+            row.rejected = true;
+            return row;
+        }
+
+        private void applyOpen(ExecutionResult result) {
+            symbol = result.getSymbol();
+            quantity = result.getExecutedQuantity();
+            entryPrice = result.getExecutedPrice();
+            stopLoss = result.getStopLoss();
+            takeProfit = result.getTakeProfit();
+            totalCommission += result.getCommission();
+            openTime = result.getExecutionTime();
+            reason = result.getDecisionReason();
+        }
+
+        private void applyClose(ExecutionResult result) {
+            if (symbol == null || symbol.isBlank()) {
+                symbol = result.getSymbol();
+            }
+            if (quantity <= 0) {
+                quantity = result.getExecutedQuantity();
+            }
+            exitPrice = result.getExecutedPrice();
+            stopLoss = result.getStopLoss() != null ? result.getStopLoss() : stopLoss;
+            takeProfit = result.getTakeProfit() != null ? result.getTakeProfit() : takeProfit;
+            realizedPnL += result.getRealizedPnL();
+            totalCommission += result.getCommission();
+            closeTime = result.getExecutionTime();
+            closeReason = result.getDecisionReason();
+            if (reason == null || reason.isBlank()) {
+                reason = result.getDecisionReason();
+            }
+        }
+
+        private String getStatusText() {
+            if (rejected) {
+                return "失敗";
+            }
+            return closeTime != null ? "已平倉" : "持倉中";
+        }
+
+        private String getDirectionText() {
+            return "做多";
+        }
+
+        private LocalDateTime getSortTime() {
+            if (closeTime != null) {
+                return closeTime;
+            }
+            return openTime;
+        }
+
+        private double calculateDisplayPnL(Map<String, Double> markPrices) {
+            if (rejected) {
+                return 0.0;
+            }
+            if (closeTime != null) {
+                return realizedPnL;
+            }
+            Double markPrice = markPrices.get(symbol);
+            if (markPrice == null || markPrice <= 0.0 || entryPrice <= 0.0 || quantity <= 0) {
+                return 0.0;
+            }
+            return (markPrice - entryPrice) * quantity - totalCommission;
+        }
+
+        private double calculateReturnRate(Map<String, Double> markPrices) {
+            if (entryPrice <= 0.0 || quantity <= 0) {
+                return 0.0;
+            }
+            return calculateDisplayPnL(markPrices) / (entryPrice * quantity);
+        }
+
+        private String getExitOrMarkPriceText(Map<String, Double> markPrices) {
+            if (exitPrice > 0.0) {
+                return String.format("%.2f", exitPrice);
+            }
+            Double markPrice = markPrices.get(symbol);
+            return markPrice != null && markPrice > 0.0 ? String.format("%.2f", markPrice) : "--";
+        }
+
+        private String getExitMessage(double displayPnL) {
+            if (rejected) {
+                return failedMessage;
+            }
+            if (closeTime == null) {
+                return "尚未平倉，損益為即時估算";
+            }
+            String reasonText = closeReason == null || closeReason.isBlank() ? "平倉完成" : closeReason;
+            return reasonText + "，損益 " + String.format("%+.2f", displayPnL);
+        }
+
+        private static String nonBlankStatic(String preferred, String fallback) {
+            return preferred != null && !preferred.isBlank() ? preferred : fallback;
+        }
+
+        private static String translateFailureMessage(String message) {
+            if (message == null || message.isBlank()) {
+                return "訂單失敗";
+            }
+            if (message.contains("Required cash")) {
+                return "資金不足，無法開倉";
+            }
+            if (message.contains("No position")) {
+                return "沒有可平倉部位";
+            }
+            if (message.contains("Short selling")) {
+                return "目前版本不支援放空";
+            }
+            if (message.contains("quantity")) {
+                return "訂單數量不正確";
+            }
+            if (message.contains("Decision")) {
+                return "決策結果不符合執行條件";
+            }
+            if (message.contains("Live trading")) {
+                return "目前不支援真實下單";
+            }
+            return message;
+        }
+    }
+
+    private static class TradeRowRenderer extends DefaultTableCellRenderer {
         private static final Color DEFAULT_BG = new Color(40, 40, 40);
         private static final Color OPEN_BG = new Color(34, 56, 43);
-        private static final Color CLOSE_BG = new Color(58, 43, 34);
+        private static final Color CLOSE_BG = new Color(43, 50, 62);
         private static final Color FAILED_BG = new Color(64, 34, 34);
         private static final Color SELECTED_BG = new Color(70, 130, 180);
         private static final Color POSITIVE = new Color(90, 230, 130);
         private static final Color NEGATIVE = new Color(255, 120, 120);
+        private static final Color CLOSED_TEXT = new Color(145, 190, 255);
 
         @Override
         public Component getTableCellRendererComponent(
                 JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
             String status = String.valueOf(table.getValueAt(row, 0));
-            String side = String.valueOf(table.getValueAt(row, 4));
 
             if (isSelected) {
                 component.setBackground(SELECTED_BG);
                 component.setForeground(Color.WHITE);
             } else {
-                if ("失敗".equals(status) || "已拒絕".equals(status)) {
+                if ("失敗".equals(status)) {
                     component.setBackground(FAILED_BG);
-                } else if ("開倉".equals(side)) {
+                } else if ("持倉中".equals(status)) {
                     component.setBackground(OPEN_BG);
-                } else if ("平倉".equals(side)) {
+                } else if ("已平倉".equals(status)) {
                     component.setBackground(CLOSE_BG);
                 } else {
                     component.setBackground(DEFAULT_BG);
                 }
 
-                if (column == 12 && value instanceof String text && text.startsWith("+")) {
+                if ((column == 11 || column == 12) && value instanceof String text && text.startsWith("+")) {
                     component.setForeground(POSITIVE);
-                } else if (column == 12 && value instanceof String text && text.startsWith("-")) {
+                } else if ((column == 11 || column == 12) && value instanceof String text && text.startsWith("-")) {
                     component.setForeground(NEGATIVE);
-                } else if ("開倉".equals(side) && column == 4) {
+                } else if ("持倉中".equals(status) && column == 0) {
                     component.setForeground(POSITIVE);
-                } else if ("平倉".equals(side) && column == 4) {
-                    component.setForeground(new Color(255, 190, 110));
-                } else if ("失敗".equals(status) || "已拒絕".equals(status)) {
+                } else if ("已平倉".equals(status) && column == 0) {
+                    component.setForeground(CLOSED_TEXT);
+                } else if ("失敗".equals(status)) {
                     component.setForeground(NEGATIVE);
                 } else {
                     component.setForeground(Color.LIGHT_GRAY);
