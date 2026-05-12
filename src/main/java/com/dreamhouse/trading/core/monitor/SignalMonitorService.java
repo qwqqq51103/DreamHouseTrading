@@ -5,6 +5,8 @@ import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.DecisionConfig;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
+import com.dreamhouse.trading.core.finmind.FinMindAccessDeniedException;
+import com.dreamhouse.trading.core.finmind.FinMindQuotaExceededException;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import org.slf4j.Logger;
@@ -37,6 +39,7 @@ public class SignalMonitorService {
             TradeMode.DAY_TRADE,
             TradeMode.SHORT_SWING,
             TradeMode.SWING_TRADE);
+    private static final Duration UPSTREAM_FAILURE_COOLDOWN = Duration.ofMinutes(15);
 
     private final SignalMonitorConfig config;
     private final MarketDataFeed dataFeed;
@@ -49,6 +52,7 @@ public class SignalMonitorService {
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> monitorTask;
     private volatile boolean running;
+    private volatile LocalDateTime upstreamFailurePausedUntil;
 
     private BiConsumer<String, DecisionResult> onSignalDetected;
     private Consumer<String> onStatusUpdate;
@@ -107,6 +111,7 @@ public class SignalMonitorService {
         monitorTask = null;
         executor = null;
         running = false;
+        upstreamFailurePausedUntil = null;
         roundCounter.set(0);
         lastSignalTime.clear();
         notifyStatus("監控已停止");
@@ -118,16 +123,32 @@ public class SignalMonitorService {
             return;
         }
 
+        LocalDateTime pausedUntil = upstreamFailurePausedUntil;
+        if (pausedUntil != null && LocalDateTime.now().isBefore(pausedUntil)) {
+            notifyStatus(String.format("Market data scan paused until %s because FinMind rejected the previous request",
+                    pausedUntil));
+            return;
+        }
+
         int round = roundCounter.incrementAndGet();
         notifyStatus(String.format("第 %d 輪掃描開始", round));
 
         List<MarketScanResult> results = new ArrayList<>();
+        boolean scanPaused = false;
         for (String symbol : monitoredSymbols) {
             try {
                 MarketScanResult bestResult = findBestRadarCandidate(symbol);
                 if (bestResult != null) {
                     results.add(bestResult);
                 }
+            } catch (FinMindAccessDeniedException | FinMindQuotaExceededException e) {
+                upstreamFailurePausedUntil = LocalDateTime.now().plus(UPSTREAM_FAILURE_COOLDOWN);
+                logger.warn("Market data scan paused for {} minutes after FinMind rejected request for {}: {}",
+                        UPSTREAM_FAILURE_COOLDOWN.toMinutes(), symbol, e.getMessage());
+                notifyStatus(String.format("Market data scan paused for %d minutes: %s",
+                        UPSTREAM_FAILURE_COOLDOWN.toMinutes(), e.getMessage()));
+                scanPaused = true;
+                break;
             } catch (Exception e) {
                 logger.warn("Scan failed for {}: {}", symbol, e.getMessage());
             }
@@ -135,6 +156,9 @@ public class SignalMonitorService {
 
         results.sort(Comparator.naturalOrder());
         notifyScanResults(results);
+        if (scanPaused) {
+            return;
+        }
         notifyStatus(String.format("第 %d 輪雷達排名已更新，共 %d 檔", round, results.size()));
 
         int signalCount = 0;
@@ -185,10 +209,14 @@ public class SignalMonitorService {
                 .tradeMode(mode)
                 .timeframe(resolveTimeframe(mode))
                 .barCount(resolveBarCount(mode))
-                .decisionConfig(decisionConfig);
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(config.getRadarStrategyConfig());
     }
 
     private Timeframe resolveTimeframe(TradeMode mode) {
+        if (config.getRadarStrategyConfig() != null) {
+            return config.getRadarStrategyConfig().resolveTimeframe(mode);
+        }
         return switch (mode) {
             case DAY_TRADE -> config.getTimeframe();
             case SHORT_SWING -> Timeframe.M15;
@@ -198,6 +226,9 @@ public class SignalMonitorService {
     }
 
     private int resolveBarCount(TradeMode mode) {
+        if (config.getRadarStrategyConfig() != null) {
+            return config.getRadarStrategyConfig().resolveBarCount(mode);
+        }
         return switch (mode) {
             case DAY_TRADE -> Math.max(config.getBarCount(), 120);
             case SHORT_SWING -> Math.max(config.getBarCount(), 160);

@@ -2,6 +2,7 @@ package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
+import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 
 /**
  * 信號監控配置。
@@ -14,6 +15,7 @@ public class SignalMonitorConfig {
     private int barCount = 160;
     private TradeMode tradeMode = TradeMode.DAY_TRADE;
     private boolean batchScanMode = true;
+    private RadarStrategyConfig radarStrategyConfig = RadarStrategyConfig.createDefault();
     private Integer rsiPeriod;
     private Double rsiOversold;
     private Double rsiOverbought;
@@ -29,6 +31,7 @@ public class SignalMonitorConfig {
         config.setMinSignalIntervalMinutes(2);
         config.setBarCount(180);
         config.setTradeMode(TradeMode.DAY_TRADE);
+        config.setRadarStrategyConfig(RadarStrategyConfig.createAggressiveTemplate());
         return config;
     }
 
@@ -39,6 +42,7 @@ public class SignalMonitorConfig {
         config.setMinSignalIntervalMinutes(1);
         config.setBarCount(220);
         config.setTradeMode(TradeMode.DAY_TRADE);
+        config.setRadarStrategyConfig(RadarStrategyConfig.createSimulationTestTemplate());
         return config;
     }
 
@@ -49,6 +53,7 @@ public class SignalMonitorConfig {
         config.setMinSignalIntervalMinutes(5);
         config.setBarCount(160);
         config.setTradeMode(TradeMode.DAY_TRADE);
+        config.setRadarStrategyConfig(RadarStrategyConfig.createBalancedTemplate());
         return config;
     }
 
@@ -98,6 +103,14 @@ public class SignalMonitorConfig {
 
     public void setBatchScanMode(boolean batchScanMode) {
         this.batchScanMode = batchScanMode;
+    }
+
+    public RadarStrategyConfig getRadarStrategyConfig() {
+        return radarStrategyConfig;
+    }
+
+    public void setRadarStrategyConfig(RadarStrategyConfig radarStrategyConfig) {
+        this.radarStrategyConfig = radarStrategyConfig != null ? radarStrategyConfig : RadarStrategyConfig.createDefault();
     }
 
     public Integer getRsiPeriod() {

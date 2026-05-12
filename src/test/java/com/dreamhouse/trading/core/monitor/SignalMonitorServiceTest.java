@@ -1,8 +1,12 @@
 package com.dreamhouse.trading.core.monitor;
 
+import com.dreamhouse.trading.core.MarketDataFeed;
+import com.dreamhouse.trading.core.MarketDataListener;
 import com.dreamhouse.trading.core.SimulatorFeed;
 import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.DecisionConfig;
+import com.dreamhouse.trading.core.finmind.FinMindAccessDeniedException;
+import com.dreamhouse.trading.core.model.Bar;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +54,67 @@ class SignalMonitorServiceTest {
             assertEquals(Set.of("2330.TW", "2317.TW", "2454.TW"), symbols);
         } finally {
             monitor.stop();
+        }
+    }
+
+    @Test
+    void finMindAccessFailurePausesLaterScheduledScans() throws Exception {
+        SignalMonitorConfig config = SignalMonitorConfig.createSimulationTestTemplate();
+        config.setScanIntervalSeconds(1);
+
+        AccessDeniedFeed feed = new AccessDeniedFeed();
+        SignalMonitorService monitor = new SignalMonitorService(feed, config, DecisionConfig.createDefault());
+        CountDownLatch pausedLatch = new CountDownLatch(1);
+
+        monitor.setOnStatusUpdate(status -> {
+            if (status.contains("Market data scan paused for 15 minutes")) {
+                pausedLatch.countDown();
+            }
+        });
+
+        try {
+            monitor.start(List.of("2330.TW", "2317.TW"));
+
+            assertTrue(pausedLatch.await(4, TimeUnit.SECONDS), "Monitor should publish FinMind pause status");
+            Thread.sleep(1_200);
+            assertEquals(1, feed.getRequestCount(), "Cooldown should prevent later scheduled API requests");
+        } finally {
+            monitor.stop();
+        }
+    }
+
+    private static class AccessDeniedFeed implements MarketDataFeed {
+        private final java.util.concurrent.atomic.AtomicInteger requestCount = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            requestCount.incrementAndGet();
+            throw new FinMindAccessDeniedException("FinMind authentication or permission failed: ip banned", 403, "403");
+        }
+
+        private int getRequestCount() {
+            return requestCount.get();
         }
     }
 }

@@ -13,8 +13,10 @@ import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
+import com.dreamhouse.trading.core.logging.PaperTradeRecorder;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
+import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 import com.dreamhouse.trading.ui.chart.DrawingManager;
 import com.dreamhouse.trading.ui.dialog.CsvExportDialog;
 import com.dreamhouse.trading.ui.dialog.CsvImportDialog;
@@ -56,6 +58,7 @@ public class MainFrameWithDocking extends JFrame {
     private TimeSalesDock timeSalesDock;
     private NewsDock newsDock;
     private OpportunityRadarDock opportunityRadarDock;
+    private FinMindApiDock finMindApiDock;
 
     // 新增的分析與執行面板
     private MarketAnalysisDock marketAnalysisDock;
@@ -81,6 +84,7 @@ public class MainFrameWithDocking extends JFrame {
     private DecisionConfig monitorDecisionConfig;
     private Portfolio monitorPortfolio;
     private ExecutionEngine executionEngine;
+    private final PaperTradeRecorder paperTradeRecorder = new PaperTradeRecorder();
     private boolean autoTradingEnabled = false;
 
     // 保存當前的市場數據監聽器引用，用於取消訂閱
@@ -208,6 +212,11 @@ public class MainFrameWithDocking extends JFrame {
         Docking.registerDockable(radarWrapper);
         Docking.dock(radarWrapper, watchlistWrapper, DockingRegion.SOUTH);
 
+        finMindApiDock = new FinMindApiDock(dataSourceManager);
+        DockableWrapper finMindApiWrapper = new DockableWrapper("finMindApi", "FinMind API 查詢", finMindApiDock);
+        Docking.registerDockable(finMindApiWrapper);
+        Docking.dock(finMindApiWrapper, radarWrapper, DockingRegion.SOUTH);
+
         // 五檔掛單
         orderBookDock = new OrderBookDock();
         DockableWrapper orderBookWrapper = new DockableWrapper("orderbook", I18n.get("dock.orderbook"), orderBookDock);
@@ -320,29 +329,17 @@ public class MainFrameWithDocking extends JFrame {
         // Quick switch submenu
         JMenu switchMenu = new JMenu(I18n.get("menu.data.switch"));
 
-        JMenuItem switchToSimulator = new JMenuItem(I18n.get("menu.data.switch.simulator"));
-        switchToSimulator.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.SIMULATOR));
-        switchMenu.add(switchToSimulator);
+        JMenuItem switchToMarketCollector = new JMenuItem("MarketDataCollector");
+        switchToMarketCollector.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.MARKET_COLLECTOR));
+        switchMenu.add(switchToMarketCollector);
+
+        JMenuItem switchToFinMind = new JMenuItem(I18n.get("menu.data.switch.finmind"));
+        switchToFinMind.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.FINMIND));
+        switchMenu.add(switchToFinMind);
 
         JMenuItem switchToYahoo = new JMenuItem(I18n.get("menu.data.switch.yahoo"));
         switchToYahoo.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.YAHOO_FINANCE));
         switchMenu.add(switchToYahoo);
-
-        JMenuItem switchToAlphaVantage = new JMenuItem(I18n.get("menu.data.switch.alphavantage"));
-        switchToAlphaVantage.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.ALPHA_VANTAGE));
-        switchMenu.add(switchToAlphaVantage);
-
-        JMenuItem switchToFinnhub = new JMenuItem(I18n.get("menu.data.switch.finnhub"));
-        switchToFinnhub.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.FINNHUB));
-        switchMenu.add(switchToFinnhub);
-
-        JMenuItem switchToIEXCloud = new JMenuItem(I18n.get("menu.data.switch.iexcloud"));
-        switchToIEXCloud.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.IEX_CLOUD));
-        switchMenu.add(switchToIEXCloud);
-
-        JMenuItem switchToPolygon = new JMenuItem(I18n.get("menu.data.switch.polygon"));
-        switchToPolygon.addActionListener(e -> switchDataSource(DataSourceManager.DataSourceType.POLYGON));
-        switchMenu.add(switchToPolygon);
 
         dataMenu.add(switchMenu);
         menuBar.add(dataMenu);
@@ -556,10 +553,27 @@ public class MainFrameWithDocking extends JFrame {
 
         // 訂閱當前商品
         dataFeed.subscribe(currentSymbol, currentMarketDataListener);
+        if (usesUnifiedMarketUpdates()) {
+            subscribeWatchlistMarketData();
+        }
+    }
+
+    private boolean usesUnifiedMarketUpdates() {
+        DataSourceManager.DataSourceType type = dataSourceManager.getCurrentType();
+        return type == DataSourceManager.DataSourceType.MARKET_COLLECTOR
+                || type == DataSourceManager.DataSourceType.FINMIND;
+    }
+
+    private boolean isFinMindDataSource() {
+        return dataSourceManager.getCurrentType() == DataSourceManager.DataSourceType.FINMIND;
     }
 
     private void subscribeWatchlistMarketData() {
         if (watchlistPanel == null) {
+            return;
+        }
+        if (isFinMindDataSource()) {
+            statusBar.setText("FinMind 資料源不訂閱觀察清單自動更新，避免 API 用量增加；請切換 MarketDataCollector。");
             return;
         }
         ensureWatchlistMarketDataListener();
@@ -618,6 +632,7 @@ public class MainFrameWithDocking extends JFrame {
         String symbol = tick.getSymbol();
         double price = tick.getPrice();
         latestPrices.put(symbol, price);
+        paperTradeRecorder.recordMarketPrice(symbol, price, tick.getTimestamp());
 
         double openPrice = watchlistOpenPrices.computeIfAbsent(symbol, ignored -> price);
         long volume = watchlistVolumes.merge(symbol, Math.max(0L, tick.getVolume()), Long::sum);
@@ -668,6 +683,7 @@ public class MainFrameWithDocking extends JFrame {
                 price,
                 com.dreamhouse.trading.core.execution.OrderType.MARKET,
                 reason);
+        paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "auto-stop");
         activeStopLosses.remove(symbol);
         activeTakeProfits.remove(symbol);
         pendingAutoEntries.remove(symbol);
@@ -707,6 +723,11 @@ public class MainFrameWithDocking extends JFrame {
         // 訂閱新商品
         subscribeMarketData();
 
+        if (isFinMindDataSource()) {
+            statusBar.setText("FinMind 資料源不自動載入圖表 K 線，避免 API 用量增加；請使用 FinMind API 面板手動查詢。");
+            return;
+        }
+
         // 在背景執行緒中加載歷史數據，使用當前週期
         new Thread(() -> {
             try {
@@ -739,6 +760,11 @@ public class MainFrameWithDocking extends JFrame {
         // 清除圖表數據
         chartDock.clearAllData();
 
+        if (isFinMindDataSource()) {
+            statusBar.setText("FinMind 資料源不自動載入圖表 K 線，避免 API 用量增加；請使用 FinMind API 面板手動查詢。");
+            return;
+        }
+
         // 在背景執行緒中重新加載當前商品的歷史數據，使用新的週期
         new Thread(() -> {
             try {
@@ -768,6 +794,11 @@ public class MainFrameWithDocking extends JFrame {
         chartDock.clearAllData();
 
         statusBar.setText("正在載入 " + currentSymbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 數據...");
+
+        if (isFinMindDataSource()) {
+            statusBar.setText("FinMind 資料源不自動載入圖表 K 線，避免 API 用量增加；請使用 FinMind API 面板手動查詢。");
+            return;
+        }
 
         // 在背景執行緒中重新加載數據
         new Thread(() -> {
@@ -985,6 +1016,12 @@ public class MainFrameWithDocking extends JFrame {
         }
 
         statusBar.setText("正在批次掃描觀察清單...");
+        if (isFinMindDataSource()) {
+            opportunityRadarDock.clearResults();
+            statusBar.setText("FinMind 資料源不執行自動雷達掃描，避免 API 用量增加；請切換 MarketDataCollector。");
+            return;
+        }
+
         SwingWorker<List<MarketScanResult>, Void> worker = new SwingWorker<>() {
             @Override
             protected List<MarketScanResult> doInBackground() {
@@ -1067,10 +1104,16 @@ public class MainFrameWithDocking extends JFrame {
             .tradeMode(mode)
             .timeframe(resolveRadarTimeframe(mode))
             .barCount(resolveRadarBarCount(mode))
-            .decisionConfig(resolveRadarDecisionConfig(mode));
+            .decisionConfig(resolveRadarDecisionConfig(mode))
+            .radarStrategyConfig(monitorConfig != null
+                    ? monitorConfig.getRadarStrategyConfig()
+                    : RadarStrategyConfig.createDefault());
     }
 
     private Timeframe resolveRadarTimeframe(TradeMode mode) {
+        if (monitorConfig != null && monitorConfig.getRadarStrategyConfig() != null) {
+            return monitorConfig.getRadarStrategyConfig().resolveTimeframe(mode);
+        }
         return switch (mode) {
             case DAY_TRADE -> Timeframe.M5;
             case SHORT_SWING -> Timeframe.M15;
@@ -1080,6 +1123,9 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private int resolveRadarBarCount(TradeMode mode) {
+        if (monitorConfig != null && monitorConfig.getRadarStrategyConfig() != null) {
+            return monitorConfig.getRadarStrategyConfig().resolveBarCount(mode);
+        }
         return switch (mode) {
             case DAY_TRADE -> Math.max(customBarCount, 120);
             case SHORT_SWING -> Math.max(customBarCount, 160);
@@ -1089,9 +1135,6 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private DecisionConfig resolveRadarDecisionConfig(TradeMode mode) {
-        if (dataSourceManager.getCurrentType() == DataSourceManager.DataSourceType.SIMULATOR) {
-            return createSimulationTestDecisionConfig();
-        }
         return switch (mode) {
             case DAY_TRADE -> monitorDecisionConfig != null ? monitorDecisionConfig : createAggressiveMonitorConfig();
             case SHORT_SWING -> createAggressiveMonitorConfig();
@@ -1101,15 +1144,12 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private void initializeSignalMonitor() {
-        boolean isSimulator = dataSourceManager.getCurrentType() == DataSourceManager.DataSourceType.SIMULATOR;
         monitorConfig = monitorConfig != null
                 ? monitorConfig
-                : (isSimulator ? SignalMonitorConfig.createSimulationTestTemplate()
-                : SignalMonitorConfig.createBalancedTemplate());
+                : SignalMonitorConfig.createBalancedTemplate();
         monitorDecisionConfig = monitorDecisionConfig != null
                 ? monitorDecisionConfig
-                : (isSimulator ? createSimulationTestDecisionConfig()
-                : createBalancedMonitorConfig());
+                : createBalancedMonitorConfig();
         monitorPortfolio = monitorPortfolio != null ? monitorPortfolio : new Portfolio(1_000_000.0);
         executionEngine = new ExecutionEngine(ExecutionMode.PAPER_TRADING, monitorPortfolio, 0.001425);
         if (executionStatusDock != null) {
@@ -1126,6 +1166,10 @@ public class MainFrameWithDocking extends JFrame {
         if (watchlistPanel == null) {
             return;
         }
+        if (isFinMindDataSource()) {
+            statusBar.setText("FinMind 資料源不自動啟動雷達監控，避免 API 用量增加。");
+            return;
+        }
         List<String> symbols = watchlistPanel.getSymbols();
         if (symbols == null || symbols.isEmpty()) {
             return;
@@ -1135,6 +1179,14 @@ public class MainFrameWithDocking extends JFrame {
 
     private void restartMonitoringIfRunning() {
         if (!autoTradingEnabled || watchlistPanel == null) {
+            return;
+        }
+        if (isFinMindDataSource()) {
+            if (signalMonitor != null) {
+                signalMonitor.stop();
+            }
+            autoTradingEnabled = false;
+            statusBar.setText("FinMind 資料源已停止自動雷達監控，避免 API 用量增加。");
             return;
         }
         List<String> symbols = watchlistPanel.getSymbols();
@@ -1278,6 +1330,9 @@ public class MainFrameWithDocking extends JFrame {
         if (monitorConfig == null || monitorDecisionConfig == null) {
             initializeSignalMonitor();
         }
+        RadarStrategyConfig radarConfig = monitorConfig.getRadarStrategyConfig() != null
+                ? monitorConfig.getRadarStrategyConfig()
+                : RadarStrategyConfig.createDefault();
 
         JDialog dialog = new JDialog(this, "監控門檻設定", true);
         dialog.setLayout(new BorderLayout(10, 10));
@@ -1303,6 +1358,33 @@ public class MainFrameWithDocking extends JFrame {
         JSpinner minStrategies = new JSpinner(new SpinnerNumberModel(
                 monitorDecisionConfig.getVotingConfig().getMinVotingStrategies(), 1, 5, 1));
         JCheckBox riskEnabled = new JCheckBox("啟用風控", monitorDecisionConfig.isRiskManagementEnabled());
+        JComboBox<Timeframe> dayTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5, Timeframe.M15});
+        dayTimeframe.setSelectedItem(radarConfig.getDayTradeTimeframe());
+        JComboBox<Timeframe> shortTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1});
+        shortTimeframe.setSelectedItem(radarConfig.getShortSwingTimeframe());
+        JComboBox<Timeframe> swingTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M15, Timeframe.H1, Timeframe.D1});
+        swingTimeframe.setSelectedItem(radarConfig.getSwingTradeTimeframe());
+        JSpinner dayBars = new JSpinner(new SpinnerNumberModel(radarConfig.getDayTradeBarCount(), 60, 600, 20));
+        JSpinner shortBars = new JSpinner(new SpinnerNumberModel(radarConfig.getShortSwingBarCount(), 80, 800, 20));
+        JSpinner swingBars = new JSpinner(new SpinnerNumberModel(radarConfig.getSwingTradeBarCount(), 100, 1000, 20));
+
+        JCheckBox rsiEnabled = new JCheckBox("啟用 RSI", radarConfig.isRsiEnabled());
+        JSpinner rsiPeriod = new JSpinner(new SpinnerNumberModel(radarConfig.getRsiPeriod(), 2, 60, 1));
+        JSpinner rsiOversold = decimalSpinner(radarConfig.getRsiOversold(), 1.0, 99.0, 1.0);
+        JSpinner rsiOverbought = decimalSpinner(radarConfig.getRsiOverbought(), 1.0, 99.0, 1.0);
+        JSpinner rsiWeight = percentSpinner(radarConfig.getRsiWeight());
+
+        JCheckBox maEnabled = new JCheckBox("啟用均線趨勢", radarConfig.isMovingAverageEnabled());
+        JComboBox<RadarStrategyConfig.MovingAverageType> maType = new JComboBox<>(RadarStrategyConfig.MovingAverageType.values());
+        maType.setSelectedItem(radarConfig.getMovingAverageType());
+        JSpinner fastMa = new JSpinner(new SpinnerNumberModel(radarConfig.getFastMovingAveragePeriod(), 2, 120, 1));
+        JSpinner slowMa = new JSpinner(new SpinnerNumberModel(radarConfig.getSlowMovingAveragePeriod(), 3, 240, 1));
+        JSpinner maWeight = percentSpinner(radarConfig.getMovingAverageWeight());
+
+        JCheckBox volumeEnabled = new JCheckBox("啟用放量突破", radarConfig.isVolumeBreakoutEnabled());
+        JSpinner breakoutLookback = new JSpinner(new SpinnerNumberModel(radarConfig.getBreakoutLookbackBars(), 5, 200, 5));
+        JSpinner volumeMultiplier = decimalSpinner(radarConfig.getVolumeMultiplier(), 1.0, 10.0, 0.1);
+        JSpinner volumeWeight = percentSpinner(radarConfig.getVolumeBreakoutWeight());
 
         templateBox.addActionListener(e -> {
             if (templateBox.getSelectedIndex() == 0) {
@@ -1322,6 +1404,27 @@ public class MainFrameWithDocking extends JFrame {
             timeframeBox.setSelectedItem(configTemplate.getTimeframe());
             barCountSpinner.setValue(configTemplate.getBarCount());
             signalInterval.setValue(configTemplate.getMinSignalIntervalMinutes());
+            RadarStrategyConfig radarTemplate = configTemplate.getRadarStrategyConfig();
+            dayTimeframe.setSelectedItem(radarTemplate.getDayTradeTimeframe());
+            shortTimeframe.setSelectedItem(radarTemplate.getShortSwingTimeframe());
+            swingTimeframe.setSelectedItem(radarTemplate.getSwingTradeTimeframe());
+            dayBars.setValue(radarTemplate.getDayTradeBarCount());
+            shortBars.setValue(radarTemplate.getShortSwingBarCount());
+            swingBars.setValue(radarTemplate.getSwingTradeBarCount());
+            rsiEnabled.setSelected(radarTemplate.isRsiEnabled());
+            rsiPeriod.setValue(radarTemplate.getRsiPeriod());
+            rsiOversold.setValue(radarTemplate.getRsiOversold());
+            rsiOverbought.setValue(radarTemplate.getRsiOverbought());
+            rsiWeight.setValue(radarTemplate.getRsiWeight());
+            maEnabled.setSelected(radarTemplate.isMovingAverageEnabled());
+            maType.setSelectedItem(radarTemplate.getMovingAverageType());
+            fastMa.setValue(radarTemplate.getFastMovingAveragePeriod());
+            slowMa.setValue(radarTemplate.getSlowMovingAveragePeriod());
+            maWeight.setValue(radarTemplate.getMovingAverageWeight());
+            volumeEnabled.setSelected(radarTemplate.isVolumeBreakoutEnabled());
+            breakoutLookback.setValue(radarTemplate.getBreakoutLookbackBars());
+            volumeMultiplier.setValue(radarTemplate.getVolumeMultiplier());
+            volumeWeight.setValue(radarTemplate.getVolumeBreakoutWeight());
             longThreshold.setValue(decisionTemplate.getVotingConfig().getLongEntryThreshold());
             exitThreshold.setValue(decisionTemplate.getVotingConfig().getExitThreshold());
             minRiskReward.setValue(decisionTemplate.getRiskConfig().getMinRiskRewardRatio());
@@ -1343,6 +1446,26 @@ public class MainFrameWithDocking extends JFrame {
         addSettingsRow(panel, gbc, 9, "最高波動", maxVolatility);
         addSettingsRow(panel, gbc, 10, "最少策略數", minStrategies);
         addSettingsRow(panel, gbc, 11, "", riskEnabled);
+        addSettingsRow(panel, gbc, 12, "當沖週期", dayTimeframe);
+        addSettingsRow(panel, gbc, 13, "短線週期", shortTimeframe);
+        addSettingsRow(panel, gbc, 14, "波段週期", swingTimeframe);
+        addSettingsRow(panel, gbc, 15, "當沖 K 線數量", dayBars);
+        addSettingsRow(panel, gbc, 16, "短線 K 線數量", shortBars);
+        addSettingsRow(panel, gbc, 17, "波段 K 線數量", swingBars);
+        addSettingsRow(panel, gbc, 18, "", rsiEnabled);
+        addSettingsRow(panel, gbc, 19, "RSI 週期", rsiPeriod);
+        addSettingsRow(panel, gbc, 20, "RSI 超賣", rsiOversold);
+        addSettingsRow(panel, gbc, 21, "RSI 超買", rsiOverbought);
+        addSettingsRow(panel, gbc, 22, "RSI 權重", rsiWeight);
+        addSettingsRow(panel, gbc, 23, "", maEnabled);
+        addSettingsRow(panel, gbc, 24, "均線類型", maType);
+        addSettingsRow(panel, gbc, 25, "均線快線", fastMa);
+        addSettingsRow(panel, gbc, 26, "均線慢線", slowMa);
+        addSettingsRow(panel, gbc, 27, "均線權重", maWeight);
+        addSettingsRow(panel, gbc, 28, "", volumeEnabled);
+        addSettingsRow(panel, gbc, 29, "突破回看 K 數", breakoutLookback);
+        addSettingsRow(panel, gbc, 30, "成交量倍率", volumeMultiplier);
+        addSettingsRow(panel, gbc, 31, "放量權重", volumeWeight);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancelButton = new JButton("取消");
@@ -1354,6 +1477,28 @@ public class MainFrameWithDocking extends JFrame {
             monitorConfig.setBarCount(((Number) barCountSpinner.getValue()).intValue());
             monitorConfig.setMinSignalIntervalMinutes(((Number) signalInterval.getValue()).intValue());
             monitorConfig.setBatchScanMode(true);
+            RadarStrategyConfig updatedRadarConfig = radarConfig.copy();
+            updatedRadarConfig.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
+            updatedRadarConfig.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
+            updatedRadarConfig.setSwingTradeTimeframe((Timeframe) swingTimeframe.getSelectedItem());
+            updatedRadarConfig.setDayTradeBarCount(((Number) dayBars.getValue()).intValue());
+            updatedRadarConfig.setShortSwingBarCount(((Number) shortBars.getValue()).intValue());
+            updatedRadarConfig.setSwingTradeBarCount(((Number) swingBars.getValue()).intValue());
+            updatedRadarConfig.setRsiEnabled(rsiEnabled.isSelected());
+            updatedRadarConfig.setRsiPeriod(((Number) rsiPeriod.getValue()).intValue());
+            updatedRadarConfig.setRsiOversold(((Number) rsiOversold.getValue()).doubleValue());
+            updatedRadarConfig.setRsiOverbought(((Number) rsiOverbought.getValue()).doubleValue());
+            updatedRadarConfig.setRsiWeight(((Number) rsiWeight.getValue()).doubleValue());
+            updatedRadarConfig.setMovingAverageEnabled(maEnabled.isSelected());
+            updatedRadarConfig.setMovingAverageType((RadarStrategyConfig.MovingAverageType) maType.getSelectedItem());
+            updatedRadarConfig.setFastMovingAveragePeriod(((Number) fastMa.getValue()).intValue());
+            updatedRadarConfig.setSlowMovingAveragePeriod(((Number) slowMa.getValue()).intValue());
+            updatedRadarConfig.setMovingAverageWeight(((Number) maWeight.getValue()).doubleValue());
+            updatedRadarConfig.setVolumeBreakoutEnabled(volumeEnabled.isSelected());
+            updatedRadarConfig.setBreakoutLookbackBars(((Number) breakoutLookback.getValue()).intValue());
+            updatedRadarConfig.setVolumeMultiplier(((Number) volumeMultiplier.getValue()).doubleValue());
+            updatedRadarConfig.setVolumeBreakoutWeight(((Number) volumeWeight.getValue()).doubleValue());
+            monitorConfig.setRadarStrategyConfig(updatedRadarConfig);
 
             DecisionConfig updatedDecisionConfig = copyDecisionConfig(monitorDecisionConfig);
             updatedDecisionConfig.getVotingConfig().setLongEntryThreshold(((Number) longThreshold.getValue()).doubleValue());
@@ -1382,7 +1527,10 @@ public class MainFrameWithDocking extends JFrame {
         buttons.add(cancelButton);
         buttons.add(applyButton);
 
-        dialog.add(panel, BorderLayout.CENTER);
+        JScrollPane settingsScrollPane = new JScrollPane(panel);
+        settingsScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        settingsScrollPane.setPreferredSize(new Dimension(560, 620));
+        dialog.add(settingsScrollPane, BorderLayout.CENTER);
         dialog.add(buttons, BorderLayout.SOUTH);
         dialog.pack();
         dialog.setLocationRelativeTo(this);
@@ -1412,6 +1560,14 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private void startAutoTrading(boolean showDialog) {
+        if (isFinMindDataSource()) {
+            String message = "FinMind 資料源不啟動自動雷達監控，避免背景掃描消耗 API 額度。請切換 MarketDataCollector。";
+            statusBar.setText(message);
+            if (showDialog) {
+                JOptionPane.showMessageDialog(this, message, "FinMind API 保護", JOptionPane.WARNING_MESSAGE);
+            }
+            return;
+        }
         if (autoTradingEnabled) {
             if (showDialog) {
                 JOptionPane.showMessageDialog(this, "自動偵測已在執行中", "提示", JOptionPane.INFORMATION_MESSAGE);
@@ -1503,6 +1659,7 @@ public class MainFrameWithDocking extends JFrame {
                 }
 
                 if (result != null) {
+                    paperTradeRecorder.record(result, signal, latestScanResults.get(symbol), "auto-monitor");
                     if (!result.isSuccess()) {
                         pendingAutoEntries.remove(symbol);
                     } else if (signal.getAction() == DecisionResult.Action.OPEN_LONG) {
@@ -1543,6 +1700,9 @@ public class MainFrameWithDocking extends JFrame {
         }
         if (symbol != null && symbol.equals(currentSymbol) && lastPrice > 0.0) {
             return lastPrice;
+        }
+        if (isFinMindDataSource()) {
+            return 0.0;
         }
         try {
             List<Bar> bars = dataFeed.fetchHistoricalBars(symbol, Timeframe.M1, 2);

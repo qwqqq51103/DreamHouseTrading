@@ -10,9 +10,14 @@ import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.decision.signal.IStrategySignal;
 import com.dreamhouse.trading.core.decision.signal.SignalType;
 import com.dreamhouse.trading.core.decision.strategies.DayTradingStrategy;
+import com.dreamhouse.trading.core.decision.strategies.DecisionBaseStrategy;
+import com.dreamhouse.trading.core.decision.strategies.MovingAverageTrendSignalStrategy;
 import com.dreamhouse.trading.core.decision.strategies.PositionTradingStrategy;
 import com.dreamhouse.trading.core.decision.strategies.SignalRSIStrategy;
 import com.dreamhouse.trading.core.decision.strategies.SwingTradingStrategy;
+import com.dreamhouse.trading.core.decision.strategies.VolumeBreakoutSignalStrategy;
+import com.dreamhouse.trading.core.finmind.FinMindAccessDeniedException;
+import com.dreamhouse.trading.core.finmind.FinMindQuotaExceededException;
 import com.dreamhouse.trading.core.model.Bar;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,7 +99,10 @@ public class MarketScannerService {
                 return noTrade(symbol, effectiveRequest.getTradeMode(), "No usable bars after normalization");
             }
 
-            List<IStrategySignal> signals = createStrategySignals(effectiveRequest.getTradeMode(), signalSeries);
+            List<IStrategySignal> signals = createStrategySignals(
+                    effectiveRequest.getTradeMode(),
+                    signalSeries,
+                    effectiveRequest.getRadarStrategyConfig());
             DecisionEngine decisionEngine = new DecisionEngine(profile.decisionConfig(), new Portfolio(effectiveRequest.getInitialCapital()));
             decisionEngine.setSymbol(symbol);
             decisionEngine.setBarSeries(historySeries, timeframe);
@@ -114,6 +122,8 @@ public class MarketScannerService {
         } catch (UnsupportedOperationException e) {
             logger.warn("{} does not support synchronous bar scans: {}", symbol, e.getMessage());
             return noTrade(symbol, effectiveRequest.getTradeMode(), e.getMessage());
+        } catch (FinMindAccessDeniedException | FinMindQuotaExceededException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Scan failed for {}: {}", symbol, e.getMessage(), e);
             return noTrade(symbol, effectiveRequest.getTradeMode(), "Scan failed: " + e.getMessage());
@@ -145,34 +155,46 @@ public class MarketScannerService {
         return new StrategyProfile(config, timeframe);
     }
 
-    private List<IStrategySignal> createStrategySignals(TradeMode mode, BarSeries series) {
-        SignalRSIStrategy rsi = new SignalRSIStrategy();
-        switch (mode) {
-            case DAY_TRADE -> {
-                rsi.setRsiPeriod(5);
-                rsi.setOversoldThreshold(40.0);
-                rsi.setOverboughtThreshold(60.0);
-            }
-            case SWING_TRADE -> {
-                rsi.setRsiPeriod(21);
-                rsi.setOversoldThreshold(25.0);
-                rsi.setOverboughtThreshold(75.0);
-            }
-            case SHORT_SWING, NO_TRADE -> {
-                rsi.setRsiPeriod(14);
-                rsi.setOversoldThreshold(30.0);
-                rsi.setOverboughtThreshold(70.0);
-            }
-            default -> {
-            }
-        }
-        rsi.setWeight(1.0);
-        rsi.initialize(series);
-        rsi.onBar(series.getEndIndex(), series.getLastBar());
-
+    private List<IStrategySignal> createStrategySignals(TradeMode mode, BarSeries series, RadarStrategyConfig config) {
+        RadarStrategyConfig modeConfig = (config != null ? config : RadarStrategyConfig.createDefault())
+                .copyForMode(mode);
         List<IStrategySignal> signals = new ArrayList<>();
-        signals.add(rsi);
+
+        if (modeConfig.isRsiEnabled()) {
+            SignalRSIStrategy rsi = new SignalRSIStrategy();
+            rsi.setRsiPeriod(modeConfig.getRsiPeriod());
+            rsi.setOversoldThreshold(modeConfig.getRsiOversold());
+            rsi.setOverboughtThreshold(modeConfig.getRsiOverbought());
+            rsi.setWeight(modeConfig.getRsiWeight());
+            initializeAndRun(rsi, series);
+            signals.add(rsi);
+        }
+
+        if (modeConfig.isMovingAverageEnabled()) {
+            MovingAverageTrendSignalStrategy movingAverage = new MovingAverageTrendSignalStrategy();
+            movingAverage.setAverageType(modeConfig.getMovingAverageType());
+            movingAverage.setFastPeriod(modeConfig.getFastMovingAveragePeriod());
+            movingAverage.setSlowPeriod(modeConfig.getSlowMovingAveragePeriod());
+            movingAverage.setWeight(modeConfig.getMovingAverageWeight());
+            initializeAndRun(movingAverage, series);
+            signals.add(movingAverage);
+        }
+
+        if (modeConfig.isVolumeBreakoutEnabled()) {
+            VolumeBreakoutSignalStrategy breakout = new VolumeBreakoutSignalStrategy();
+            breakout.setLookbackBars(modeConfig.getBreakoutLookbackBars());
+            breakout.setVolumeMultiplier(modeConfig.getVolumeMultiplier());
+            breakout.setWeight(modeConfig.getVolumeBreakoutWeight());
+            initializeAndRun(breakout, series);
+            signals.add(breakout);
+        }
+
         return signals;
+    }
+
+    private void initializeAndRun(DecisionBaseStrategy strategy, BarSeries series) {
+        strategy.initialize(series);
+        strategy.onBar(series.getEndIndex(), series.getLastBar());
     }
 
     private List<Bar> normalizeBars(List<Bar> bars, int barCount) {
@@ -335,6 +357,7 @@ public class MarketScannerService {
         private int barCount = 160;
         private TradeMode tradeMode = TradeMode.DAY_TRADE;
         private DecisionConfig decisionConfig;
+        private RadarStrategyConfig radarStrategyConfig = RadarStrategyConfig.createDefault();
         private double initialCapital = 100000.0;
 
         public static ScanRequest createDefault() {
@@ -374,6 +397,15 @@ public class MarketScannerService {
 
         public ScanRequest decisionConfig(DecisionConfig decisionConfig) {
             this.decisionConfig = decisionConfig;
+            return this;
+        }
+
+        public RadarStrategyConfig getRadarStrategyConfig() {
+            return radarStrategyConfig;
+        }
+
+        public ScanRequest radarStrategyConfig(RadarStrategyConfig radarStrategyConfig) {
+            this.radarStrategyConfig = radarStrategyConfig != null ? radarStrategyConfig : RadarStrategyConfig.createDefault();
             return this;
         }
 

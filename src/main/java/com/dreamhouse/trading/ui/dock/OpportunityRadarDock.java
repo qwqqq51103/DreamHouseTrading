@@ -1,5 +1,6 @@
 package com.dreamhouse.trading.ui.dock;
 
+import com.dreamhouse.trading.core.StockNameResolver;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
@@ -72,7 +73,6 @@ public class OpportunityRadarDock extends JPanel {
         });
 
         add(new JScrollPane(table), BorderLayout.CENTER);
-
         updateStatus.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
         add(updateStatus, BorderLayout.SOUTH);
     }
@@ -85,7 +85,7 @@ public class OpportunityRadarDock extends JPanel {
         if (SwingUtilities.isEventDispatchThread()) {
             resultsBySymbol.clear();
             tableModel.refresh();
-            updateStatus.setText("目前沒有候選標的");
+            updateStatus.setText("尚未掃描觀察清單");
         } else {
             SwingUtilities.invokeLater(this::clearResults);
         }
@@ -127,7 +127,7 @@ public class OpportunityRadarDock extends JPanel {
                 ? latestResult.getScannedAt().format(TIME_FMT)
                 : "--:--:--";
         updateStatus.setText(String.format(
-                "更新時間 %s | 顯示 %d 檔 / 總計 %d 檔",
+                "最後掃描 %s | 顯示 %d 檔 / 總計 %d 檔",
                 time,
                 tableModel.getRowCount(),
                 resultsBySymbol.size()));
@@ -143,7 +143,7 @@ public class OpportunityRadarDock extends JPanel {
 
     private enum TradeModeFilter {
         ALL("全部", null),
-        DAY_TRADE("當沖", TradeMode.DAY_TRADE),
+        DAY_TRADE("日內", TradeMode.DAY_TRADE),
         SHORT_SWING("短波段", TradeMode.SHORT_SWING),
         SWING_TRADE("波段", TradeMode.SWING_TRADE);
 
@@ -167,8 +167,8 @@ public class OpportunityRadarDock extends JPanel {
 
     private class RadarTableModel extends AbstractTableModel {
         private final String[] columns = {
-                "排名", "商品", "模式", "分數", "動作", "信心",
-                "風報比", "停損", "停利", "訊號摘要", "阻擋原因", "決策理由", "掃描時間"
+                "排名", "代碼", "中文名稱", "模式", "分數", "動作", "信心",
+                "風報比", "停損", "停利", "訊號摘要", "阻擋原因", "原因", "掃描時間"
         };
         private List<MarketScanResult> rows = new ArrayList<>();
 
@@ -203,17 +203,18 @@ public class OpportunityRadarDock extends JPanel {
             return switch (columnIndex) {
                 case 0 -> rowIndex + 1;
                 case 1 -> result.getSymbol();
-                case 2 -> result.getTradeMode() != null ? result.getTradeMode().getDisplayName() : "";
-                case 3 -> result.getScore();
-                case 4 -> decision != null ? decision.getAction().getDisplayName() : "";
-                case 5 -> result.getConfidence();
-                case 6 -> result.getRiskRewardRatio();
-                case 7 -> result.getSuggestedStopLoss();
-                case 8 -> result.getSuggestedTakeProfit();
-                case 9 -> result.getRawSignalSummary();
-                case 10 -> result.getBlockReason();
-                case 11 -> result.getReason();
-                case 12 -> result.getScannedAt() != null ? result.getScannedAt().format(TIME_FMT) : "";
+                case 2 -> StockNameResolver.resolveChineseName(result.getSymbol());
+                case 3 -> result.getTradeMode() != null ? result.getTradeMode().getDisplayName() : "";
+                case 4 -> result.getScore();
+                case 5 -> decision != null ? decision.getAction().getDisplayName() : "";
+                case 6 -> result.getConfidence();
+                case 7 -> result.getRiskRewardRatio();
+                case 8 -> result.getSuggestedStopLoss();
+                case 9 -> result.getSuggestedTakeProfit();
+                case 10 -> result.getRawSignalSummary();
+                case 11 -> result.getBlockReason();
+                case 12 -> result.getReason();
+                case 13 -> result.getScannedAt() != null ? result.getScannedAt().format(TIME_FMT) : "";
                 default -> "";
             };
         }
@@ -222,7 +223,7 @@ public class OpportunityRadarDock extends JPanel {
         public Class<?> getColumnClass(int columnIndex) {
             return switch (columnIndex) {
                 case 0 -> Integer.class;
-                case 3, 5 -> Double.class;
+                case 4, 6 -> Double.class;
                 default -> Object.class;
             };
         }
@@ -236,21 +237,21 @@ public class OpportunityRadarDock extends JPanel {
         public Component getTableCellRendererComponent(
                 JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            if ((column == 3 || column == 5) && value instanceof Double number) {
+            if ((column == 4 || column == 6) && value instanceof Double number) {
                 setText(percentFmt.format(number));
-            } else if ((column == 6 || column == 7 || column == 8) && value instanceof Double number) {
+            } else if ((column == 7 || column == 8 || column == 9) && value instanceof Double number) {
                 setText(number > 0 ? numberFmt.format(number) : "--");
-            } else if (value == null) {
+            } else if (value == null || value.toString().isBlank()) {
                 setText("--");
             }
 
             if (!isSelected) {
                 setForeground(table.getForeground());
-                if (column == 4 && value != null) {
+                if (column == 5 && value != null) {
                     String text = value.toString();
-                    if (text.contains("做多")) {
+                    if (text.contains("買") || text.toUpperCase().contains("LONG")) {
                         setForeground(new Color(0, 150, 70));
-                    } else if (text.contains("做空")) {
+                    } else if (text.contains("賣") || text.toUpperCase().contains("SHORT")) {
                         setForeground(new Color(190, 50, 50));
                     }
                 }

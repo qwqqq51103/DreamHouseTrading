@@ -4,6 +4,7 @@ import ca.odell.glazedlists.BasicEventList;
 import ca.odell.glazedlists.EventList;
 import ca.odell.glazedlists.gui.TableFormat;
 import ca.odell.glazedlists.swing.EventTableModel;
+import com.dreamhouse.trading.core.StockNameResolver;
 import com.dreamhouse.trading.core.cache.MarketDataCache;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
@@ -54,7 +55,6 @@ public class WatchlistPanel extends JPanel {
         table.setFillsViewportHeight(true);
         table.setRowHeight(24);
         table.setAutoCreateRowSorter(true);
-
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mouseClicked(java.awt.event.MouseEvent e) {
@@ -68,49 +68,7 @@ public class WatchlistPanel extends JPanel {
                 }
             }
         });
-
-        table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
-            private final DecimalFormat priceFmt = new DecimalFormat("0.00");
-            private final DecimalFormat pctFmt = new DecimalFormat("0.00%");
-            private final DecimalFormat scoreFmt = new DecimalFormat("0.0%");
-            private final DecimalFormat ratioFmt = new DecimalFormat("0.00");
-
-            @Override
-            public Component getTableCellRendererComponent(
-                    JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-                Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-
-                if (!isSelected) {
-                    setForeground(table.getForeground());
-                }
-
-                if (column == 1 && value instanceof Double last) {
-                    setText(priceFmt.format(last));
-                } else if (column == 2 && value instanceof Double chg) {
-                    setText(pctFmt.format(chg / 100.0));
-                    if (!isSelected) {
-                        setForeground(chg >= 0 ? new Color(34, 177, 76) : new Color(237, 28, 36));
-                    }
-                } else if ((column == 6 || column == 7) && value instanceof Double score) {
-                    setText(scoreFmt.format(score));
-                } else if (column == 8 && value instanceof Double ratio) {
-                    setText(ratio > 0 ? ratioFmt.format(ratio) : "--");
-                } else if (value == null) {
-                    setText("--");
-                }
-
-                if (!isSelected && column == 5 && value != null) {
-                    String text = value.toString().toUpperCase();
-                    if (text.contains("LONG")) {
-                        setForeground(new Color(0, 150, 70));
-                    } else if (text.contains("SHORT")) {
-                        setForeground(new Color(190, 50, 50));
-                    }
-                }
-
-                return component;
-            }
-        });
+        table.setDefaultRenderer(Object.class, new WatchlistCellRenderer());
 
         add(new JScrollPane(table), BorderLayout.CENTER);
 
@@ -128,7 +86,6 @@ public class WatchlistPanel extends JPanel {
         if (cache == null) {
             return;
         }
-
         List<String> symbols = cache.getWatchlist();
         for (String symbol : symbols) {
             items.add(new WatchlistItem(symbol, 0, 0, 0));
@@ -239,8 +196,9 @@ public class WatchlistPanel extends JPanel {
     }
 
     public void updateItem(String symbol, double last, double changePct, long volume) {
+        String normalized = StockNameResolver.normalize(symbol);
         for (WatchlistItem item : items) {
-            if (item.symbol.equals(symbol)) {
+            if (StockNameResolver.normalize(item.symbol).equals(normalized)) {
                 item.last = last;
                 item.changePct = changePct;
                 item.volume = volume;
@@ -254,7 +212,6 @@ public class WatchlistPanel extends JPanel {
         if (result == null || result.getSymbol() == null) {
             return;
         }
-
         if (SwingUtilities.isEventDispatchThread()) {
             applyScanResult(result);
         } else {
@@ -263,8 +220,9 @@ public class WatchlistPanel extends JPanel {
     }
 
     private void applyScanResult(MarketScanResult result) {
+        String normalized = StockNameResolver.normalize(result.getSymbol());
         for (WatchlistItem item : items) {
-            if (item.symbol.equals(result.getSymbol())) {
+            if (StockNameResolver.normalize(item.symbol).equals(normalized)) {
                 item.tradeMode = result.getTradeMode() != null ? result.getTradeMode().getDisplayName() : "";
                 item.scanScore = result.getScore();
                 DecisionResult decision = result.getDecisionResult();
@@ -280,6 +238,7 @@ public class WatchlistPanel extends JPanel {
 
     public static class WatchlistItem {
         String symbol;
+        String chineseName;
         double last;
         double changePct;
         long volume;
@@ -292,6 +251,7 @@ public class WatchlistPanel extends JPanel {
 
         public WatchlistItem(String symbol, double last, double changePct, long volume) {
             this.symbol = symbol;
+            this.chineseName = StockNameResolver.resolveChineseName(symbol);
             this.last = last;
             this.changePct = changePct;
             this.volume = volume;
@@ -307,22 +267,23 @@ public class WatchlistPanel extends JPanel {
     private static class WatchlistTableFormat implements TableFormat<WatchlistItem> {
         @Override
         public int getColumnCount() {
-            return 10;
+            return 11;
         }
 
         @Override
         public String getColumnName(int column) {
             return switch (column) {
                 case 0 -> I18n.get("watchlist.symbol");
-                case 1 -> I18n.get("watchlist.last");
-                case 2 -> I18n.get("watchlist.change");
-                case 3 -> I18n.get("watchlist.volume");
-                case 4 -> "模式";
-                case 5 -> "訊號";
-                case 6 -> "分數";
-                case 7 -> "信心";
-                case 8 -> "風報比";
-                case 9 -> "掃描";
+                case 1 -> "中文名稱";
+                case 2 -> I18n.get("watchlist.last");
+                case 3 -> I18n.get("watchlist.change");
+                case 4 -> I18n.get("watchlist.volume");
+                case 5 -> "交易模式";
+                case 6 -> "訊號";
+                case 7 -> "分數";
+                case 8 -> "信心";
+                case 9 -> "風報比";
+                case 10 -> "掃描時間";
                 default -> "";
             };
         }
@@ -331,17 +292,61 @@ public class WatchlistPanel extends JPanel {
         public Object getColumnValue(WatchlistItem item, int column) {
             return switch (column) {
                 case 0 -> item.symbol;
-                case 1 -> item.last;
-                case 2 -> item.changePct;
-                case 3 -> item.volume;
-                case 4 -> item.tradeMode;
-                case 5 -> item.signal;
-                case 6 -> item.scanScore;
-                case 7 -> item.confidence;
-                case 8 -> item.riskRewardRatio;
-                case 9 -> item.lastScanTime;
+                case 1 -> item.chineseName;
+                case 2 -> item.last;
+                case 3 -> item.changePct;
+                case 4 -> item.volume;
+                case 5 -> item.tradeMode;
+                case 6 -> item.signal;
+                case 7 -> item.scanScore;
+                case 8 -> item.confidence;
+                case 9 -> item.riskRewardRatio;
+                case 10 -> item.lastScanTime;
                 default -> null;
             };
+        }
+    }
+
+    private static class WatchlistCellRenderer extends DefaultTableCellRenderer {
+        private final DecimalFormat priceFmt = new DecimalFormat("0.00");
+        private final DecimalFormat pctFmt = new DecimalFormat("0.00%");
+        private final DecimalFormat scoreFmt = new DecimalFormat("0.0%");
+        private final DecimalFormat ratioFmt = new DecimalFormat("0.00");
+
+        @Override
+        public Component getTableCellRendererComponent(
+                JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+            Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+
+            if (!isSelected) {
+                setForeground(table.getForeground());
+            }
+
+            if (column == 2 && value instanceof Double last) {
+                setText(priceFmt.format(last));
+            } else if (column == 3 && value instanceof Double chg) {
+                setText(pctFmt.format(chg / 100.0));
+                if (!isSelected) {
+                    setForeground(chg >= 0 ? new Color(34, 177, 76) : new Color(237, 28, 36));
+                }
+            } else if ((column == 7 || column == 8) && value instanceof Double score) {
+                setText(scoreFmt.format(score));
+            } else if (column == 9 && value instanceof Double ratio) {
+                setText(ratio > 0 ? ratioFmt.format(ratio) : "--");
+            } else if (value == null || value.toString().isBlank()) {
+                setText("--");
+            }
+
+            if (!isSelected && column == 6 && value != null) {
+                String text = value.toString().toUpperCase();
+                if (text.contains("LONG") || text.contains("買")) {
+                    setForeground(new Color(0, 150, 70));
+                } else if (text.contains("SHORT") || text.contains("賣")) {
+                    setForeground(new Color(190, 50, 50));
+                }
+            }
+
+            return component;
         }
     }
 }

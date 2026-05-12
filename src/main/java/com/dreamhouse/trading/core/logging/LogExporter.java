@@ -1,8 +1,8 @@
 package com.dreamhouse.trading.core.logging;
 
 import java.io.BufferedWriter;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -15,6 +15,8 @@ import java.util.List;
  * 支援匯出為 CSV 格式
  */
 public class LogExporter {
+
+    private static final char UTF8_BOM = '\ufeff';
 
     private static final DateTimeFormatter DATETIME_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -49,7 +51,8 @@ public class LogExporter {
         }
 
         // 寫入 CSV
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputPath))) {
+        try (BufferedWriter writer = Files.newBufferedWriter(filePath, StandardCharsets.UTF_8)) {
+            writer.write(UTF8_BOM);
             // 寫入標題列
             writeHeader(writer);
 
@@ -245,7 +248,7 @@ public class LogExporter {
 
         // 將摘要寫入另一個文件
         String summaryPath = csvPath.replace(".csv", "_summary.txt");
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(summaryPath))) {
+        try (BufferedWriter writer = Files.newBufferedWriter(Paths.get(summaryPath), StandardCharsets.UTF_8)) {
             writer.write(summary);
         }
 
