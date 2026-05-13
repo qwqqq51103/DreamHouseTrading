@@ -16,6 +16,7 @@ public class BacktestResultDialog extends JDialog {
     
     private final BacktestResult result;
     private final String strategyName;
+    private final String reportConfigurationSummary;
     
     /**
      * 構造函數
@@ -24,9 +25,23 @@ public class BacktestResultDialog extends JDialog {
         super(parent, "回測結果 - " + strategyName, true);
         this.result = result;
         this.strategyName = strategyName;
+        this.reportConfigurationSummary = "";
         
         initializeComponents();
         
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        setSize(900, 700);
+        setLocationRelativeTo(parent);
+    }
+
+    public BacktestResultDialog(JFrame parent, BacktestResult result, String strategyName, String reportConfigurationSummary) {
+        super(parent, "?葫蝯? - " + strategyName, true);
+        this.result = result;
+        this.strategyName = strategyName;
+        this.reportConfigurationSummary = reportConfigurationSummary != null ? reportConfigurationSummary : "";
+
+        initializeComponents();
+
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(900, 700);
         setLocationRelativeTo(parent);
@@ -43,6 +58,7 @@ public class BacktestResultDialog extends JDialog {
         
         // 1. 概要標籤
         tabbedPane.addTab("概要", createSummaryPanel());
+        tabbedPane.addTab("當沖配置", createConfigurationPanel());
         
         // 2. 圖表標籤
         tabbedPane.addTab("圖表", PerformanceChart.createCombinedChartsPanel(result));
@@ -83,6 +99,22 @@ public class BacktestResultDialog extends JDialog {
         JScrollPane scrollPane = new JScrollPane(panel);
         JPanel wrapperPanel = new JPanel(new BorderLayout());
         wrapperPanel.add(scrollPane, BorderLayout.CENTER);
+        return wrapperPanel;
+    }
+
+    private JPanel createConfigurationPanel() {
+        JTextArea textArea = new JTextArea();
+        textArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+        textArea.setEditable(false);
+        textArea.setLineWrap(true);
+        textArea.setWrapStyleWord(true);
+        textArea.setText(reportConfigurationSummary == null || reportConfigurationSummary.isBlank()
+                ? "未提供當沖配置快照"
+                : reportConfigurationSummary);
+        textArea.setCaretPosition(0);
+
+        JPanel wrapperPanel = new JPanel(new BorderLayout());
+        wrapperPanel.add(new JScrollPane(textArea), BorderLayout.CENTER);
         return wrapperPanel;
     }
     
@@ -306,140 +338,105 @@ public class BacktestResultDialog extends JDialog {
      * 創建交易記錄面板
      */
     private JPanel createTradeHistoryPanel() {
-        String[] columnNames = {"時間", "商品", "類型", "數量", "價格", "金額", "手續費", "停損", "停利", "出場原因", "持倉狀態", "盈虧", "結果"};
-        
+        String[] columnNames = {
+            "時間", "商品", "類型", "數量", "價格", "金額", "手續費",
+            "停損", "停利", "出場原因", "開單理由", "持倉狀態", "盈虧", "結果"
+        };
+
         java.util.List<Trade> trades = result.getTrades();
-        Object[][] data = new Object[trades.size()][13];  // 增加到13欄
-        
-        // 追蹤持倉和計算盈虧
-        Trade lastBuy = null;
-        int positionCount = 0;
-        
+        Object[][] data = new Object[trades.size()][columnNames.length];
+        java.util.Map<String, Trade> openTrades = new java.util.HashMap<>();
+        java.util.Map<String, Integer> positionCounts = new java.util.HashMap<>();
+
         for (int i = 0; i < trades.size(); i++) {
             Trade trade = trades.get(i);
+            String symbol = trade.getSymbol();
             data[i][0] = trade.getTimestamp().format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"));
-            data[i][1] = trade.getSymbol();
+            data[i][1] = symbol;
             data[i][2] = trade.getType().getDisplayName();
             data[i][3] = trade.getQuantity();
             data[i][4] = String.format("%.2f", trade.getPrice());
             data[i][5] = String.format("%.2f", trade.getTotalAmount());
             data[i][6] = String.format("%.2f", trade.getCommissionAmount());
-            
-            // 停利停損資訊
             data[i][7] = trade.getStopLoss() != null ? String.format("%.2f", trade.getStopLoss()) : "-";
             data[i][8] = trade.getTakeProfit() != null ? String.format("%.2f", trade.getTakeProfit()) : "-";
-            data[i][9] = trade.getExitReason() != null ? trade.getExitReason() : "-";
-            
-            // 計算持倉狀態、盈虧、結果
+
             if (trade.getType() == TradeType.BUY) {
-                lastBuy = trade;
-                positionCount++;
-                data[i][10] = "持倉中 (" + positionCount + ")";
-                data[i][11] = "-";  // 買入時沒有盈虧
-                data[i][12] = "-";  // 買入時沒有結果
-            } else if (trade.getType() == TradeType.SELL) {
-                positionCount--;
-                data[i][10] = positionCount > 0 ? "持倉中 (" + positionCount + ")" : "空倉";
-                
-                // 計算盈虧
-                if (lastBuy != null) {
-                    double buyTotal = lastBuy.getTotalCost();
-                    double sellTotal = trade.getNetProceeds();
-                    double profit = sellTotal - buyTotal;
-                    
-                    data[i][11] = String.format("%.2f", profit);
-                    
-                    // 判斷結果
-                    if (profit > 0) {
-                        data[i][12] = "獲利";
-                    } else if (profit < 0) {
-                        data[i][12] = "虧損";
-                    } else {
-                        data[i][12] = "持平";
-                    }
-                    
-                    lastBuy = null;
+                openTrades.put(symbol, trade);
+                int count = positionCounts.getOrDefault(symbol, 0) + 1;
+                positionCounts.put(symbol, count);
+                data[i][9] = "-";
+                data[i][10] = trade.getExitReason() != null ? trade.getExitReason() : "-";
+                data[i][11] = "持倉中 (" + count + ")";
+                data[i][12] = "-";
+                data[i][13] = "-";
+            } else {
+                Trade buy = openTrades.remove(symbol);
+                int count = Math.max(0, positionCounts.getOrDefault(symbol, 0) - 1);
+                positionCounts.put(symbol, count);
+                data[i][9] = trade.getExitReason() != null ? trade.getExitReason() : "-";
+                data[i][10] = buy != null && buy.getExitReason() != null ? buy.getExitReason() : "-";
+                data[i][11] = count > 0 ? "持倉中 (" + count + ")" : "已平倉";
+                if (buy != null) {
+                    double profit = trade.getNetProceeds() - buy.getTotalCost();
+                    data[i][12] = String.format("%.2f", profit);
+                    data[i][13] = profit > 0 ? "獲利" : profit < 0 ? "虧損" : "打平";
                 } else {
-                    data[i][11] = "-";
                     data[i][12] = "-";
+                    data[i][13] = "-";
                 }
             }
         }
-        
-        // 重新計算所有行的持倉狀態（確保每一行顯示該交易執行後的狀態）
-        positionCount = 0;
-        for (int i = 0; i < trades.size(); i++) {
-            Trade trade = trades.get(i);
-            if (trade.getType() == TradeType.BUY) {
-                positionCount++;
-            } else if (trade.getType() == TradeType.SELL) {
-                positionCount--;
-            }
-            
-            // 更新持倉狀態顯示（交易執行後的狀態）
-            if (positionCount > 0) {
-                data[i][10] = "持倉中 (" + positionCount + ")";
-            } else {
-                data[i][10] = "空倉";
-            }
-        }
-        
+
         JTable table = new JTable(data, columnNames);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setRowHeight(25);
-        
-        // 設定行顏色和文字顏色（根據交易類型和結果）
         table.setDefaultRenderer(Object.class, new javax.swing.table.DefaultTableCellRenderer() {
             @Override
-            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, 
+            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
                                                          boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                
+                setFont(getFont().deriveFont(java.awt.Font.PLAIN));
                 if (!isSelected) {
-                    String type = (String) table.getValueAt(row, 2);
-                    String result = (String) table.getValueAt(row, 12);  // 結果欄位 (調整為第12欄)
-                    
-                    // 根據交易類型設定背景色
-                    if ("買入".equals(type)) {
-                        c.setBackground(new Color(220, 255, 220)); // 淺綠色背景
-                        c.setForeground(new Color(0, 100, 0)); // 深綠色文字
-                    } else if ("賣出".equals(type)) {
-                        // 根據結果設定不同的背景色
-                        if ("獲利".equals(result)) {
-                            c.setBackground(new Color(200, 255, 200)); // 亮綠色 - 獲利
+                    String type = String.valueOf(table.getValueAt(row, 2));
+                    String tradeResult = String.valueOf(table.getValueAt(row, 13));
+                    if ("買入".equals(type) || "鞎瑕".equals(type)) {
+                        c.setBackground(new Color(220, 255, 220));
+                        c.setForeground(new Color(0, 100, 0));
+                    } else if ("賣出".equals(type) || "鞈?".equals(type)) {
+                        if ("獲利".equals(tradeResult)) {
+                            c.setBackground(new Color(200, 255, 200));
                             c.setForeground(new Color(0, 120, 0));
-                        } else if ("虧損".equals(result)) {
-                            c.setBackground(new Color(255, 200, 200)); // 淺紅色 - 虧損
+                        } else if ("虧損".equals(tradeResult)) {
+                            c.setBackground(new Color(255, 200, 200));
                             c.setForeground(new Color(150, 0, 0));
                         } else {
-                            c.setBackground(new Color(255, 240, 200)); // 淺黃色 - 持平
+                            c.setBackground(new Color(255, 240, 200));
                             c.setForeground(new Color(100, 100, 0));
                         }
                     } else {
                         c.setBackground(Color.WHITE);
                         c.setForeground(Color.BLACK);
                     }
-                    
-                    // 特殊欄位顏色
-                    if (column == 11) { // 盈虧欄位 (調整為第11欄)
-                        String profitStr = (String) value;
+
+                    if (column == 12) {
+                        String profitStr = String.valueOf(value);
                         if (!"-".equals(profitStr)) {
                             try {
                                 double profit = Double.parseDouble(profitStr);
                                 if (profit > 0) {
-                                    c.setForeground(new Color(0, 150, 0)); // 綠色
+                                    c.setForeground(new Color(0, 150, 0));
                                     setFont(getFont().deriveFont(java.awt.Font.BOLD));
                                 } else if (profit < 0) {
-                                    c.setForeground(Color.RED); // 紅色
+                                    c.setForeground(Color.RED);
                                     setFont(getFont().deriveFont(java.awt.Font.BOLD));
                                 }
-                            } catch (NumberFormatException e) {
-                                // 忽略
+                            } catch (NumberFormatException ignored) {
                             }
                         }
                     }
-                    
-                    if (column == 12) { // 結果欄位 (調整為第12欄)
+
+                    if (column == 13) {
                         if ("獲利".equals(value)) {
                             c.setForeground(new Color(0, 150, 0));
                             setFont(getFont().deriveFont(java.awt.Font.BOLD));
@@ -449,21 +446,20 @@ public class BacktestResultDialog extends JDialog {
                         }
                     }
                 } else {
-                    c.setForeground(Color.WHITE); // 選中時文字為白色
+                    c.setForeground(Color.WHITE);
                 }
-                
                 return c;
             }
         });
-        
+
+        table.getColumnModel().getColumn(10).setPreferredWidth(360);
         JScrollPane scrollPane = new JScrollPane(table);
-        scrollPane.setPreferredSize(new Dimension(800, 400));
-        
+        scrollPane.setPreferredSize(new Dimension(900, 400));
+
         JPanel wrapperPanel = new JPanel(new BorderLayout());
         wrapperPanel.add(scrollPane, BorderLayout.CENTER);
         return wrapperPanel;
     }
-    
     /**
      * 創建詳細報告面板
      */
@@ -473,7 +469,7 @@ public class BacktestResultDialog extends JDialog {
         textArea.setEditable(false);
         
         // 生成文本報告
-        String report = ReportGenerator.generateTextReport(result, strategyName);
+        String report = BacktestReportExporter.generateTextReport(result, strategyName, reportConfigurationSummary);
         textArea.setText(report);
         textArea.setCaretPosition(0);
         
@@ -771,12 +767,12 @@ public class BacktestResultDialog extends JDialog {
         try {
             String content;
             if ("html".equals(format)) {
-                content = ReportGenerator.generateHtmlReport(result, strategyName);
+                content = BacktestReportExporter.generateHtmlReport(result, strategyName, reportConfigurationSummary);
             } else {
-                content = ReportGenerator.generateTextReport(result, strategyName);
+                content = BacktestReportExporter.generateTextReport(result, strategyName, reportConfigurationSummary);
             }
 
-            ReportGenerator.saveReportToFile(content, strategyName, format);
+            BacktestReportExporter.saveReportToFile(content, strategyName, format);
 
             JOptionPane.showMessageDialog(this,
                 "報告已成功匯出！",
@@ -797,19 +793,13 @@ public class BacktestResultDialog extends JDialog {
     private void exportTradesToCSV() {
         try {
             // 轉換 Trade 為 TradeRecord 格式
-            java.util.List<com.dreamhouse.trading.core.logging.TradeRecord> tradeRecords =
-                convertToTradeRecords(result.getTrades());
+            String exportedPath = BacktestReportExporter.exportDetailedCsv(
+                    result, strategyName, reportConfigurationSummary);
 
             // 生成檔案名稱
-            String timestamp = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-            String filename = String.format("backtest_trades_%s_%s.csv", strategyName, timestamp);
-            String outputPath = System.getProperty("user.dir") + java.io.File.separator + filename;
+            
 
             // 使用 LogExporter 匯出 CSV
-            String exportedPath = com.dreamhouse.trading.core.logging.LogExporter.exportToCSV(
-                tradeRecords, outputPath);
-
             JOptionPane.showMessageDialog(this,
                 "交易記錄已成功匯出到：\n" + exportedPath,
                 "匯出成功",

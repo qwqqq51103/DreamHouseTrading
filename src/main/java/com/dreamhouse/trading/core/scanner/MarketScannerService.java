@@ -114,7 +114,9 @@ public class MarketScannerService {
             String entryBlockReason = resolveEntryQualityBlockReason(
                     decision,
                     signals,
-                    effectiveRequest.getRadarStrategyConfig());
+                    bars,
+                    effectiveRequest.getRadarStrategyConfig(),
+                    effectiveRequest.getTradeMode());
             if (entryBlockReason != null) {
                 DecisionResult blockedDecision = new DecisionResult.Builder()
                         .symbol(symbol)
@@ -306,19 +308,21 @@ public class MarketScannerService {
     private String resolveEntryQualityBlockReason(
             DecisionResult decision,
             List<IStrategySignal> signals,
-            RadarStrategyConfig config) {
-        RadarStrategyConfig effectiveConfig = config != null ? config : RadarStrategyConfig.createDefault();
-        if (!effectiveConfig.isRequireRsiEntryConfirmation()
-                || decision == null
-                || decision.getAction() != DecisionResult.Action.OPEN_LONG
-                || signals == null
-                || signals.isEmpty()) {
+            List<Bar> bars,
+            RadarStrategyConfig config,
+            TradeMode mode) {
+        RadarStrategyConfig effectiveConfig = (config != null ? config : RadarStrategyConfig.createDefault())
+                .copyForMode(mode);
+        if (decision == null || decision.getAction() != DecisionResult.Action.OPEN_LONG) {
             return null;
+        }
+        if (signals == null) {
+            signals = List.of();
         }
 
         boolean rsiLong = false;
-        boolean hasMovingAverageSignal = false;
-        boolean movingAverageDown = false;
+        boolean rsiShort = false;
+        boolean movingAverageLong = false;
         boolean volumeLong = false;
 
         for (IStrategySignal signal : signals) {
@@ -328,22 +332,185 @@ public class MarketScannerService {
             String strategyName = signal.getStrategyName();
             if ("SignalRSI".equals(strategyName) && signal.getSignal() == SignalType.LONG) {
                 rsiLong = true;
+            } else if ("SignalRSI".equals(strategyName) && signal.getSignal() == SignalType.SHORT) {
+                rsiShort = true;
             } else if ("MovingAverageTrend".equals(strategyName)) {
-                hasMovingAverageSignal = true;
-                movingAverageDown = signal.getSignal() == SignalType.SHORT;
+                movingAverageLong = signal.getSignal() == SignalType.LONG;
             } else if ("VolumeBreakout".equals(strategyName) && signal.getSignal() == SignalType.LONG) {
                 volumeLong = true;
             }
         }
 
-        if (!rsiLong) {
+        if (rsiShort) {
+            return "SignalRSI=SHORT，禁止自動監控做多";
+        }
+        if (effectiveConfig.isBlockBreakoutOnRsiOverbought() && volumeLong && rsiShort) {
+            return "量能突破做多與 RSI 超買訊號衝突，略過追高進場";
+        }
+        if (effectiveConfig.isRequireRsiEntryConfirmation() && rsiLong && !movingAverageLong && !volumeLong) {
+            return "RSI 超賣訊號缺少 EMA 趨勢或放量反轉確認，略過接刀進場";
+        }
+        if (effectiveConfig.isRequireBreakoutContinuation() && volumeLong) {
+            String continuationBlockReason = resolveBreakoutContinuationBlockReason(bars);
+            if (continuationBlockReason != null) {
+                return continuationBlockReason;
+            }
+        }
+        if (effectiveConfig.isRequireBreakoutNextBarConfirmation()) {
+            String nextBarConfirmationBlockReason = resolveBreakoutNextBarConfirmationBlockReason(bars, effectiveConfig);
+            if (nextBarConfirmationBlockReason != null) {
+                return nextBarConfirmationBlockReason;
+            }
+        }
+        if (effectiveConfig.getMaxEntryRiseFromRecentLowPercent() > 0.0) {
+            String chaseBlockReason = resolveChaseLimitBlockReason(bars, effectiveConfig);
+            if (chaseBlockReason != null) {
+                return chaseBlockReason;
+            }
+        }
+        if (effectiveConfig.isRequirePriceAboveVwapForLong()) {
+            String vwapBlockReason = resolveVwapBlockReason(bars);
+            if (vwapBlockReason != null) {
+                return vwapBlockReason;
+            }
+        }
+
+        double minimumEntryScore = effectiveConfig.getMinimumEntryScore();
+        if (minimumEntryScore > 0.0 && decision.getConfidence() < minimumEntryScore) {
+            return String.format(
+                    "多頭分數 %.3f 低於雷達最低進場分數 %.3f，略過",
+                    decision.getConfidence(),
+                    minimumEntryScore);
+        }
+        return null;
+    }
+
+    private String resolveBreakoutNextBarConfirmationBlockReason(List<Bar> bars, RadarStrategyConfig config) {
+        int lookback = Math.max(5, config.getBreakoutLookbackBars());
+        if (bars == null || bars.size() < lookback + 2) {
+            return "突破後一根確認缺少足夠 K 線，略過做多";
+        }
+
+        int currentIndex = bars.size() - 1;
+        int breakoutIndex = currentIndex - 1;
+        Bar breakoutBar = bars.get(breakoutIndex);
+        Bar currentBar = bars.get(currentIndex);
+
+        if (!isVolumeBreakoutAt(bars, breakoutIndex, lookback, config.getVolumeMultiplier())) {
+            return "前一根 K 線不是有效放量突破，等待突破後確認";
+        }
+        if (currentBar.getClose() <= breakoutBar.getClose()) {
+            return "突破後下一根 K 線沒有續收高，略過做多";
+        }
+        return null;
+    }
+
+    private boolean isVolumeBreakoutAt(List<Bar> bars, int index, int lookback, double volumeMultiplier) {
+        if (bars == null || index <= 0 || index >= bars.size()) {
+            return false;
+        }
+        int start = Math.max(0, index - lookback);
+        if (start >= index) {
+            return false;
+        }
+
+        double previousHigh = Double.NEGATIVE_INFINITY;
+        double volumeSum = 0.0;
+        int count = 0;
+        for (int i = start; i < index; i++) {
+            Bar historyBar = bars.get(i);
+            if (historyBar == null) {
+                continue;
+            }
+            previousHigh = Math.max(previousHigh, historyBar.getHigh());
+            volumeSum += Math.max(0.0, historyBar.getVolume());
+            count++;
+        }
+        if (count == 0 || previousHigh == Double.NEGATIVE_INFINITY) {
+            return false;
+        }
+
+        Bar candidate = bars.get(index);
+        double averageVolume = volumeSum / count;
+        double volumeRatio = averageVolume > 0.0 ? candidate.getVolume() / averageVolume : 0.0;
+        return candidate.getClose() > previousHigh && volumeRatio >= volumeMultiplier;
+    }
+
+    private String resolveChaseLimitBlockReason(List<Bar> bars, RadarStrategyConfig config) {
+        if (bars == null || bars.isEmpty()) {
             return null;
         }
-        boolean emaConfirmed = hasMovingAverageSignal && !movingAverageDown;
-        if (emaConfirmed || volumeLong) {
+        int lookback = Math.max(5, config.getBreakoutLookbackBars());
+        int start = Math.max(0, bars.size() - lookback);
+        double recentLow = Double.POSITIVE_INFINITY;
+        for (int i = start; i < bars.size(); i++) {
+            Bar bar = bars.get(i);
+            if (bar != null) {
+                recentLow = Math.min(recentLow, bar.getLow());
+            }
+        }
+        if (recentLow <= 0.0 || recentLow == Double.POSITIVE_INFINITY) {
             return null;
         }
-        return "RSI 超賣訊號缺少 EMA 趨勢或放量反轉確認，略過接刀進場";
+
+        Bar current = bars.get(bars.size() - 1);
+        double riseFromLow = (current.getClose() - recentLow) / recentLow;
+        double limit = config.getMaxEntryRiseFromRecentLowPercent();
+        if (riseFromLow > limit) {
+            return String.format("開倉價距離近 %d 根 K 低點已上漲 %.2f%%，超過追價限制 %.2f%%",
+                    lookback,
+                    riseFromLow * 100.0,
+                    limit * 100.0);
+        }
+        return null;
+    }
+
+    private String resolveVwapBlockReason(List<Bar> bars) {
+        if (bars == null || bars.isEmpty()) {
+            return "VWAP 濾網缺少 K 線資料，略過做多";
+        }
+
+        double priceVolume = 0.0;
+        double totalVolume = 0.0;
+        for (Bar bar : bars) {
+            if (bar == null || bar.getVolume() <= 0.0) {
+                continue;
+            }
+            double typicalPrice = (bar.getHigh() + bar.getLow() + bar.getClose()) / 3.0;
+            priceVolume += typicalPrice * bar.getVolume();
+            totalVolume += bar.getVolume();
+        }
+        if (totalVolume <= 0.0) {
+            return "VWAP 濾網缺少有效成交量，略過做多";
+        }
+
+        Bar current = bars.get(bars.size() - 1);
+        double vwap = priceVolume / totalVolume;
+        if (current.getClose() < vwap) {
+            return String.format("價格 %.2f 低於 VWAP %.2f，略過做多", current.getClose(), vwap);
+        }
+        return null;
+    }
+
+    private String resolveBreakoutContinuationBlockReason(List<Bar> bars) {
+        if (bars == null || bars.size() < 2) {
+            return "量能突破缺少足夠 K 線確認價格延續，略過";
+        }
+
+        Bar current = bars.get(bars.size() - 1);
+        Bar previous = bars.get(bars.size() - 2);
+        if (current.getClose() <= previous.getClose()) {
+            return "量能突破後收盤價未高於前一根 K 線，略過";
+        }
+
+        double range = current.getHigh() - current.getLow();
+        if (range > 0.0) {
+            double closePosition = (current.getClose() - current.getLow()) / range;
+            if (closePosition < 0.60) {
+                return "量能突破後收盤未站在 K 棒上緣區，略過";
+            }
+        }
+        return null;
     }
 
     private String summarizeSignals(List<IStrategySignal> signals) {

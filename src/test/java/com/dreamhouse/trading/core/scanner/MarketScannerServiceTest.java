@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MarketScannerServiceTest {
 
     @Test
-    void scanUsesConfiguredRsiMovingAverageAndVolumeBreakoutSignals() {
+    void scanUsesConfiguredMovingAverageAndVolumeBreakoutSignals() {
         MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
         DecisionConfig decisionConfig = DecisionConfig.createAggressive();
         decisionConfig.setRegimeDetectionEnabled(false);
@@ -30,15 +30,16 @@ class MarketScannerServiceTest {
         decisionConfig.getVotingConfig().setMinVotingStrategies(1);
 
         RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
-        radarConfig.setRsiEnabled(true);
+        radarConfig.setRsiEnabled(false);
         radarConfig.setMovingAverageEnabled(true);
         radarConfig.setVolumeBreakoutEnabled(true);
-        radarConfig.setRsiOversold(80.0);
-        radarConfig.setRsiOverbought(95.0);
         radarConfig.setFastMovingAveragePeriod(3);
         radarConfig.setSlowMovingAveragePeriod(8);
         radarConfig.setBreakoutLookbackBars(12);
         radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setBlockBreakoutOnRsiOverbought(false);
+        radarConfig.setRequireBreakoutContinuation(false);
 
         MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
                 .tradeMode(TradeMode.DAY_TRADE)
@@ -49,9 +50,162 @@ class MarketScannerServiceTest {
 
         assertThat(result.hasTradeSignal()).isTrue();
         assertThat(result.getDecisionResult().getAction()).isEqualTo(DecisionResult.Action.OPEN_LONG);
-        assertThat(result.getRawSignalSummary()).contains("SignalRSI");
         assertThat(result.getRawSignalSummary()).contains("MovingAverageTrend");
         assertThat(result.getRawSignalSummary()).contains("VolumeBreakout");
+    }
+
+    @Test
+    void rsiShortBlocksOpenLongEvenWhenTrendAndVolumeAreLong() {
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(true);
+        radarConfig.setRsiPeriod(5);
+        radarConfig.setRsiOversold(20.0);
+        radarConfig.setRsiOverbought(60.0);
+        radarConfig.setRsiWeight(0.1);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setMovingAverageWeight(1.0);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setVolumeBreakoutWeight(1.0);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setBlockBreakoutOnRsiOverbought(false);
+        radarConfig.setRequireBreakoutContinuation(false);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getRawSignalSummary()).contains("SignalRSI:SHORT");
+        assertThat(result.getRawSignalSummary()).contains("MovingAverageTrend:LONG");
+        assertThat(result.getBlockReason()).contains("SignalRSI=SHORT");
+    }
+
+    @Test
+    void vwapFilterBlocksOpenLongWhenPriceIsBelowVwap() {
+        MarketScannerService scanner = new MarketScannerService(new BelowVwapBreakoutFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setMovingAverageWeight(1.0);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setVolumeBreakoutWeight(1.0);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setRequirePriceAboveVwapForLong(true);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getRawSignalSummary()).contains("VolumeBreakout:LONG");
+        assertThat(result.getBlockReason()).contains("VWAP");
+    }
+
+    @Test
+    void nextBarBreakoutConfirmationBlocksInitialBreakoutBar() {
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setRequireBreakoutNextBarConfirmation(true);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getRawSignalSummary()).contains("VolumeBreakout:LONG");
+        assertThat(result.getBlockReason()).contains("前一根 K 線不是有效放量突破");
+    }
+
+    @Test
+    void chaseLimitBlocksEntriesFarAboveRecentLow() {
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setMaxEntryRiseFromRecentLowPercent(0.01);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getBlockReason()).contains("追價限制");
+    }
+
+    @Test
+    void bConvergenceTemplateUsesChaseLimitWithoutOverFiltering() {
+        RadarStrategyConfig config = RadarStrategyConfig.createBConvergenceTemplate();
+
+        assertThat(config.isRequireBreakoutNextBarConfirmation()).isFalse();
+        assertThat(config.getMaxEntryRiseFromRecentLowPercent()).isEqualTo(0.03);
+        assertThat(config.isRequirePriceAboveVwapForLong()).isFalse();
+        assertThat(config.isRequireBreakoutContinuation()).isTrue();
     }
 
     @Test
@@ -212,6 +366,65 @@ class MarketScannerServiceTest {
                         close,
                         1_000));
             }
+            return bars;
+        }
+    }
+
+    private static class BelowVwapBreakoutFeed implements MarketDataFeed {
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            List<Bar> bars = new ArrayList<>();
+            LocalDateTime start = LocalDateTime.of(2026, 1, 1, 9, 0);
+            for (int i = 0; i < 40; i++) {
+                bars.add(new Bar(
+                        start.plusMinutes(i),
+                        120.0,
+                        120.4,
+                        119.6,
+                        120.0,
+                        10_000));
+            }
+
+            double close = 100.0;
+            for (int i = 40; i < 79; i++) {
+                double open = close;
+                close += 0.10;
+                bars.add(new Bar(
+                        start.plusMinutes(i),
+                        open,
+                        close + 0.1,
+                        open - 0.1,
+                        close,
+                        100));
+            }
+            bars.add(new Bar(
+                    start.plusMinutes(79),
+                    close,
+                    close + 2.4,
+                    close - 0.1,
+                    close + 2.0,
+                    5_000));
             return bars;
         }
     }

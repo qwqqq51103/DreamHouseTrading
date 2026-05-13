@@ -246,8 +246,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
         // K 線渲染器
         CandlestickRenderer candleRenderer = new CandlestickRenderer();
         candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_AVERAGE);
-        candleRenderer.setAutoWidthFactor(0.72);
-        candleRenderer.setAutoWidthGap(0.10);
+        candleRenderer.setAutoWidthFactor(0.95);
+        candleRenderer.setAutoWidthGap(0.02);
+        candleRenderer.setDrawVolume(false);
         candleRenderer.setUpPaint(new Color(34, 177, 76));   // 綠漲
         candleRenderer.setDownPaint(new Color(237, 28, 36)); // 紅跌
         
@@ -1235,6 +1236,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
         }
         
         SwingUtilities.invokeLater(() -> {
+            List<Bar> displayBars = normalizeFlatSnapshotBars(bars);
+
             // 清空現有數據
             ohlcSeries.clear();
             volumeSeries.clear();
@@ -1265,10 +1268,10 @@ public class ChartDock extends JPanel implements MarketDataListener {
             wrSeries.clear();
             
             // 檢測數據的時間週期類型
-            detectTimeFrame(bars);
+            detectTimeFrame(displayBars);
             
             // 載入新數據
-            for (Bar bar : bars) {
+            for (Bar bar : displayBars) {
                 // 使用智能時間週期創建
                 RegularTimePeriod timePeriod = createTimePeriod(bar.getTimestamp());
                 
@@ -1302,6 +1305,36 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 chartPanel.restoreAutoBounds();
             }
         });
+    }
+
+    private List<Bar> normalizeFlatSnapshotBars(List<Bar> bars) {
+        List<Bar> displayBars = new ArrayList<>(bars.size());
+        Double previousClose = null;
+        for (Bar bar : bars) {
+            Bar displayBar = bar;
+            if (previousClose != null && isFlatSnapshotBar(bar)
+                    && Math.abs(previousClose - bar.getClose()) > 0.000001) {
+                double open = previousClose;
+                double close = bar.getClose();
+                displayBar = new Bar(
+                        bar.getTimestamp(),
+                        open,
+                        Math.max(open, close),
+                        Math.min(open, close),
+                        close,
+                        bar.getVolume());
+            }
+            displayBars.add(displayBar);
+            previousClose = bar.getClose();
+        }
+        return displayBars;
+    }
+
+    private boolean isFlatSnapshotBar(Bar bar) {
+        double open = bar.getOpen();
+        return Math.abs(open - bar.getHigh()) < 0.000001
+                && Math.abs(open - bar.getLow()) < 0.000001
+                && Math.abs(open - bar.getClose()) < 0.000001;
     }
     
     /**

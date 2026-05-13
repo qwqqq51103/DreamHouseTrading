@@ -14,10 +14,14 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingWorker;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableColumn;
+import java.awt.Component;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -94,21 +98,60 @@ public class PaperTradeAnalysisDock extends JPanel {
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("摘要", new JScrollPane(summaryArea));
-        tabs.addTab("開平倉流程", table(timelineModel));
-        tabs.addTab("完成交易", table(completedModel));
-        tabs.addTab("進場 Setup", table(setupsModel));
-        tabs.addTab("訂單", table(ordersModel));
-        tabs.addTab("未配對", table(unmatchedModel));
+        tabs.addTab("開平倉流程", table(timelineModel, 7, 13, 7, 7, 5, 4, 9, 6, 9, 6, 7, 17, 17));
+        tabs.addTab("完成交易", table(completedModel, 11, 13, 7, 7, 5, 4, 6, 6, 7, 5, 7, 17, 17));
+        tabs.addTab("進場 Setup", table(setupsModel, 11, 13, 13, 7, 7, 5, 4, 6, 6, 6, 5, 5, 18));
+        tabs.addTab("訂單", table(ordersModel, 11, 13, 13, 7, 7, 5, 6, 4, 6, 6, 5, 15, 15));
+        tabs.addTab("未配對", table(unmatchedModel, 8, 14, 14, 8, 8, 12, 5, 6, 25));
         return tabs;
     }
 
-    private JScrollPane table(DefaultTableModel model) {
+    private JScrollPane table(DefaultTableModel model, int... columnWeights) {
         JTable table = new JTable(model);
-        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        table.setFillsViewportHeight(true);
         table.setRowHeight(24);
         table.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
         table.getTableHeader().setFont(new Font("Microsoft JhengHei", Font.BOLD, 12));
-        return new JScrollPane(table);
+        JScrollPane scrollPane = new JScrollPane(table);
+        scrollPane.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                resizeColumnsToViewport(table, scrollPane, columnWeights);
+            }
+        });
+        table.getModel().addTableModelListener(e -> resizeColumnsToViewport(table, scrollPane, columnWeights));
+        resizeColumnsToViewport(table, scrollPane, columnWeights);
+        return scrollPane;
+    }
+
+    private void resizeColumnsToViewport(JTable table, JScrollPane scrollPane, int... weights) {
+        int columnCount = table.getColumnModel().getColumnCount();
+        if (columnCount == 0 || weights == null || weights.length != columnCount) {
+            return;
+        }
+        Component viewport = scrollPane.getViewport();
+        int availableWidth = viewport != null && viewport.getWidth() > 0
+                ? viewport.getWidth()
+                : scrollPane.getWidth();
+        if (availableWidth <= 0) {
+            return;
+        }
+
+        int totalWeight = 0;
+        for (int weight : weights) {
+            totalWeight += Math.max(1, weight);
+        }
+        int usedWidth = 0;
+        for (int i = 0; i < columnCount; i++) {
+            TableColumn column = table.getColumnModel().getColumn(i);
+            int width = i == columnCount - 1
+                    ? Math.max(48, availableWidth - usedWidth)
+                    : Math.max(48, (int) Math.round((availableWidth * Math.max(1, weights[i])) / (double) totalWeight));
+            column.setPreferredWidth(width);
+            column.setMinWidth(Math.min(48, width));
+            usedWidth += width;
+        }
     }
 
     private static DefaultTableModel tableModel(String... columns) {

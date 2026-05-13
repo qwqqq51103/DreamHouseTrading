@@ -30,6 +30,12 @@ public class RadarStrategyConfig {
     private double volumeMultiplier = 1.8;
     private double volumeBreakoutWeight = 0.8;
     private boolean requireRsiEntryConfirmation = true;
+    private boolean blockBreakoutOnRsiOverbought = true;
+    private boolean requireBreakoutContinuation = true;
+    private boolean requirePriceAboveVwapForLong = false;
+    private boolean requireBreakoutNextBarConfirmation = false;
+    private double maxEntryRiseFromRecentLowPercent = 0.0;
+    private double minimumEntryScore = 0.50;
 
     private Timeframe dayTradeTimeframe = Timeframe.M1;
     private Timeframe shortSwingTimeframe = Timeframe.M15;
@@ -76,6 +82,34 @@ public class RadarStrategyConfig {
         config.setBreakoutLookbackBars(40);
         config.setVolumeMultiplier(1.5);
         config.setDayTradeTimeframe(Timeframe.M5);
+        return config;
+    }
+
+    public static RadarStrategyConfig createBConvergenceTemplate() {
+        RadarStrategyConfig config = createDefault();
+        config.setDayTradeTimeframe(Timeframe.M1);
+        config.setDayTradeBarCount(220);
+        config.setRsiEnabled(true);
+        config.setRsiPeriod(9);
+        config.setRsiOversold(35.0);
+        config.setRsiOverbought(68.0);
+        config.setRsiWeight(0.90);
+        config.setMovingAverageEnabled(true);
+        config.setMovingAverageType(MovingAverageType.EMA);
+        config.setFastMovingAveragePeriod(8);
+        config.setSlowMovingAveragePeriod(34);
+        config.setMovingAverageWeight(0.80);
+        config.setVolumeBreakoutEnabled(true);
+        config.setBreakoutLookbackBars(30);
+        config.setVolumeMultiplier(1.60);
+        config.setVolumeBreakoutWeight(0.85);
+        config.setRequireRsiEntryConfirmation(true);
+        config.setBlockBreakoutOnRsiOverbought(true);
+        config.setRequireBreakoutContinuation(true);
+        config.setRequirePriceAboveVwapForLong(false);
+        config.setRequireBreakoutNextBarConfirmation(false);
+        config.setMaxEntryRiseFromRecentLowPercent(0.03);
+        config.setMinimumEntryScore(0.45);
         return config;
     }
 
@@ -151,6 +185,12 @@ public class RadarStrategyConfig {
         copy.volumeMultiplier = volumeMultiplier;
         copy.volumeBreakoutWeight = volumeBreakoutWeight;
         copy.requireRsiEntryConfirmation = requireRsiEntryConfirmation;
+        copy.blockBreakoutOnRsiOverbought = blockBreakoutOnRsiOverbought;
+        copy.requireBreakoutContinuation = requireBreakoutContinuation;
+        copy.requirePriceAboveVwapForLong = requirePriceAboveVwapForLong;
+        copy.requireBreakoutNextBarConfirmation = requireBreakoutNextBarConfirmation;
+        copy.maxEntryRiseFromRecentLowPercent = maxEntryRiseFromRecentLowPercent;
+        copy.minimumEntryScore = minimumEntryScore;
         copy.dayTradeTimeframe = dayTradeTimeframe;
         copy.shortSwingTimeframe = shortSwingTimeframe;
         copy.swingTradeTimeframe = swingTradeTimeframe;
@@ -190,6 +230,18 @@ public class RadarStrategyConfig {
     public void setVolumeBreakoutWeight(double volumeBreakoutWeight) { this.volumeBreakoutWeight = clamp(volumeBreakoutWeight, 0.0, 1.0); }
     public boolean isRequireRsiEntryConfirmation() { return requireRsiEntryConfirmation; }
     public void setRequireRsiEntryConfirmation(boolean requireRsiEntryConfirmation) { this.requireRsiEntryConfirmation = requireRsiEntryConfirmation; }
+    public boolean isBlockBreakoutOnRsiOverbought() { return blockBreakoutOnRsiOverbought; }
+    public void setBlockBreakoutOnRsiOverbought(boolean blockBreakoutOnRsiOverbought) { this.blockBreakoutOnRsiOverbought = blockBreakoutOnRsiOverbought; }
+    public boolean isRequireBreakoutContinuation() { return requireBreakoutContinuation; }
+    public void setRequireBreakoutContinuation(boolean requireBreakoutContinuation) { this.requireBreakoutContinuation = requireBreakoutContinuation; }
+    public boolean isRequirePriceAboveVwapForLong() { return requirePriceAboveVwapForLong; }
+    public void setRequirePriceAboveVwapForLong(boolean requirePriceAboveVwapForLong) { this.requirePriceAboveVwapForLong = requirePriceAboveVwapForLong; }
+    public boolean isRequireBreakoutNextBarConfirmation() { return requireBreakoutNextBarConfirmation; }
+    public void setRequireBreakoutNextBarConfirmation(boolean requireBreakoutNextBarConfirmation) { this.requireBreakoutNextBarConfirmation = requireBreakoutNextBarConfirmation; }
+    public double getMaxEntryRiseFromRecentLowPercent() { return maxEntryRiseFromRecentLowPercent; }
+    public void setMaxEntryRiseFromRecentLowPercent(double maxEntryRiseFromRecentLowPercent) { this.maxEntryRiseFromRecentLowPercent = clamp(maxEntryRiseFromRecentLowPercent, 0.0, 1.0); }
+    public double getMinimumEntryScore() { return minimumEntryScore; }
+    public void setMinimumEntryScore(double minimumEntryScore) { this.minimumEntryScore = clamp(minimumEntryScore, 0.0, 1.0); }
     public Timeframe getDayTradeTimeframe() { return dayTradeTimeframe; }
     public void setDayTradeTimeframe(Timeframe dayTradeTimeframe) { this.dayTradeTimeframe = dayTradeTimeframe != null ? dayTradeTimeframe : Timeframe.M1; }
     public Timeframe getShortSwingTimeframe() { return shortSwingTimeframe; }

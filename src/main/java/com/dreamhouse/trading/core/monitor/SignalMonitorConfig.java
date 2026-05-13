@@ -23,6 +23,7 @@ public class SignalMonitorConfig {
     private LocalTime earlyEntryBlockEnd = LocalTime.of(9, 10);
     private boolean stopLossCooldownEnabled = true;
     private int stopLossCooldownMinutes = 60;
+    private LocalTime latestAutoEntryTime = LocalTime.of(13, 10);
     private Integer rsiPeriod;
     private Double rsiOversold;
     private Double rsiOverbought;
@@ -61,6 +62,23 @@ public class SignalMonitorConfig {
         config.setBarCount(160);
         config.setTradeMode(TradeMode.DAY_TRADE);
         config.setRadarStrategyConfig(RadarStrategyConfig.createBalancedTemplate());
+        return config;
+    }
+
+    public static SignalMonitorConfig createBConvergenceTemplate() {
+        SignalMonitorConfig config = new SignalMonitorConfig();
+        config.setScanIntervalSeconds(10);
+        config.setTimeframe(Timeframe.M1);
+        config.setMinSignalIntervalMinutes(10);
+        config.setBarCount(220);
+        config.setTradeMode(TradeMode.DAY_TRADE);
+        config.setEarlyEntryBlockEnabled(true);
+        config.setEarlyEntryBlockStart(LocalTime.of(9, 0));
+        config.setEarlyEntryBlockEnd(LocalTime.of(9, 45));
+        config.setStopLossCooldownEnabled(true);
+        config.setStopLossCooldownMinutes(60);
+        config.setLatestAutoEntryTime(LocalTime.of(13, 10));
+        config.setRadarStrategyConfig(RadarStrategyConfig.createBConvergenceTemplate());
         return config;
     }
 
@@ -158,6 +176,14 @@ public class SignalMonitorConfig {
 
     public void setStopLossCooldownMinutes(int stopLossCooldownMinutes) {
         this.stopLossCooldownMinutes = Math.max(1, stopLossCooldownMinutes);
+    }
+
+    public LocalTime getLatestAutoEntryTime() {
+        return latestAutoEntryTime;
+    }
+
+    public void setLatestAutoEntryTime(LocalTime latestAutoEntryTime) {
+        this.latestAutoEntryTime = latestAutoEntryTime != null ? latestAutoEntryTime : LocalTime.of(13, 10);
     }
 
     public Integer getRsiPeriod() {
