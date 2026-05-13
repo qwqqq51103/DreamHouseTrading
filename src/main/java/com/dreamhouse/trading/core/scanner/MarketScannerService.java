@@ -110,13 +110,36 @@ public class MarketScannerService {
 
             DecisionResult decision = decisionEngine.onBar(toTa4jBar(lastBar, timeframe));
             Double riskReward = resolveRiskReward(lastBar.getClose(), decision);
+            String rawSignalSummary = summarizeSignals(signals);
+            String entryBlockReason = resolveEntryQualityBlockReason(
+                    decision,
+                    signals,
+                    effectiveRequest.getRadarStrategyConfig());
+            if (entryBlockReason != null) {
+                DecisionResult blockedDecision = new DecisionResult.Builder()
+                        .symbol(symbol)
+                        .tradeMode(effectiveRequest.getTradeMode())
+                        .action(DecisionResult.Action.NO_ACTION)
+                        .source(DecisionResult.Source.TECHNICAL)
+                        .reason(entryBlockReason)
+                        .confidence(0.0)
+                        .build();
+                return MarketScanResult.builder(symbol)
+                        .tradeMode(effectiveRequest.getTradeMode())
+                        .decisionResult(blockedDecision)
+                        .score(0.0)
+                        .riskRewardRatio(riskReward)
+                        .rawSignalSummary(rawSignalSummary)
+                        .blockReason(entryBlockReason)
+                        .build();
+            }
 
             return MarketScanResult.builder(symbol)
                     .tradeMode(effectiveRequest.getTradeMode())
                     .decisionResult(decision)
                     .score(calculateScore(decision, effectiveRequest.getTradeMode()))
                     .riskRewardRatio(riskReward)
-                    .rawSignalSummary(summarizeSignals(signals))
+                    .rawSignalSummary(rawSignalSummary)
                     .blockReason(resolveBlockReason(decision))
                     .build();
         } catch (UnsupportedOperationException e) {
@@ -278,6 +301,49 @@ public class MarketScannerService {
                 .rawSignalSummary("No active strategy signals")
                 .blockReason(reason)
                 .build();
+    }
+
+    private String resolveEntryQualityBlockReason(
+            DecisionResult decision,
+            List<IStrategySignal> signals,
+            RadarStrategyConfig config) {
+        RadarStrategyConfig effectiveConfig = config != null ? config : RadarStrategyConfig.createDefault();
+        if (!effectiveConfig.isRequireRsiEntryConfirmation()
+                || decision == null
+                || decision.getAction() != DecisionResult.Action.OPEN_LONG
+                || signals == null
+                || signals.isEmpty()) {
+            return null;
+        }
+
+        boolean rsiLong = false;
+        boolean hasMovingAverageSignal = false;
+        boolean movingAverageDown = false;
+        boolean volumeLong = false;
+
+        for (IStrategySignal signal : signals) {
+            if (signal == null || signal.getStrategyName() == null || signal.getSignal() == null) {
+                continue;
+            }
+            String strategyName = signal.getStrategyName();
+            if ("SignalRSI".equals(strategyName) && signal.getSignal() == SignalType.LONG) {
+                rsiLong = true;
+            } else if ("MovingAverageTrend".equals(strategyName)) {
+                hasMovingAverageSignal = true;
+                movingAverageDown = signal.getSignal() == SignalType.SHORT;
+            } else if ("VolumeBreakout".equals(strategyName) && signal.getSignal() == SignalType.LONG) {
+                volumeLong = true;
+            }
+        }
+
+        if (!rsiLong) {
+            return null;
+        }
+        boolean emaConfirmed = hasMovingAverageSignal && !movingAverageDown;
+        if (emaConfirmed || volumeLong) {
+            return null;
+        }
+        return "RSI 超賣訊號缺少 EMA 趨勢或放量反轉確認，略過接刀進場";
     }
 
     private String summarizeSignals(List<IStrategySignal> signals) {

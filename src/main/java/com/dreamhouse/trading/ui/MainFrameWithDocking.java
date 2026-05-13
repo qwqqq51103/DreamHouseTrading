@@ -38,6 +38,9 @@ import io.github.andrewauclair.moderndocking.Dockable;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -47,6 +50,10 @@ import java.util.Map;
 import java.util.Set;
 
 public class MainFrameWithDocking extends JFrame {
+    static final int DAY_TRADE_LOT_SIZE = 1000;
+    static final LocalTime DAY_TRADE_FORCE_CLOSE_TIME = LocalTime.of(13, 25);
+    private static final ZoneId TAIPEI_ZONE = ZoneId.of("Asia/Taipei");
+
     private final DataSourceManager dataSourceManager;
     private MarketDataFeed dataFeed;
     private final StatusBar statusBar;
@@ -64,6 +71,7 @@ public class MainFrameWithDocking extends JFrame {
     private MarketAnalysisDock marketAnalysisDock;
     private ModeRecommendationDock modeRecommendationDock;
     private ExecutionStatusDock executionStatusDock;
+    private PaperTradeAnalysisDock paperTradeAnalysisDock;
 
     private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
@@ -77,6 +85,9 @@ public class MainFrameWithDocking extends JFrame {
     private final Map<String, Long> watchlistVolumes = new HashMap<>();
     private final Map<String, Double> activeStopLosses = new HashMap<>();
     private final Map<String, Double> activeTakeProfits = new HashMap<>();
+    private final Map<String, TradeMode> activeTradeModes = new HashMap<>();
+    private final Set<String> autoManagedPositions = new java.util.HashSet<>();
+    private final Map<String, LocalDateTime> stopLossCooldownUntil = new HashMap<>();
     private final Set<String> watchlistMarketSubscriptions = new java.util.HashSet<>();
     private final Set<String> pendingAutoEntries = new java.util.HashSet<>();
     private SignalMonitorService signalMonitor;
@@ -125,6 +136,7 @@ public class MainFrameWithDocking extends JFrame {
         add(toolBar, BorderLayout.NORTH);
         add(dockingPanel, BorderLayout.CENTER);
         add(statusBar, BorderLayout.SOUTH);
+        UIAutoScaler.install(this);
         
         // 訂閱市場資料
         subscribeMarketData();
@@ -160,6 +172,9 @@ public class MainFrameWithDocking extends JFrame {
             lastFpsTime = now;
         });
         fpsTimer.start();
+
+        Timer forceCloseTimer = new Timer(10_000, e -> closeAutoManagedPositionsAtCutoff());
+        forceCloseTimer.start();
         
         // 快捷鍵設定
         setupKeyBindings();
@@ -189,16 +204,24 @@ public class MainFrameWithDocking extends JFrame {
         watchlistPanel = new WatchlistPanel();
         watchlistPanel.setOnSymbolDoubleClick(this::changeSymbol);
         watchlistPanel.setOnSymbolAdded(symbol -> {
+            syncCollectorSymbolAdd(symbol);
             subscribeWatchlistSymbol(symbol);
             scanWatchlistForOpportunitiesAsync();
             restartMonitoringIfRunning();
         });
         watchlistPanel.setOnSymbolRemoved(symbol -> {
+            syncCollectorSymbolRemove(symbol);
             unsubscribeWatchlistSymbol(symbol);
             latestScanResults.remove(symbol);
             latestPrices.remove(symbol);
             watchlistOpenPrices.remove(symbol);
             watchlistVolumes.remove(symbol);
+            activeStopLosses.remove(symbol);
+            activeTakeProfits.remove(symbol);
+            activeTradeModes.remove(symbol);
+            autoManagedPositions.remove(symbol);
+            pendingAutoEntries.remove(symbol);
+            stopLossCooldownUntil.remove(symbol);
             scanWatchlistForOpportunitiesAsync();
             restartMonitoringIfRunning();
         });
@@ -212,7 +235,7 @@ public class MainFrameWithDocking extends JFrame {
         Docking.registerDockable(radarWrapper);
         Docking.dock(radarWrapper, watchlistWrapper, DockingRegion.SOUTH);
 
-        finMindApiDock = new FinMindApiDock(dataSourceManager);
+        finMindApiDock = new FinMindApiDock(dataSourceManager, chartDock::loadHistoricalData, statusBar::setText);
         DockableWrapper finMindApiWrapper = new DockableWrapper("finMindApi", "FinMind API 查詢", finMindApiDock);
         Docking.registerDockable(finMindApiWrapper);
         Docking.dock(finMindApiWrapper, radarWrapper, DockingRegion.SOUTH);
@@ -260,6 +283,12 @@ public class MainFrameWithDocking extends JFrame {
             "executionStatus", "執行狀態", executionStatusDock);
         Docking.registerDockable(executionStatusWrapper);
         Docking.dock(executionStatusWrapper, modeRecommendationWrapper, DockingRegion.SOUTH);
+
+        paperTradeAnalysisDock = new PaperTradeAnalysisDock();
+        DockableWrapper paperTradeAnalysisWrapper = new DockableWrapper(
+            "paperTradeAnalysis", "交易紀錄分析", paperTradeAnalysisDock);
+        Docking.registerDockable(paperTradeAnalysisWrapper);
+        Docking.dock(paperTradeAnalysisWrapper, executionStatusWrapper, DockingRegion.SOUTH);
     }
     
     private JMenuBar createMenuBar() {
@@ -314,6 +343,10 @@ public class MainFrameWithDocking extends JFrame {
         JMenuItem indicatorSettings = new JMenuItem(I18n.get("menu.view.indicator.settings"));
         indicatorSettings.addActionListener(e -> openIndicatorSettings());
         viewMenu.add(indicatorSettings);
+
+        JMenu panelMenu = new JMenu("面板");
+        addPanelMenuItems(panelMenu);
+        viewMenu.add(panelMenu);
         
         menuBar.add(viewMenu);
 
@@ -359,6 +392,10 @@ public class MainFrameWithDocking extends JFrame {
         monitorSettingsItem.addActionListener(e -> showMonitorSettingsDialog());
         toolsMenu.add(monitorSettingsItem);
 
+        JMenuItem tradeAnalysisItem = new JMenuItem("交易紀錄分析");
+        tradeAnalysisItem.addActionListener(e -> showDockablePanel("paperTradeAnalysis", "交易紀錄分析"));
+        toolsMenu.add(tradeAnalysisItem);
+
         JMenuItem startMonitorItem = new JMenuItem("啟動自動偵測");
         startMonitorItem.addActionListener(e -> startAutoTrading(true));
         toolsMenu.add(startMonitorItem);
@@ -382,11 +419,7 @@ public class MainFrameWithDocking extends JFrame {
         // Help Menu
         JMenu helpMenu = new JMenu(I18n.get("menu.help"));
         JMenuItem aboutItem = new JMenuItem(I18n.get("menu.help.about"));
-        aboutItem.addActionListener(e -> 
-            JOptionPane.showMessageDialog(this, 
-                I18n.get("about.message"), 
-                I18n.get("about.title"), 
-                JOptionPane.INFORMATION_MESSAGE));
+        aboutItem.addActionListener(e -> showAboutDialog());
         helpMenu.add(aboutItem);
         menuBar.add(helpMenu);
         
@@ -515,8 +548,102 @@ public class MainFrameWithDocking extends JFrame {
         JButton filterBtn = new JButton("🔍 篩選標記");
         filterBtn.addActionListener(e -> chartDock.showTradeMarkerFilter());
         toolBar.add(filterBtn);
+
+        JButton tradeAnalysisBtn = new JButton("📊 交易紀錄");
+        tradeAnalysisBtn.setToolTipText("開啟 paper-trades CSV 匯入與交易流程分析");
+        tradeAnalysisBtn.addActionListener(e -> showDockablePanel("paperTradeAnalysis", "交易紀錄分析"));
+        toolBar.add(tradeAnalysisBtn);
         
+        toolBar.addSeparator();
+
+        JButton panelButton = new JButton("面板");
+        panelButton.setToolTipText("呼叫或切換主要 UI 面板");
+        panelButton.addActionListener(e -> {
+            JPopupMenu popup = new JPopupMenu();
+            addPanelMenuItems(popup);
+            popup.addSeparator();
+            JMenuItem dataSourceItem = new JMenuItem("資料源設定");
+            dataSourceItem.addActionListener(event -> openDataSourceConfig());
+            popup.add(dataSourceItem);
+            JMenuItem indicatorItem = new JMenuItem("指標設定");
+            indicatorItem.addActionListener(event -> openIndicatorSettings());
+            popup.add(indicatorItem);
+            JMenuItem aboutItem = new JMenuItem("關於 DreamHouseTrading");
+            aboutItem.addActionListener(event -> showAboutDialog());
+            popup.add(aboutItem);
+            popup.show(panelButton, 0, panelButton.getHeight());
+        });
+        toolBar.add(panelButton);
+
         return toolBar;
+    }
+
+    private void addPanelMenuItems(JMenu menu) {
+        for (PanelEntry entry : panelEntries()) {
+            JMenuItem item = new JMenuItem(entry.title());
+            item.addActionListener(e -> showDockablePanel(entry.id(), entry.title()));
+            menu.add(item);
+        }
+    }
+
+    private void addPanelMenuItems(JPopupMenu popup) {
+        for (PanelEntry entry : panelEntries()) {
+            JMenuItem item = new JMenuItem(entry.title());
+            item.addActionListener(e -> showDockablePanel(entry.id(), entry.title()));
+            popup.add(item);
+        }
+    }
+
+    private List<PanelEntry> panelEntries() {
+        return List.of(
+                new PanelEntry("chart", "主圖表"),
+                new PanelEntry("watchlist", "觀察清單"),
+                new PanelEntry("opportunityRadar", "今日機會雷達"),
+                new PanelEntry("finMindApi", "FinMind API 查詢"),
+                new PanelEntry("orderbook", "委託簿"),
+                new PanelEntry("timesales", "逐筆成交"),
+                new PanelEntry("news", "新聞"),
+                new PanelEntry("marketAnalysis", "市場分析"),
+                new PanelEntry("modeRecommendation", "模式建議"),
+                new PanelEntry("executionStatus", "模擬交易狀態"),
+                new PanelEntry("paperTradeAnalysis", "交易紀錄分析"));
+    }
+
+    private void showDockablePanel(String dockableId, String title) {
+        try {
+            Docking.display(dockableId);
+            statusBar.setText("已呼叫 UI 面板：" + title);
+        } catch (Exception ex) {
+            statusBar.setText("無法呼叫 UI 面板：" + title + "，" + ex.getMessage());
+        }
+    }
+
+    private void showAboutDialog() {
+        JTextArea message = new JTextArea("""
+                DreamHouseTrading
+
+                Java Swing 台股交易分析與模擬平台
+                版本：0.1.x
+
+                目前定位：
+                - 盤中行情建議使用 MarketDataCollectorFeed 讀取本機 MySQL。
+                - FinMind 保留低頻資料查詢，例如分點、新聞、盤後 K 線與 API 用量。
+                - Yahoo 保留為一般行情資料源。
+                - 系統只做分析、掃描、決策、回測與模擬交易，不做真實券商下單。
+
+                最近更新：
+                - FinMind API 面板支援分 K 匯入圖表。
+                - 分點查詢會彙總券商買進、賣出與買賣超。
+                - 工具列新增面板呼叫入口。
+                - 主視窗支援依尺寸自動縮放 UI 文字與表格。
+                """);
+        message.setEditable(false);
+        message.setOpaque(false);
+        message.setLineWrap(true);
+        message.setWrapStyleWord(true);
+        message.setColumns(54);
+        UIAutoScaler.apply(this);
+        JOptionPane.showMessageDialog(this, message, "關於 DreamHouseTrading", JOptionPane.INFORMATION_MESSAGE);
     }
     
     private void subscribeMarketData() {
@@ -594,6 +721,22 @@ public class MainFrameWithDocking extends JFrame {
         };
     }
 
+    private void syncCollectorSymbolAdd(String symbol) {
+        if (MarketDataCollectorSymbolSync.addSymbol(symbol)) {
+            statusBar.setText("已同步新增到 MarketDataCollector 監控清單：" + symbol);
+        } else {
+            statusBar.setText("觀察清單已新增，但 MarketDataCollector symbols.properties 未同步：" + symbol);
+        }
+    }
+
+    private void syncCollectorSymbolRemove(String symbol) {
+        if (MarketDataCollectorSymbolSync.removeSymbol(symbol)) {
+            statusBar.setText("已同步移除 MarketDataCollector 監控清單：" + symbol);
+        } else {
+            statusBar.setText("觀察清單已移除；MarketDataCollector 監控清單未找到或未同步：" + symbol);
+        }
+    }
+
     private void subscribeWatchlistSymbol(String symbol) {
         if (symbol == null || symbol.isBlank() || dataFeed == null) {
             return;
@@ -635,7 +778,8 @@ public class MainFrameWithDocking extends JFrame {
         paperTradeRecorder.recordMarketPrice(symbol, price, tick.getTimestamp());
 
         double openPrice = watchlistOpenPrices.computeIfAbsent(symbol, ignored -> price);
-        long volume = watchlistVolumes.merge(symbol, Math.max(0L, tick.getVolume()), Long::sum);
+        long volume = resolveWatchlistVolume(tick);
+        watchlistVolumes.put(symbol, volume);
         double changePct = openPrice > 0.0 ? ((price - openPrice) / openPrice) * 100.0 : 0.0;
 
         SwingUtilities.invokeLater(() -> {
@@ -648,8 +792,51 @@ public class MainFrameWithDocking extends JFrame {
             if (monitorPortfolio != null) {
                 monitorPortfolio.updateMarketValue(price);
             }
+            closeAutoManagedPositionsAtCutoff();
             closeAutoPositionIfStopTriggered(symbol, price);
         });
+    }
+
+    private void closeAutoManagedPositionsAtCutoff() {
+        if (!autoTradingEnabled || executionEngine == null || monitorPortfolio == null
+                || !isDayTradeForceCloseTime(LocalTime.now(TAIPEI_ZONE))) {
+            return;
+        }
+
+        List<Position> positions = new ArrayList<>(monitorPortfolio.getPositions());
+        for (Position position : positions) {
+            String symbol = position.getSymbol();
+            if (!autoManagedPositions.contains(symbol) || position.getQuantity() <= 0) {
+                continue;
+            }
+
+            double closePrice = getCurrentPrice(symbol);
+            if (closePrice <= 0.0) {
+                statusBar.setText("13:25 當沖強制平倉失敗，缺少最新價格：" + symbol);
+                continue;
+            }
+
+            String reason = "13:25 自動監控強制平倉";
+            ExecutionResult result = executionEngine.closePosition(
+                    symbol,
+                    position.getQuantity(),
+                    closePrice,
+                    com.dreamhouse.trading.core.execution.OrderType.MARKET,
+                    reason);
+            paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "day-trade-cutoff");
+            activeStopLosses.remove(symbol);
+            activeTakeProfits.remove(symbol);
+            activeTradeModes.remove(symbol);
+            autoManagedPositions.remove(symbol);
+            pendingAutoEntries.remove(symbol);
+            if (executionStatusDock != null) {
+                executionStatusDock.setExecutionEngine(executionEngine);
+                executionStatusDock.updateMarketPrice(symbol, closePrice);
+            }
+            statusBar.setText(result.isSuccess()
+                    ? reason + "：" + symbol + " @ " + String.format("%.2f", closePrice)
+                    : reason + "失敗：" + symbol + "，" + result.getMessage());
+        }
     }
 
     private void closeAutoPositionIfStopTriggered(String symbol, double price) {
@@ -660,6 +847,8 @@ public class MainFrameWithDocking extends JFrame {
         if (position == null || position.getQuantity() <= 0) {
             activeStopLosses.remove(symbol);
             activeTakeProfits.remove(symbol);
+            activeTradeModes.remove(symbol);
+            autoManagedPositions.remove(symbol);
             pendingAutoEntries.remove(symbol);
             return;
         }
@@ -677,6 +866,7 @@ public class MainFrameWithDocking extends JFrame {
             return;
         }
 
+        boolean stopLossTriggered = stopLoss != null && stopLoss > 0.0 && price <= stopLoss;
         ExecutionResult result = executionEngine.closePosition(
                 symbol,
                 position.getQuantity(),
@@ -686,7 +876,12 @@ public class MainFrameWithDocking extends JFrame {
         paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "auto-stop");
         activeStopLosses.remove(symbol);
         activeTakeProfits.remove(symbol);
+        activeTradeModes.remove(symbol);
+        autoManagedPositions.remove(symbol);
         pendingAutoEntries.remove(symbol);
+        if (result.isSuccess() && stopLossTriggered) {
+            registerStopLossCooldown(symbol);
+        }
         if (executionStatusDock != null) {
             executionStatusDock.setExecutionEngine(executionEngine);
             executionStatusDock.updateMarketPrice(symbol, price);
@@ -735,7 +930,7 @@ public class MainFrameWithDocking extends JFrame {
                 Thread.sleep(50);
 
                 System.out.println("[MainFrame] 開始加載 " + symbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 歷史數據");
-                dataFeed.loadHistoricalData(symbol, currentTimeframe, customBarCount);
+                loadChartData(symbol, currentTimeframe, customBarCount);
                 System.out.println("[MainFrame] " + symbol + " 歷史數據載入完成");
 
                 SwingUtilities.invokeLater(() -> {
@@ -771,7 +966,7 @@ public class MainFrameWithDocking extends JFrame {
                 Thread.sleep(50);
 
                 System.out.println("[MainFrame] 開始重新加載 " + currentSymbol + " " + customBarCount + " 根 " + tf.getLabel() + " 歷史數據");
-                dataFeed.loadHistoricalData(currentSymbol, tf, customBarCount);
+                loadChartData(currentSymbol, tf, customBarCount);
                 System.out.println("[MainFrame] " + currentSymbol + " " + tf.getLabel() + " 歷史數據重新載入完成");
 
                 SwingUtilities.invokeLater(() -> {
@@ -806,7 +1001,7 @@ public class MainFrameWithDocking extends JFrame {
                 Thread.sleep(50);
 
                 System.out.println("[MainFrame] 開始加載 " + currentSymbol + " " + customBarCount + " 根 " + currentTimeframe.getLabel() + " 歷史數據");
-                dataFeed.loadHistoricalData(currentSymbol, currentTimeframe, customBarCount);
+                loadChartData(currentSymbol, currentTimeframe, customBarCount);
                 System.out.println("[MainFrame] " + currentSymbol + " 歷史數據重新載入完成");
 
                 SwingUtilities.invokeLater(() -> {
@@ -822,6 +1017,20 @@ public class MainFrameWithDocking extends JFrame {
     /**
      * 變更查詢日期
      */
+    private void loadChartData(String symbol, Timeframe timeframe, int barCount) {
+        if (dataFeed instanceof MarketDataCollectorFeed) {
+            List<Bar> bars = dataFeed.fetchHistoricalBars(symbol, timeframe, barCount);
+            SwingUtilities.invokeLater(() -> {
+                if (symbol != null && symbol.equals(currentSymbol) && timeframe == currentTimeframe) {
+                    chartDock.loadHistoricalData(bars);
+                    statusBar.setText(symbol + " " + timeframe.getLabel() + " 數據載入完成");
+                }
+            });
+            return;
+        }
+        dataFeed.loadHistoricalData(symbol, timeframe, barCount);
+    }
+
     private void changeDateQuery(java.time.LocalDate date) {
         System.out.println("[MainFrame] 切換查詢日期: " + date);
 
@@ -1075,7 +1284,7 @@ public class MainFrameWithDocking extends JFrame {
 
     private MarketScanResult findBestRadarCandidate(MarketScannerService scannerService, String symbol) {
         MarketScanResult best = null;
-        for (TradeMode mode : List.of(TradeMode.DAY_TRADE, TradeMode.SHORT_SWING, TradeMode.SWING_TRADE)) {
+        for (TradeMode mode : List.of(TradeMode.DAY_TRADE)) {
             MarketScanResult candidate = scannerService.scan(symbol, createRadarScanRequest(mode));
             if (candidate == null) {
                 continue;
@@ -1357,7 +1566,21 @@ public class MainFrameWithDocking extends JFrame {
         JSpinner maxVolatility = percentSpinner(monitorDecisionConfig.getRiskConfig().getMaxVolatilityPercent());
         JSpinner minStrategies = new JSpinner(new SpinnerNumberModel(
                 monitorDecisionConfig.getVotingConfig().getMinVotingStrategies(), 1, 5, 1));
+        JSpinner maxPositions = new JSpinner(new SpinnerNumberModel(
+                monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions(), 1, 20, 1));
         JCheckBox riskEnabled = new JCheckBox("啟用風控", monitorDecisionConfig.isRiskManagementEnabled());
+        JCheckBox earlyBlockEnabled = new JCheckBox("啟用早盤禁開倉", monitorConfig.isEarlyEntryBlockEnabled());
+        JSpinner earlyStartHour = new JSpinner(new SpinnerNumberModel(monitorConfig.getEarlyEntryBlockStart().getHour(), 0, 23, 1));
+        JSpinner earlyStartMinute = new JSpinner(new SpinnerNumberModel(monitorConfig.getEarlyEntryBlockStart().getMinute(), 0, 59, 1));
+        JSpinner earlyEndHour = new JSpinner(new SpinnerNumberModel(monitorConfig.getEarlyEntryBlockEnd().getHour(), 0, 23, 1));
+        JSpinner earlyEndMinute = new JSpinner(new SpinnerNumberModel(monitorConfig.getEarlyEntryBlockEnd().getMinute(), 0, 59, 1));
+        JCheckBox stopLossCooldownEnabled = new JCheckBox("啟用停損後冷卻", monitorConfig.isStopLossCooldownEnabled());
+        JSpinner stopLossCooldownMinutes = new JSpinner(new SpinnerNumberModel(
+                monitorConfig.getStopLossCooldownMinutes(), 1, 240, 5));
+        JPanel earlyBlockPanel = createTimeRangePanel(
+                earlyBlockEnabled, earlyStartHour, earlyStartMinute, earlyEndHour, earlyEndMinute);
+        JPanel stopLossCooldownPanel = createCheckboxSpinnerPanel(
+                stopLossCooldownEnabled, stopLossCooldownMinutes, "分鐘");
         JComboBox<Timeframe> dayTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5, Timeframe.M15});
         dayTimeframe.setSelectedItem(radarConfig.getDayTradeTimeframe());
         JComboBox<Timeframe> shortTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1});
@@ -1431,6 +1654,7 @@ public class MainFrameWithDocking extends JFrame {
             minVolatility.setValue(decisionTemplate.getRiskConfig().getMinVolatilityPercent());
             maxVolatility.setValue(decisionTemplate.getRiskConfig().getMaxVolatilityPercent());
             minStrategies.setValue(decisionTemplate.getVotingConfig().getMinVotingStrategies());
+            maxPositions.setValue(decisionTemplate.getRiskConfig().getMaxConcurrentPositions());
             riskEnabled.setSelected(decisionTemplate.isRiskManagementEnabled());
         });
 
@@ -1445,27 +1669,30 @@ public class MainFrameWithDocking extends JFrame {
         addSettingsRow(panel, gbc, 8, "最低波動", minVolatility);
         addSettingsRow(panel, gbc, 9, "最高波動", maxVolatility);
         addSettingsRow(panel, gbc, 10, "最少策略數", minStrategies);
-        addSettingsRow(panel, gbc, 11, "", riskEnabled);
-        addSettingsRow(panel, gbc, 12, "當沖週期", dayTimeframe);
-        addSettingsRow(panel, gbc, 13, "短線週期", shortTimeframe);
-        addSettingsRow(panel, gbc, 14, "波段週期", swingTimeframe);
-        addSettingsRow(panel, gbc, 15, "當沖 K 線數量", dayBars);
-        addSettingsRow(panel, gbc, 16, "短線 K 線數量", shortBars);
-        addSettingsRow(panel, gbc, 17, "波段 K 線數量", swingBars);
-        addSettingsRow(panel, gbc, 18, "", rsiEnabled);
-        addSettingsRow(panel, gbc, 19, "RSI 週期", rsiPeriod);
-        addSettingsRow(panel, gbc, 20, "RSI 超賣", rsiOversold);
-        addSettingsRow(panel, gbc, 21, "RSI 超買", rsiOverbought);
-        addSettingsRow(panel, gbc, 22, "RSI 權重", rsiWeight);
-        addSettingsRow(panel, gbc, 23, "", maEnabled);
-        addSettingsRow(panel, gbc, 24, "均線類型", maType);
-        addSettingsRow(panel, gbc, 25, "均線快線", fastMa);
-        addSettingsRow(panel, gbc, 26, "均線慢線", slowMa);
-        addSettingsRow(panel, gbc, 27, "均線權重", maWeight);
-        addSettingsRow(panel, gbc, 28, "", volumeEnabled);
-        addSettingsRow(panel, gbc, 29, "突破回看 K 數", breakoutLookback);
-        addSettingsRow(panel, gbc, 30, "成交量倍率", volumeMultiplier);
-        addSettingsRow(panel, gbc, 31, "放量權重", volumeWeight);
+        addSettingsRow(panel, gbc, 11, "最大同時持倉", maxPositions);
+        addSettingsRow(panel, gbc, 12, "", riskEnabled);
+        addSettingsRow(panel, gbc, 13, "早盤禁開倉", earlyBlockPanel);
+        addSettingsRow(panel, gbc, 14, "停損冷卻", stopLossCooldownPanel);
+        addSettingsRow(panel, gbc, 15, "當沖週期", dayTimeframe);
+        addSettingsRow(panel, gbc, 16, "短線週期", shortTimeframe);
+        addSettingsRow(panel, gbc, 17, "波段週期", swingTimeframe);
+        addSettingsRow(panel, gbc, 18, "當沖 K 線數量", dayBars);
+        addSettingsRow(panel, gbc, 19, "短線 K 線數量", shortBars);
+        addSettingsRow(panel, gbc, 20, "波段 K 線數量", swingBars);
+        addSettingsRow(panel, gbc, 21, "", rsiEnabled);
+        addSettingsRow(panel, gbc, 22, "RSI 週期", rsiPeriod);
+        addSettingsRow(panel, gbc, 23, "RSI 超賣", rsiOversold);
+        addSettingsRow(panel, gbc, 24, "RSI 超買", rsiOverbought);
+        addSettingsRow(panel, gbc, 25, "RSI 權重", rsiWeight);
+        addSettingsRow(panel, gbc, 26, "", maEnabled);
+        addSettingsRow(panel, gbc, 27, "均線類型", maType);
+        addSettingsRow(panel, gbc, 28, "均線快線", fastMa);
+        addSettingsRow(panel, gbc, 29, "均線慢線", slowMa);
+        addSettingsRow(panel, gbc, 30, "均線權重", maWeight);
+        addSettingsRow(panel, gbc, 31, "", volumeEnabled);
+        addSettingsRow(panel, gbc, 32, "突破回看 K 數", breakoutLookback);
+        addSettingsRow(panel, gbc, 33, "成交量倍率", volumeMultiplier);
+        addSettingsRow(panel, gbc, 34, "放量權重", volumeWeight);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancelButton = new JButton("取消");
@@ -1477,6 +1704,11 @@ public class MainFrameWithDocking extends JFrame {
             monitorConfig.setBarCount(((Number) barCountSpinner.getValue()).intValue());
             monitorConfig.setMinSignalIntervalMinutes(((Number) signalInterval.getValue()).intValue());
             monitorConfig.setBatchScanMode(true);
+            monitorConfig.setEarlyEntryBlockEnabled(earlyBlockEnabled.isSelected());
+            monitorConfig.setEarlyEntryBlockStart(readTime(earlyStartHour, earlyStartMinute));
+            monitorConfig.setEarlyEntryBlockEnd(readTime(earlyEndHour, earlyEndMinute));
+            monitorConfig.setStopLossCooldownEnabled(stopLossCooldownEnabled.isSelected());
+            monitorConfig.setStopLossCooldownMinutes(((Number) stopLossCooldownMinutes.getValue()).intValue());
             RadarStrategyConfig updatedRadarConfig = radarConfig.copy();
             updatedRadarConfig.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
             updatedRadarConfig.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
@@ -1505,6 +1737,7 @@ public class MainFrameWithDocking extends JFrame {
             updatedDecisionConfig.getVotingConfig().setExitThreshold(((Number) exitThreshold.getValue()).doubleValue());
             updatedDecisionConfig.getVotingConfig().setMinVotingStrategies(((Number) minStrategies.getValue()).intValue());
             updatedDecisionConfig.setRiskManagementEnabled(riskEnabled.isSelected());
+            updatedDecisionConfig.getRiskConfig().setMaxConcurrentPositions(((Number) maxPositions.getValue()).intValue());
             updatedDecisionConfig.getRiskConfig().setMinRiskRewardRatio(((Number) minRiskReward.getValue()).doubleValue());
             updatedDecisionConfig.getRiskConfig().setMinVolatilityPercent(((Number) minVolatility.getValue()).doubleValue());
             updatedDecisionConfig.getRiskConfig().setMaxVolatilityPercent(((Number) maxVolatility.getValue()).doubleValue());
@@ -1535,6 +1768,38 @@ public class MainFrameWithDocking extends JFrame {
         dialog.pack();
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
+    }
+
+    private JPanel createTimeRangePanel(
+            JCheckBox enabled,
+            JSpinner startHour,
+            JSpinner startMinute,
+            JSpinner endHour,
+            JSpinner endMinute) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        panel.add(enabled);
+        panel.add(startHour);
+        panel.add(new JLabel(":"));
+        panel.add(startMinute);
+        panel.add(new JLabel("~"));
+        panel.add(endHour);
+        panel.add(new JLabel(":"));
+        panel.add(endMinute);
+        return panel;
+    }
+
+    private JPanel createCheckboxSpinnerPanel(JCheckBox enabled, JSpinner spinner, String suffix) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        panel.add(enabled);
+        panel.add(spinner);
+        panel.add(new JLabel(suffix));
+        return panel;
+    }
+
+    private LocalTime readTime(JSpinner hourSpinner, JSpinner minuteSpinner) {
+        int hour = ((Number) hourSpinner.getValue()).intValue();
+        int minute = ((Number) minuteSpinner.getValue()).intValue();
+        return LocalTime.of(Math.max(0, Math.min(23, hour)), Math.max(0, Math.min(59, minute)));
     }
 
     private JSpinner percentSpinner(double value) {
@@ -1611,6 +1876,7 @@ public class MainFrameWithDocking extends JFrame {
         }
         SwingUtilities.invokeLater(() -> {
             try {
+                DecisionResult autoSignal = normalizeAutoMonitorSignal(symbol, signal);
                 double price = getCurrentPrice(symbol);
                 if (price <= 0.0) {
                     statusBar.setText("無法取得 " + symbol + " 即時價格，略過本次委託");
@@ -1618,12 +1884,17 @@ public class MainFrameWithDocking extends JFrame {
                 }
 
                 ExecutionResult result = null;
-                switch (signal.getAction()) {
+                switch (autoSignal.getAction()) {
                     case OPEN_LONG -> {
                         if (monitorPortfolio.getPosition(symbol) != null || pendingAutoEntries.contains(symbol)) {
                             return;
                         }
-                        int quantity = determineOrderQuantity(price);
+                        String blockReason = resolveAutoEntryBlockReason(symbol);
+                        if (blockReason != null) {
+                            statusBar.setText(blockReason);
+                            return;
+                        }
+                        int quantity = determineOrderQuantity(price, autoSignal);
                         if (quantity <= 0) {
                             statusBar.setText("資金不足，無法開倉 " + symbol);
                             return;
@@ -1633,10 +1904,10 @@ public class MainFrameWithDocking extends JFrame {
                                 symbol,
                                 quantity,
                                 price,
-                                signal.getOrderType(),
-                                signal.getSuggestedStopLoss(),
-                                signal.getSuggestedTakeProfit(),
-                                signal.getReason());
+                                autoSignal.getOrderType(),
+                                autoSignal.getSuggestedStopLoss(),
+                                autoSignal.getSuggestedTakeProfit(),
+                                autoSignal.getReason());
                     }
                     case CLOSE_POSITION -> {
                         Position position = monitorPortfolio.getPosition(symbol);
@@ -1647,11 +1918,13 @@ public class MainFrameWithDocking extends JFrame {
                                 symbol,
                                 position.getQuantity(),
                                 price,
-                                signal.getOrderType(),
-                                signal.getReason());
+                                autoSignal.getOrderType(),
+                                autoSignal.getReason());
                         pendingAutoEntries.remove(symbol);
                         activeStopLosses.remove(symbol);
                         activeTakeProfits.remove(symbol);
+                        activeTradeModes.remove(symbol);
+                        autoManagedPositions.remove(symbol);
                     }
                     case OPEN_SHORT, HOLD, NO_ACTION -> {
                         return;
@@ -1659,10 +1932,12 @@ public class MainFrameWithDocking extends JFrame {
                 }
 
                 if (result != null) {
-                    paperTradeRecorder.record(result, signal, latestScanResults.get(symbol), "auto-monitor");
+                    paperTradeRecorder.record(result, autoSignal, latestScanResults.get(symbol), "auto-monitor");
                     if (!result.isSuccess()) {
                         pendingAutoEntries.remove(symbol);
-                    } else if (signal.getAction() == DecisionResult.Action.OPEN_LONG) {
+                    } else if (autoSignal.getAction() == DecisionResult.Action.OPEN_LONG) {
+                        activeTradeModes.put(symbol, TradeMode.DAY_TRADE);
+                        autoManagedPositions.add(symbol);
                         if (result.getStopLoss() != null && result.getStopLoss() > 0.0) {
                             activeStopLosses.put(symbol, result.getStopLoss());
                         }
@@ -1674,7 +1949,7 @@ public class MainFrameWithDocking extends JFrame {
                         executionStatusDock.setExecutionEngine(executionEngine);
                     }
                     statusBar.setText(String.format("批次執行：%s %s @ %.2f",
-                            symbol, signal.getAction().getDisplayName(), price));
+                            symbol, autoSignal.getAction().getDisplayName(), price));
                 }
             } catch (Exception e) {
                 pendingAutoEntries.remove(symbol);
@@ -1683,14 +1958,119 @@ public class MainFrameWithDocking extends JFrame {
         });
     }
 
-    private int determineOrderQuantity(double price) {
+    private DecisionResult normalizeAutoMonitorSignal(String symbol, DecisionResult signal) {
+        if (signal == null) {
+            return null;
+        }
+        if (signal.getAction() != DecisionResult.Action.OPEN_LONG
+                && signal.getAction() != DecisionResult.Action.CLOSE_POSITION) {
+            return signal;
+        }
+        return new DecisionResult.Builder()
+                .action(signal.getAction())
+                .source(signal.getSource())
+                .symbol(symbol != null && !symbol.isBlank() ? symbol : signal.getSymbol())
+                .tradeMode(TradeMode.DAY_TRADE)
+                .reason(signal.getReason())
+                .timestamp(signal.getTimestamp())
+                .orderType(signal.getOrderType())
+                .orderSide(signal.getOrderSide())
+                .suggestedStopLoss(signal.getSuggestedStopLoss())
+                .suggestedTakeProfit(signal.getSuggestedTakeProfit())
+                .suggestedQuantity(DAY_TRADE_LOT_SIZE)
+                .riskRewardRatio(signal.getRiskRewardRatio())
+                .regimeAnalysis(signal.getRegimeAnalysis())
+                .trendAnalysis(signal.getTrendAnalysis())
+                .votingResult(signal.getVotingResult())
+                .riskViolation(signal.getRiskViolation())
+                .confidence(signal.getConfidence())
+                .build();
+    }
+
+    private String resolveAutoEntryBlockReason(String symbol) {
+        LocalTime now = LocalTime.now(TAIPEI_ZONE);
+        if (isDayTradeForceCloseTime(now)) {
+            closeAutoManagedPositionsAtCutoff();
+            return "13:25 後自動監控不再新開倉：" + symbol;
+        }
+        if (isEarlyEntryBlocked(now)) {
+            return "早盤禁開倉時段，略過自動開倉：" + symbol;
+        }
+        LocalDateTime cooldownUntil = stopLossCooldownUntil.get(symbol);
+        if (cooldownUntil != null) {
+            if (LocalDateTime.now(TAIPEI_ZONE).isBefore(cooldownUntil)) {
+                return "停損冷卻中，略過自動開倉：" + symbol + "，冷卻至 " + cooldownUntil.toLocalTime();
+            }
+            stopLossCooldownUntil.remove(symbol);
+        }
+        int maxPositions = monitorDecisionConfig != null
+                ? monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions()
+                : 1;
+        if (monitorPortfolio != null && monitorPortfolio.getPositionCount() >= maxPositions) {
+            return "自動監控持倉已達上限 " + maxPositions + " 檔，略過：" + symbol;
+        }
+        return null;
+    }
+
+    private boolean isEarlyEntryBlocked(LocalTime time) {
+        if (monitorConfig == null || !monitorConfig.isEarlyEntryBlockEnabled() || time == null) {
+            return false;
+        }
+        LocalTime start = monitorConfig.getEarlyEntryBlockStart();
+        LocalTime end = monitorConfig.getEarlyEntryBlockEnd();
+        if (start == null || end == null || !start.isBefore(end)) {
+            return false;
+        }
+        return !time.isBefore(start) && time.isBefore(end);
+    }
+
+    private void registerStopLossCooldown(String symbol) {
+        if (symbol == null || symbol.isBlank()
+                || monitorConfig == null
+                || !monitorConfig.isStopLossCooldownEnabled()) {
+            return;
+        }
+        stopLossCooldownUntil.put(
+                symbol,
+                LocalDateTime.now(TAIPEI_ZONE).plusMinutes(monitorConfig.getStopLossCooldownMinutes()));
+    }
+
+    private int determineOrderQuantity(double price, DecisionResult signal) {
         if (price <= 0.0 || executionEngine == null) {
             return 0;
         }
-        double usableCash = monitorPortfolio.getCash() * monitorDecisionConfig.getRiskConfig().getMaxPositionSizePercent();
-        double reserveCash = monitorPortfolio.getCash() * monitorDecisionConfig.getRiskConfig().getMinCashReservePercent();
+        TradeMode tradeMode = signal != null ? signal.getTradeMode() : null;
+        return calculateOrderQuantity(
+                price,
+                monitorPortfolio.getCash(),
+                monitorDecisionConfig.getRiskConfig().getMaxPositionSizePercent(),
+                monitorDecisionConfig.getRiskConfig().getMinCashReservePercent(),
+                tradeMode);
+    }
+
+    static int calculateOrderQuantity(double price, double cash, double maxPositionSizePercent,
+                                      double minCashReservePercent, TradeMode tradeMode) {
+        if (price <= 0.0) {
+            return 0;
+        }
+        if (tradeMode == TradeMode.DAY_TRADE) {
+            return DAY_TRADE_LOT_SIZE;
+        }
+        if (cash <= 0.0) {
+            return 0;
+        }
+        double usableCash = cash * maxPositionSizePercent;
+        double reserveCash = cash * minCashReservePercent;
         double budget = Math.max(0.0, usableCash - reserveCash);
         return (int) Math.floor(budget / price);
+    }
+
+    static long resolveWatchlistVolume(Tick tick) {
+        return tick != null ? Math.max(0L, tick.getVolume()) : 0L;
+    }
+
+    static boolean isDayTradeForceCloseTime(LocalTime time) {
+        return time != null && !time.isBefore(DAY_TRADE_FORCE_CLOSE_TIME);
     }
 
     private double getCurrentPrice(String symbol) {
@@ -2349,6 +2729,9 @@ public class MainFrameWithDocking extends JFrame {
     }
     
     // Dockable 包裝類
+    private record PanelEntry(String id, String title) {
+    }
+
     private static class DockableWrapper extends JPanel implements Dockable {
         private final String persistentID;
         private final String title;

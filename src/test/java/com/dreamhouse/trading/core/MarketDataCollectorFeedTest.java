@@ -9,6 +9,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -66,9 +67,40 @@ class MarketDataCollectorFeedTest {
     }
 
     @Test
+    void feedReadsTodayIntradayCandlesOnlyWithinRegularSession() throws Exception {
+        try (Connection connection = createSchema()) {
+            LocalDate today = LocalDate.now(TAIPEI_ZONE);
+            insertCandle(connection, "2330.TW", "1m", today.atTime(8, 59).toString(), 90, 91, 89, 90, 10);
+            insertCandle(connection, "2330.TW", "1m", today.atTime(9, 0).toString(), 100, 102, 99, 101, 20);
+            insertCandle(connection, "2330.TW", "1m", today.atTime(13, 30).toString(), 120, 121, 119, 120, 30);
+            insertCandle(connection, "2330.TW", "1m", today.atTime(13, 31).toString(), 130, 131, 129, 130, 40);
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            List<Bar> bars = feed.fetchHistoricalBars("2330.TW", Timeframe.M1, 1);
+
+            assertThat(bars).extracting(Bar::getTimestamp)
+                    .containsExactly(today.atTime(9, 0), today.atTime(13, 30));
+            assertThat(bars).extracting(Bar::getClose).containsExactly(101.0, 120.0);
+        }
+    }
+
+    @Test
+    void closingAuctionTimeDoesNotCountAsCollectorFailureWindow() {
+        LocalDate today = LocalDate.now(TAIPEI_ZONE);
+
+        assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 24, 59))).isFalse();
+        assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 25))).isTrue();
+        assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 30))).isTrue();
+        assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 31))).isFalse();
+    }
+
+    @Test
     void loadHistoricalDataNotifiesSubscribedListeners() throws Exception {
         try (Connection connection = createSchema()) {
-            String timestamp = LocalDateTime.now(TAIPEI_ZONE).minusSeconds(5).toString();
+            String timestamp = LocalDate.now(TAIPEI_ZONE).atTime(9, 0).toString();
             insertCandle(connection, "2317.TW", "1m", timestamp, 100, 103, 99, 102, 40);
 
             MarketDataCollectorFeed feed = new MarketDataCollectorFeed(

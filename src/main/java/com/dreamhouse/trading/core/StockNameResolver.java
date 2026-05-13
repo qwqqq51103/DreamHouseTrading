@@ -1,11 +1,22 @@
 package com.dreamhouse.trading.core;
 
+import com.dreamhouse.trading.core.finmind.FinMindClient;
+import com.dreamhouse.trading.core.finmind.FinMindDataset;
+import com.fasterxml.jackson.databind.JsonNode;
+
+import java.io.IOException;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class StockNameResolver {
 
     private static final Map<String, String> NAMES = new ConcurrentHashMap<>();
+    private static volatile boolean finMindStockInfoLookupAttempted = false;
 
     static {
         register("1101", "台泥");
@@ -54,6 +65,7 @@ public final class StockNameResolver {
         register("6505", "台塑化");
         register("6669", "緯穎");
         register("6770", "力積電");
+        loadMarketDataCollectorNames();
     }
 
     private StockNameResolver() {
@@ -61,6 +73,22 @@ public final class StockNameResolver {
 
     public static String resolveChineseName(String symbol) {
         return NAMES.getOrDefault(normalize(symbol), "");
+    }
+
+    public static String detectChineseName(String symbol) {
+        String knownName = resolveChineseName(symbol);
+        if (!knownName.isBlank()) {
+            return knownName;
+        }
+
+        loadMarketDataCollectorNames();
+        knownName = resolveChineseName(symbol);
+        if (!knownName.isBlank()) {
+            return knownName;
+        }
+
+        loadFinMindStockInfoNamesOnce();
+        return resolveChineseName(symbol);
     }
 
     public static void register(String symbol, String chineseName) {
@@ -78,5 +106,44 @@ public final class StockNameResolver {
                 .toUpperCase()
                 .replace(".TW", "")
                 .replace(".TWO", "");
+    }
+
+    public static void loadMarketDataCollectorNames() {
+        Path symbolsPath = MarketDataCollectorSymbolSync.resolveSymbolsPath();
+        if (symbolsPath == null || !Files.isRegularFile(symbolsPath)) {
+            return;
+        }
+        Properties properties = new Properties();
+        try (Reader reader = Files.newBufferedReader(symbolsPath, StandardCharsets.UTF_8)) {
+            properties.load(reader);
+            for (String symbol : properties.stringPropertyNames()) {
+                register(symbol, properties.getProperty(symbol));
+            }
+        } catch (IOException ignored) {
+            // Missing or unreadable collector config should not block UI startup.
+        }
+    }
+
+    private static synchronized void loadFinMindStockInfoNamesOnce() {
+        if (finMindStockInfoLookupAttempted) {
+            return;
+        }
+        finMindStockInfoLookupAttempted = true;
+
+        try {
+            FinMindClient client = new FinMindClient("");
+            JsonNode root = client.queryDataset(FinMindDataset.TAIWAN_STOCK_INFO, null, null, null);
+            JsonNode data = root.path("data");
+            if (!data.isArray()) {
+                return;
+            }
+            for (JsonNode row : data) {
+                String stockId = row.path("stock_id").asText("");
+                String stockName = row.path("stock_name").asText("");
+                register(stockId, stockName);
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to auto-detect stock names from FinMind TaiwanStockInfo: " + e.getMessage());
+        }
     }
 }

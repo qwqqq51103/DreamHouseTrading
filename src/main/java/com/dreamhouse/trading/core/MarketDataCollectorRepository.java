@@ -77,8 +77,7 @@ public class MarketDataCollectorRepository implements AutoCloseable {
     public List<Tick> findTodayMarketOpenTicks(String symbol) {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
         LocalDateTime marketOpen = today.atTime(9, 0);
-        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
-        LocalDateTime endTime = now.isBefore(marketOpen) ? today.atTime(13, 30) : now;
+        LocalDateTime endTime = today.atTime(13, 31);
         return findTicksByTimeRange(symbol, marketOpen, endTime);
     }
 
@@ -159,6 +158,40 @@ public class MarketDataCollectorRepository implements AutoCloseable {
             }
         } catch (SQLException e) {
             logger.warn("Failed to read MarketDataCollector candles for {} {}: {}", symbol, interval, e.getMessage());
+        }
+        return bars;
+    }
+
+    public List<Bar> findTodaySessionCandles(String symbol, String interval) {
+        LocalDate today = LocalDate.now(TAIPEI_ZONE);
+        return findCandlesByTimeRange(symbol, interval, today.atTime(9, 0), today.atTime(13, 30));
+    }
+
+    public List<Bar> findCandlesByTimeRange(String symbol, String interval, LocalDateTime startTime, LocalDateTime endTime) {
+        List<Bar> bars = new ArrayList<>();
+        if (connection == null) {
+            return bars;
+        }
+        String sql = """
+                SELECT ts, open_price, high_price, low_price, close_price, volume
+                FROM candlesticks
+                WHERE symbol = ? AND interval_type = ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') >= ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') <= ?
+                ORDER BY ts ASC
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, symbol);
+            statement.setString(2, interval);
+            statement.setString(3, formatSqlTime(startTime));
+            statement.setString(4, formatSqlTime(endTime));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    bars.add(parseBar(resultSet));
+                }
+            }
+        } catch (SQLException e) {
+            logger.warn("Failed to read MarketDataCollector session candles for {} {}: {}", symbol, interval, e.getMessage());
         }
         return bars;
     }

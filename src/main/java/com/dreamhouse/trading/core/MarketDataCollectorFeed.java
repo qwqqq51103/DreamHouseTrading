@@ -8,10 +8,11 @@ import org.slf4j.LoggerFactory;
 import javax.swing.SwingUtilities;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -33,6 +34,9 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     private static final Logger logger = LoggerFactory.getLogger(MarketDataCollectorFeed.class);
     private static final ZoneId TAIPEI_ZONE = ZoneId.of("Asia/Taipei");
     private static final Duration DEFAULT_STALE_THRESHOLD = Duration.ofSeconds(90);
+    private static final LocalTime MARKET_OPEN_TIME = LocalTime.of(9, 0);
+    private static final LocalTime CLOSING_AUCTION_START_TIME = LocalTime.of(13, 25);
+    private static final LocalTime MARKET_CLOSE_TIME = LocalTime.of(13, 30);
     private static final long POLL_INTERVAL_SECONDS = 10;
     private static final Set<Timeframe> INTRADAY_TIMEFRAMES =
             EnumSet.of(Timeframe.M1, Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1);
@@ -165,28 +169,47 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
             return List.of();
         }
         DataFreshness freshness = checkFreshness(symbol);
-        if (isMarketOpen() && freshness.stale()) {
-            logger.warn(
-                    "{} local collector data is stale; latest={}, lag={}s, threshold={}s; skipping scan instead of calling FinMind",
+        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
+        if (isMarketOpen(now) && freshness.stale()) {
+            if (!isClosingAuctionTime(now)) {
+                logger.warn(
+                        "{} local collector data is stale; latest={}, lag={}s, threshold={}s; skipping scan instead of calling FinMind",
+                        symbol,
+                        freshness.latest(),
+                        freshness.lagSeconds(),
+                        staleThreshold.toSeconds());
+                return List.of();
+            }
+            logger.debug(
+                    "{} local collector data is stale during closing auction; latest={}, lag={}s, returning collected session bars",
                     symbol,
                     freshness.latest(),
-                    freshness.lagSeconds(),
-                    staleThreshold.toSeconds());
-            return List.of();
+                    freshness.lagSeconds());
+        }
+
+        if (INTRADAY_TIMEFRAMES.contains(timeframe)) {
+            return fetchTodaySessionBars(symbol, timeframe);
         }
 
         String interval = toCollectorInterval(timeframe);
         List<Bar> candles = interval == null ? List.of() : repository.findLatestCandles(symbol, interval, barCount);
-        if (candles.size() >= barCount || !INTRADAY_TIMEFRAMES.contains(timeframe)) {
+        return candles;
+    }
+
+    private List<Bar> fetchTodaySessionBars(String symbol, Timeframe timeframe) {
+        String interval = toCollectorInterval(timeframe);
+        List<Bar> candles = interval == null ? List.of() : repository.findTodaySessionCandles(symbol, interval);
+        int expectedBars = expectedSessionBarCount(timeframe);
+        if (!candles.isEmpty() && candles.size() >= expectedBars) {
             return candles;
         }
 
         List<Tick> ticks = repository.findTodayMarketOpenTicks(symbol);
         List<Bar> bars = aggregateTicks(ticks, timeframe);
-        if (bars.size() > barCount) {
-            return new ArrayList<>(bars.subList(bars.size() - barCount, bars.size()));
+        if (!bars.isEmpty()) {
+            return bars;
         }
-        return bars;
+        return candles;
     }
 
     @Override
@@ -243,7 +266,9 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
 
     private void notifyLatestTick(String symbol) {
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
-        if (symbolListeners == null || symbolListeners.isEmpty() || isMarketOpen() && isStale(symbol)) {
+        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
+        if (symbolListeners == null || symbolListeners.isEmpty()
+                || isMarketOpen(now) && !isClosingAuctionTime(now) && isStale(symbol)) {
             return;
         }
         List<Tick> ticks = repository.findLatestTicks(symbol, 1);
@@ -306,6 +331,16 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
         return minute.toLocalDate().atStartOfDay().plusMinutes(flooredMinuteOfDay);
     }
 
+    private int expectedSessionBarCount(Timeframe timeframe) {
+        LocalDate today = LocalDate.now(TAIPEI_ZONE);
+        LocalDateTime marketOpen = today.atTime(MARKET_OPEN_TIME);
+        LocalDateTime marketClose = today.atTime(MARKET_CLOSE_TIME);
+        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
+        LocalDateTime effectiveEnd = now.isBefore(marketOpen) ? marketOpen : now.isAfter(marketClose) ? marketClose : now;
+        long elapsedMinutes = Math.max(0L, Duration.between(marketOpen, effectiveEnd).toMinutes());
+        return (int) (elapsedMinutes / Math.max(1, timeframe.getMinutes())) + 1;
+    }
+
     private long resolveVolumeContribution(long previousVolume, long currentVolume) {
         if (currentVolume <= 0) {
             return 0L;
@@ -320,14 +355,25 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     }
 
     private boolean isMarketOpen() {
-        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
+        return isMarketOpen(LocalDateTime.now(TAIPEI_ZONE));
+    }
+
+    static boolean isMarketOpen(LocalDateTime now) {
         return switch (now.getDayOfWeek()) {
             case SATURDAY, SUNDAY -> false;
             default -> {
-                int minuteOfDay = now.getHour() * 60 + now.getMinute();
-                yield minuteOfDay >= 9 * 60 && minuteOfDay <= 13 * 60 + 30;
+                LocalTime time = now.toLocalTime();
+                yield !time.isBefore(MARKET_OPEN_TIME) && !time.isAfter(MARKET_CLOSE_TIME);
             }
         };
+    }
+
+    static boolean isClosingAuctionTime(LocalDateTime now) {
+        if (!isMarketOpen(now)) {
+            return false;
+        }
+        LocalTime time = now.toLocalTime();
+        return !time.isBefore(CLOSING_AUCTION_START_TIME) && !time.isAfter(MARKET_CLOSE_TIME);
     }
 
     private static class MutableBar {

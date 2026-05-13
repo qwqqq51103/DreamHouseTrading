@@ -29,6 +29,7 @@ public class RadarStrategyConfig {
     private int breakoutLookbackBars = 20;
     private double volumeMultiplier = 1.8;
     private double volumeBreakoutWeight = 0.8;
+    private boolean requireRsiEntryConfirmation = true;
 
     private Timeframe dayTradeTimeframe = Timeframe.M1;
     private Timeframe shortSwingTimeframe = Timeframe.M15;
@@ -149,6 +150,7 @@ public class RadarStrategyConfig {
         copy.breakoutLookbackBars = breakoutLookbackBars;
         copy.volumeMultiplier = volumeMultiplier;
         copy.volumeBreakoutWeight = volumeBreakoutWeight;
+        copy.requireRsiEntryConfirmation = requireRsiEntryConfirmation;
         copy.dayTradeTimeframe = dayTradeTimeframe;
         copy.shortSwingTimeframe = shortSwingTimeframe;
         copy.swingTradeTimeframe = swingTradeTimeframe;
@@ -186,6 +188,8 @@ public class RadarStrategyConfig {
     public void setVolumeMultiplier(double volumeMultiplier) { this.volumeMultiplier = Math.max(1.0, volumeMultiplier); }
     public double getVolumeBreakoutWeight() { return volumeBreakoutWeight; }
     public void setVolumeBreakoutWeight(double volumeBreakoutWeight) { this.volumeBreakoutWeight = clamp(volumeBreakoutWeight, 0.0, 1.0); }
+    public boolean isRequireRsiEntryConfirmation() { return requireRsiEntryConfirmation; }
+    public void setRequireRsiEntryConfirmation(boolean requireRsiEntryConfirmation) { this.requireRsiEntryConfirmation = requireRsiEntryConfirmation; }
     public Timeframe getDayTradeTimeframe() { return dayTradeTimeframe; }
     public void setDayTradeTimeframe(Timeframe dayTradeTimeframe) { this.dayTradeTimeframe = dayTradeTimeframe != null ? dayTradeTimeframe : Timeframe.M1; }
     public Timeframe getShortSwingTimeframe() { return shortSwingTimeframe; }

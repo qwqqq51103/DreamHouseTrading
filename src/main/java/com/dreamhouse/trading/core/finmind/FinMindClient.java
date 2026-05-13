@@ -65,6 +65,13 @@ public class FinMindClient implements FinMindGateway {
 
     @Override
     public JsonNode queryData(FinMindRequest request) {
+        if (request.getDataset() == FinMindDataset.TAIWAN_STOCK_TRADING_DAILY_REPORT) {
+            return queryTaiwanStockTradingDailyReport(request);
+        }
+        if (request.getDataset() == FinMindDataset.TAIWAN_STOCK_TRADING_DAILY_REPORT_SEC_ID_AGG) {
+            return queryTaiwanStockTradingDailyReportSecIdAgg(request);
+        }
+
         Map<String, String> params = new LinkedHashMap<>();
         params.put("dataset", request.getDataset().apiName());
         putIfPresent(params, "data_id", request.getDataId());
@@ -126,6 +133,33 @@ public class FinMindClient implements FinMindGateway {
         putIfPresent(params, "start_date", formatDate(startDate));
         putIfPresent(params, "end_date", formatDate(endDate));
         return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report_secid_agg", params);
+    }
+
+    private JsonNode queryTaiwanStockTradingDailyReport(FinMindRequest request) {
+        Map<String, String> params = new LinkedHashMap<>();
+        String brokerId = request.getExtraParams().get("securities_trader_id");
+        if (brokerId != null && !brokerId.isBlank()) {
+            putIfPresent(params, "securities_trader_id", brokerId.trim());
+        } else {
+            putIfPresent(params, "data_id", normalizeTaiwanStockId(request.getDataId()));
+        }
+        putIfPresent(params, "date", formatDate(singleRequestDate(request)));
+        return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report", params);
+    }
+
+    private JsonNode queryTaiwanStockTradingDailyReportSecIdAgg(FinMindRequest request) {
+        Map<String, String> params = new LinkedHashMap<>();
+        putIfPresent(params, "data_id", normalizeTaiwanStockId(request.getDataId()));
+        putIfPresent(params, "start_date", formatDate(request.getStartDate()));
+        putIfPresent(params, "end_date", formatDate(request.getEndDate()));
+        return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report_secid_agg", params);
+    }
+
+    private LocalDate singleRequestDate(FinMindRequest request) {
+        if (request.getStartDate() != null) {
+            return request.getStartDate();
+        }
+        return request.getEndDate();
     }
 
     @Override

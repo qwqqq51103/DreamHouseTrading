@@ -245,7 +245,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
         
         // K 線渲染器
         CandlestickRenderer candleRenderer = new CandlestickRenderer();
-        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_SMALLEST);
+        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_AVERAGE);
+        candleRenderer.setAutoWidthFactor(0.72);
+        candleRenderer.setAutoWidthGap(0.10);
         candleRenderer.setUpPaint(new Color(34, 177, 76));   // 綠漲
         candleRenderer.setDownPaint(new Color(237, 28, 36)); // 紅跌
         

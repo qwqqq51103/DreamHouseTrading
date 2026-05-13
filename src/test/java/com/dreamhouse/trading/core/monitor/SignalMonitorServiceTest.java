@@ -10,6 +10,7 @@ import com.dreamhouse.trading.core.model.Bar;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -21,6 +22,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SignalMonitorServiceTest {
+
+    @Test
+    void autoMonitorRiskDefaultsBlockEarlyEntryAndEnableStopLossCooldown() {
+        SignalMonitorConfig config = SignalMonitorConfig.createDefault();
+
+        assertTrue(config.isEarlyEntryBlockEnabled());
+        assertEquals(LocalTime.of(9, 0), config.getEarlyEntryBlockStart());
+        assertEquals(LocalTime.of(9, 10), config.getEarlyEntryBlockEnd());
+        assertTrue(config.isStopLossCooldownEnabled());
+        assertEquals(60, config.getStopLossCooldownMinutes());
+    }
 
     @Test
     void batchScanPublishesEveryWatchlistSymbol() throws Exception {

@@ -1,5 +1,6 @@
 package com.dreamhouse.trading.ui.dock;
 
+import com.dreamhouse.trading.core.StockNameResolver;
 import com.dreamhouse.trading.core.backtest.Position;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
@@ -160,6 +161,10 @@ public class ExecutionStatusDock extends JPanel {
                 return false;
             }
         };
+        tableModel.setColumnIdentifiers(new Object[]{
+                "狀態", "交易ID", "股票代碼", "中文名稱", "方向", "開倉時間", "平倉時間", "數量",
+                "進場價", "出場/市價", "停損", "停利", "損益", "報酬率", "平倉訊息", "原因"
+        });
 
         JTable tradeHistoryTable = new JTable(tableModel);
         tradeHistoryTable.setBackground(new Color(40, 40, 40));
@@ -183,7 +188,7 @@ public class ExecutionStatusDock extends JPanel {
     }
 
     private void configureColumns(JTable table) {
-        int[] widths = {74, 142, 86, 60, 116, 116, 56, 76, 76, 76, 76, 92, 76, 190, 360};
+        int[] widths = {74, 142, 86, 90, 60, 116, 116, 56, 76, 76, 76, 76, 92, 76, 190, 360};
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -345,6 +350,7 @@ public class ExecutionStatusDock extends JPanel {
                     row.getStatusText(),
                     row.tradeId,
                     valueOrDash(row.symbol),
+                    valueOrDash(StockNameResolver.resolveChineseName(row.symbol)),
                     row.getDirectionText(),
                     formatTime(row.openTime),
                     formatTime(row.closeTime),
@@ -653,9 +659,9 @@ public class ExecutionStatusDock extends JPanel {
                     component.setBackground(DEFAULT_BG);
                 }
 
-                if ((column == 11 || column == 12) && value instanceof String text && text.startsWith("+")) {
+                if ((column == 12 || column == 13) && value instanceof String text && text.startsWith("+")) {
                     component.setForeground(POSITIVE);
-                } else if ((column == 11 || column == 12) && value instanceof String text && text.startsWith("-")) {
+                } else if ((column == 12 || column == 13) && value instanceof String text && text.startsWith("-")) {
                     component.setForeground(NEGATIVE);
                 } else if ("持倉中".equals(status) && column == 0) {
                     component.setForeground(POSITIVE);
@@ -668,8 +674,8 @@ public class ExecutionStatusDock extends JPanel {
                 }
             }
 
-            setHorizontalAlignment(column >= 6 && column <= 12 ? RIGHT : CENTER);
-            if (column == 13 || column == 14) {
+            setHorizontalAlignment(column >= 7 && column <= 13 ? RIGHT : CENTER);
+            if (column == 14 || column == 15) {
                 setHorizontalAlignment(LEFT);
             }
             return component;

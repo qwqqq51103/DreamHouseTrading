@@ -1,6 +1,6 @@
 # DreamHouseTrading AI Collaboration Guide
 
-最後更新：2026-05-11
+最後更新：2026-05-13
 
 ## 1. 專案概述
 
@@ -51,6 +51,43 @@
   - minimum risk/reward
   - volatility range
 
+### 3.5 MarketDataCollector / FinMind 邊界
+
+- 盤中雷達與盤中 K 線優先使用 `MarketDataCollectorFeed` 讀本機 `market_data` MySQL。
+- DreamHouseTrading 盤中雷達不得 fallback 呼叫 FinMind 即時行情；FinMind 只保留低頻資料、盤後資料、新聞、分點與手動 API 查詢。
+- `MarketDataCollectorFeed` 的 stale guard 是防止壞資料掃描，不是 UI 清空機制。UI 載入歷史 K 線時，不應因單一 symbol stale 直接無資料。
+- 台股 `13:25~13:30` 是收盤集合競價，可能沒有連續 tick；這段時間 collector latest tick 超過 stale threshold 是正常現象，不可視為 Collector 故障。
+- `13:25~13:30` 仍要允許載入 09:00 起已收集的盤中 K 線，且不得因此改打 FinMind。
+- 台股分 K `TaiwanStockKBar` 是盤後資料，不可用來補開盤中的即時分 K；15:50 前不得把它當作盤中即時 K 線來源。
+- Watchlist 的成交量若來自 MarketDataCollector SQL tick，顯示最新 tick 原始 volume，不要在 UI 端累加歷史載入產生的量。
+
+### 3.6 當沖模擬交易語意
+
+- 台股當沖模擬開單必須以一張為單位；`DAY_TRADE` 自動開倉數量固定 `1000` 股。
+- 若現金不足以買一張，應走既有拒單流程，不拆零股、不自動降數量。
+- 盤中自動監控與今日機會雷達執行語意必須強制為 `DAY_TRADE`，不可讓分類器輸出的 `SWING_TRADE` 直接進入自動開倉路徑。
+- `13:25` 後禁止所有自動監控 `OPEN_LONG`，並平掉所有自動監控產生的未平倉部位，不只依賴 `tradeMode == DAY_TRADE`。
+- 當沖平倉應以最新可用本地行情價格執行；若缺少價格，不得靜默略過，必須在 UI/記錄中留下原因。
+- 自動監控開出的部位需要可辨識為 auto-managed，13:25 強制平倉、停損冷卻與最大持倉限制都以此語意為準。
+- 自動交易記錄必須寫入 `logs/paper-trades`，包含 entry、exit、reason、mode、quantity、PnL、setup score，方便盤後分析；盤後 UI 應能匯入 `completed_trades_*.csv`、`orders_*.csv`、`trade_setups_*.csv` 並串接完整生命週期。
+
+### 3.7 盤中風控與策略優化規則
+
+- 最大同時持倉數必須在自動開倉路徑實際生效，不能只停留在設定或策略評分中。
+- 當沖建議最大同時持倉先限制在 3 到 5 檔，每檔固定一張，避免 40+ 檔分散持倉。
+- 09:00~09:10 預設只收資料不自動開倉，避免開盤前幾分鐘資料不完整與價格跳動造成連續停損；時間需可由監控設定 UI 調整。
+- 同一股票停損後預設冷卻 60 分鐘，冷卻期間不得由自動監控重進；冷卻開關與分鐘數需可由監控設定 UI 調整。
+- `setup_score` 不能被視為勝率保證；若盤後紀錄顯示高分區間表現較差，必須重新檢查權重來源。
+- RSI 超賣不能單獨作為開多理由；若要用 RSI 超賣進場，必須至少有 EMA 未明顯下彎或放量反轉其中一項確認。
+- 任何策略優化都應先用 `completed_trades_*.csv`、`orders_*.csv`、`trade_setups_*.csv` 做盤後驗證，再調整實盤模擬參數。
+
+### 3.8 UI / 圖表效能規則
+
+- 使用 `MarketDataCollectorFeed` 切換股票時，K 線圖應批次載入 `Bar`，不要把每根 bar 拆成多筆 tick 推給 UI。
+- 圖表載入速度與 K 棒寬度是兩件事；恢復較寬 K 棒應調整 renderer 寬度策略，不要回退到逐 tick 載入。
+- 盤中日內 K 線預設載入今天 09:00~13:30 的資料；跨日需求應由明確設定控制。
+- FinMind API 面板、觀察清單、雷達、執行狀態等表格 UI 在 resize 時要避免欄位遮蔽文字，欄位與字體縮放應保持一致。
+
 ## 4. 主要檔案
 
 - [README.md](C:\Users\chiat\Desktop\測試UI\DreamHouseTrading\README.md)
@@ -98,6 +135,9 @@ cmd /c "mvn -q -Djacoco.skip=true test"
 
 ## 7. 後續工作優先序
 
-1. 補 `TradeRecord` 的完整交易生命週期語意
-2. 收斂 UI 端的分類/建議邏輯到核心服務
-3. 補更完整的 scanner -> decision -> execution -> report 整合驗證
+1. 讓盤中自動監控的交易語意明確強制為當沖或明確禁止當沖，避免 `SWING_TRADE` 語意漂移。
+2. 將 13:25 後禁止所有自動開倉、平掉所有自動監控持倉的規則落到核心執行路徑。
+3. 把最大同時持倉、每股停損冷卻、09:10 前不開倉接入自動開倉流程。
+4. 補 `TradeRecord` 的完整交易生命週期語意。
+5. 收斂 UI 端的分類/建議邏輯到核心服務。
+6. 補更完整的 scanner -> decision -> execution -> report 整合驗證。

@@ -4,6 +4,8 @@ import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 
+import java.time.LocalTime;
+
 /**
  * 信號監控配置。
  */
@@ -16,6 +18,11 @@ public class SignalMonitorConfig {
     private TradeMode tradeMode = TradeMode.DAY_TRADE;
     private boolean batchScanMode = true;
     private RadarStrategyConfig radarStrategyConfig = RadarStrategyConfig.createDefault();
+    private boolean earlyEntryBlockEnabled = true;
+    private LocalTime earlyEntryBlockStart = LocalTime.of(9, 0);
+    private LocalTime earlyEntryBlockEnd = LocalTime.of(9, 10);
+    private boolean stopLossCooldownEnabled = true;
+    private int stopLossCooldownMinutes = 60;
     private Integer rsiPeriod;
     private Double rsiOversold;
     private Double rsiOverbought;
@@ -111,6 +118,46 @@ public class SignalMonitorConfig {
 
     public void setRadarStrategyConfig(RadarStrategyConfig radarStrategyConfig) {
         this.radarStrategyConfig = radarStrategyConfig != null ? radarStrategyConfig : RadarStrategyConfig.createDefault();
+    }
+
+    public boolean isEarlyEntryBlockEnabled() {
+        return earlyEntryBlockEnabled;
+    }
+
+    public void setEarlyEntryBlockEnabled(boolean earlyEntryBlockEnabled) {
+        this.earlyEntryBlockEnabled = earlyEntryBlockEnabled;
+    }
+
+    public LocalTime getEarlyEntryBlockStart() {
+        return earlyEntryBlockStart;
+    }
+
+    public void setEarlyEntryBlockStart(LocalTime earlyEntryBlockStart) {
+        this.earlyEntryBlockStart = earlyEntryBlockStart != null ? earlyEntryBlockStart : LocalTime.of(9, 0);
+    }
+
+    public LocalTime getEarlyEntryBlockEnd() {
+        return earlyEntryBlockEnd;
+    }
+
+    public void setEarlyEntryBlockEnd(LocalTime earlyEntryBlockEnd) {
+        this.earlyEntryBlockEnd = earlyEntryBlockEnd != null ? earlyEntryBlockEnd : LocalTime.of(9, 10);
+    }
+
+    public boolean isStopLossCooldownEnabled() {
+        return stopLossCooldownEnabled;
+    }
+
+    public void setStopLossCooldownEnabled(boolean stopLossCooldownEnabled) {
+        this.stopLossCooldownEnabled = stopLossCooldownEnabled;
+    }
+
+    public int getStopLossCooldownMinutes() {
+        return stopLossCooldownMinutes;
+    }
+
+    public void setStopLossCooldownMinutes(int stopLossCooldownMinutes) {
+        this.stopLossCooldownMinutes = Math.max(1, stopLossCooldownMinutes);
     }
 
     public Integer getRsiPeriod() {

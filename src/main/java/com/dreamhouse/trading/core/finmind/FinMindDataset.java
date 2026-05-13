@@ -109,6 +109,32 @@ public enum FinMindDataset {
         SPONSOR
     }
 
+    public enum Category {
+        BASIC("基本資料"),
+        TECHNICAL("技術面"),
+        CHIP("籌碼面"),
+        FUNDAMENTAL("基本面"),
+        FUTURES_OPTIONS("期貨選擇權"),
+        CONVERTIBLE_BOND("可轉債"),
+        INTERNATIONAL("國際市場"),
+        MACRO_OTHER("總經與其他");
+
+        private final String displayNameZh;
+
+        Category(String displayNameZh) {
+            this.displayNameZh = displayNameZh;
+        }
+
+        public String displayNameZh() {
+            return displayNameZh;
+        }
+
+        @Override
+        public String toString() {
+            return displayNameZh;
+        }
+    }
+
     private final String apiName;
     private final Tier tier;
     private final boolean dataIdDataset;
@@ -235,6 +261,111 @@ public enum FinMindDataset {
             case FREE -> "免費";
             case BACKER -> "Backer";
             case SPONSOR -> "Sponsor";
+        };
+    }
+
+    public Category category() {
+        return switch (this) {
+            case TAIWAN_STOCK_INFO,
+                 TAIWAN_STOCK_INFO_WITH_WARRANT,
+                 TAIWAN_STOCK_INFO_WITH_WARRANT_SUMMARY,
+                 TAIWAN_STOCK_TRADING_DATE,
+                 TAIWAN_STOCK_SUSPENDED,
+                 TAIWAN_STOCK_DAY_TRADING_SUSPENSION,
+                 TAIWAN_STOCK_PRICE_LIMIT,
+                 TAIWAN_SECURITIES_TRADER_INFO,
+                 TAIWAN_STOCK_DELISTING,
+                 TAIWAN_STOCK_SPLIT_PRICE,
+                 TAIWAN_STOCK_PAR_VALUE_CHANGE,
+                 TAIWAN_FUT_OPT_TICK_INFO,
+                 TAIWAN_STOCK_INDUSTRY_CHAIN -> Category.BASIC;
+
+            case TAIWAN_STOCK_PRICE,
+                 TAIWAN_STOCK_PRICE_ADJ,
+                 TAIWAN_STOCK_PRICE_TICK,
+                 TAIWAN_STOCK_PER,
+                 TAIWAN_STOCK_STATISTICS_OF_ORDER_BOOK_AND_TRADE,
+                 TAIWAN_VARIOUS_INDICATORS_5_SECONDS,
+                 TAIWAN_STOCK_DAY_TRADING,
+                 TAIWAN_STOCK_TOTAL_RETURN_INDEX,
+                 TAIWAN_STOCK_10_YEAR,
+                 TAIWAN_STOCK_K_BAR,
+                 TAIWAN_STOCK_WEEK_PRICE,
+                 TAIWAN_STOCK_MONTH_PRICE,
+                 TAIWAN_STOCK_EVERY_5_SECONDS_INDEX,
+                 TAIWAN_STOCK_TICK_SNAPSHOT,
+                 TAIWAN_FUTURES_SNAPSHOT,
+                 TAIWAN_OPTIONS_SNAPSHOT -> Category.TECHNICAL;
+
+            case TAIWAN_STOCK_MARGIN_PURCHASE_SHORT_SALE,
+                 TAIWAN_STOCK_TOTAL_MARGIN_PURCHASE_SHORT_SALE,
+                 TAIWAN_STOCK_INSTITUTIONAL_INVESTORS_BUY_SELL,
+                 TAIWAN_STOCK_TOTAL_INSTITUTIONAL_INVESTORS,
+                 TAIWAN_STOCK_SHAREHOLDING,
+                 TAIWAN_STOCK_HOLDING_SHARES_PER,
+                 TAIWAN_STOCK_SECURITIES_LENDING,
+                 TAIWAN_STOCK_MARGIN_SHORT_SALE_SUSPENSION,
+                 TAIWAN_DAILY_SHORT_SALE_BALANCES,
+                 TAIWAN_STOCK_TRADING_DAILY_REPORT,
+                 TAIWAN_STOCK_WARRANT_TRADING_DAILY_REPORT,
+                 TAIWAN_STOCK_GOVERNMENT_BANK_BUY_SELL,
+                 TAIWAN_TOTAL_EXCHANGE_MARGIN_MAINTENANCE,
+                 TAIWAN_STOCK_TRADING_DAILY_REPORT_SEC_ID_AGG,
+                 TAIWAN_STOCK_BLOCK_TRADING_DAILY_REPORT,
+                 TAIWAN_STOCK_BLOCK_TRADE,
+                 TAIWAN_STOCK_LOAN_COLLATERAL_BALANCE,
+                 TAIWAN_STOCK_DISPOSITION_SECURITIES_PERIOD -> Category.CHIP;
+
+            case TAIWAN_STOCK_FINANCIAL_STATEMENTS,
+                 TAIWAN_STOCK_BALANCE_SHEET,
+                 TAIWAN_STOCK_CASH_FLOWS_STATEMENT,
+                 TAIWAN_STOCK_DIVIDEND,
+                 TAIWAN_STOCK_DIVIDEND_RESULT,
+                 TAIWAN_STOCK_MONTH_REVENUE,
+                 TAIWAN_STOCK_CAPITAL_REDUCTION_REFERENCE_PRICE,
+                 TAIWAN_STOCK_MARKET_VALUE,
+                 TAIWAN_STOCK_MARKET_VALUE_WEIGHT -> Category.FUNDAMENTAL;
+
+            case TAIWAN_FUT_OPT_DAILY_INFO,
+                 TAIWAN_FUTURES_DAILY,
+                 TAIWAN_OPTION_DAILY,
+                 TAIWAN_FUTURES_TICK,
+                 TAIWAN_OPTION_TICK,
+                 TAIWAN_FUTURES_INSTITUTIONAL_INVESTORS,
+                 TAIWAN_OPTION_INSTITUTIONAL_INVESTORS,
+                 TAIWAN_FUTURES_INSTITUTIONAL_INVESTORS_AFTER_HOURS,
+                 TAIWAN_OPTION_INSTITUTIONAL_INVESTORS_AFTER_HOURS,
+                 TAIWAN_FUTURES_DEALER_TRADING_VOLUME_DAILY,
+                 TAIWAN_OPTION_DEALER_TRADING_VOLUME_DAILY,
+                 TAIWAN_FUTURES_OPEN_INTEREST_LARGE_TRADERS,
+                 TAIWAN_OPTION_OPEN_INTEREST_LARGE_TRADERS,
+                 TAIWAN_FUTURES_SPREAD_TRADING,
+                 TAIWAN_FUTURES_FINAL_SETTLEMENT_PRICE,
+                 TAIWAN_OPTION_FINAL_SETTLEMENT_PRICE -> Category.FUTURES_OPTIONS;
+
+            case TAIWAN_STOCK_CONVERTIBLE_BOND_INFO,
+                 TAIWAN_STOCK_CONVERTIBLE_BOND_DAILY,
+                 TAIWAN_STOCK_CONVERTIBLE_BOND_INSTITUTIONAL_INVESTORS,
+                 TAIWAN_STOCK_CONVERTIBLE_BOND_DAILY_OVERVIEW -> Category.CONVERTIBLE_BOND;
+
+            case US_STOCK_INFO,
+                 US_STOCK_PRICE,
+                 US_STOCK_PRICE_MINUTE,
+                 UK_STOCK_INFO,
+                 UK_STOCK_PRICE,
+                 EUROPE_STOCK_INFO,
+                 EUROPE_STOCK_PRICE,
+                 JAPAN_STOCK_INFO,
+                 JAPAN_STOCK_PRICE -> Category.INTERNATIONAL;
+
+            case TAIWAN_STOCK_NEWS,
+                 TAIWAN_BUSINESS_INDICATOR,
+                 TAIWAN_EXCHANGE_RATE,
+                 INTEREST_RATE,
+                 GOLD_PRICE,
+                 CRUDE_OIL_PRICES,
+                 GOVERNMENT_BONDS_YIELD,
+                 CNN_FEAR_GREED_INDEX -> Category.MACRO_OTHER;
         };
     }
 

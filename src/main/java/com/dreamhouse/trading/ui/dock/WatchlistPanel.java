@@ -116,7 +116,8 @@ public class WatchlistPanel extends JPanel {
             }
         }
 
-        items.add(new WatchlistItem(symbol, 0, 0, 0));
+        WatchlistItem addedItem = new WatchlistItem(symbol, 0, 0, 0);
+        items.add(addedItem);
         tableModel.fireTableDataChanged();
 
         if (cache != null) {
@@ -124,6 +125,8 @@ public class WatchlistPanel extends JPanel {
         }
         if (onSymbolAdded != null) {
             onSymbolAdded.accept(symbol);
+            addedItem.refreshChineseName();
+            tableModel.fireTableDataChanged();
         }
         System.out.println("Added " + symbol + " to watchlist");
     }
@@ -261,6 +264,10 @@ public class WatchlistPanel extends JPanel {
             this.confidence = 0.0;
             this.riskRewardRatio = 0.0;
             this.lastScanTime = "";
+        }
+
+        void refreshChineseName() {
+            this.chineseName = StockNameResolver.resolveChineseName(symbol);
         }
     }
 

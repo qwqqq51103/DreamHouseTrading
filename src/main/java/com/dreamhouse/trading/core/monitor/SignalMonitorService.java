@@ -35,10 +35,7 @@ import java.util.function.Consumer;
 public class SignalMonitorService {
 
     private static final Logger logger = LoggerFactory.getLogger(SignalMonitorService.class);
-    private static final List<TradeMode> RADAR_MODES = List.of(
-            TradeMode.DAY_TRADE,
-            TradeMode.SHORT_SWING,
-            TradeMode.SWING_TRADE);
+    private static final List<TradeMode> RADAR_MODES = List.of(TradeMode.DAY_TRADE);
     private static final Duration UPSTREAM_FAILURE_COOLDOWN = Duration.ofMinutes(15);
 
     private final SignalMonitorConfig config;
