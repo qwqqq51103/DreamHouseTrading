@@ -76,9 +76,12 @@ public class MarketDataCollectorRepository implements AutoCloseable {
 
     public List<Tick> findTodayMarketOpenTicks(String symbol) {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
-        LocalDateTime marketOpen = today.atTime(9, 0);
-        LocalDateTime endTime = today.atTime(13, 31);
-        return findTicksByTimeRange(symbol, marketOpen, endTime);
+        return findSessionTicks(symbol, today);
+    }
+
+    public List<Tick> findSessionTicks(String symbol, LocalDate date) {
+        LocalDate sessionDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
+        return findTicksByTimeRange(symbol, sessionDate.atTime(9, 0), sessionDate.atTime(13, 31));
     }
 
     public List<Tick> findTicksByTimeRange(String symbol, LocalDateTime startTime, LocalDateTime endTime) {
@@ -164,7 +167,12 @@ public class MarketDataCollectorRepository implements AutoCloseable {
 
     public List<Bar> findTodaySessionCandles(String symbol, String interval) {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
-        return findCandlesByTimeRange(symbol, interval, today.atTime(9, 0), today.atTime(13, 30));
+        return findSessionCandles(symbol, interval, today);
+    }
+
+    public List<Bar> findSessionCandles(String symbol, String interval, LocalDate date) {
+        LocalDate sessionDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
+        return findCandlesByTimeRange(symbol, interval, sessionDate.atTime(9, 0), sessionDate.atTime(13, 30));
     }
 
     public List<Bar> findCandlesByTimeRange(String symbol, String interval, LocalDateTime startTime, LocalDateTime endTime) {
@@ -194,6 +202,84 @@ public class MarketDataCollectorRepository implements AutoCloseable {
             logger.warn("Failed to read MarketDataCollector session candles for {} {}: {}", symbol, interval, e.getMessage());
         }
         return bars;
+    }
+
+    public int replaceCandlesForDate(String symbol, String interval, LocalDate date, List<Bar> bars) throws SQLException {
+        if (connection == null || symbol == null || symbol.isBlank()
+                || interval == null || interval.isBlank() || date == null) {
+            return 0;
+        }
+
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try {
+            deleteCandlesForDate(symbol, interval, date);
+            int inserted = insertCandles(symbol, interval, bars);
+            connection.commit();
+            return inserted;
+        } catch (SQLException e) {
+            connection.rollback();
+            throw e;
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
+        }
+    }
+
+    private void deleteCandlesForDate(String symbol, String interval, LocalDate date) throws SQLException {
+        String sql = """
+                DELETE FROM candlesticks
+                WHERE symbol = ? AND interval_type = ?
+                  AND (
+                    (ts >= ? AND ts < ?)
+                    OR (
+                      REPLACE(SUBSTRING(CAST(ts AS CHAR), 1, 19), 'T', ' ') >= ?
+                      AND REPLACE(SUBSTRING(CAST(ts AS CHAR), 1, 19), 'T', ' ') < ?
+                    )
+                  )
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, symbol);
+            statement.setString(2, interval);
+            statement.setTimestamp(3, Timestamp.valueOf(date.atStartOfDay()));
+            statement.setTimestamp(4, Timestamp.valueOf(date.plusDays(1).atStartOfDay()));
+            statement.setString(5, formatSqlTime(date.atStartOfDay()));
+            statement.setString(6, formatSqlTime(date.plusDays(1).atStartOfDay()));
+            statement.executeUpdate();
+        }
+    }
+
+    private int insertCandles(String symbol, String interval, List<Bar> bars) throws SQLException {
+        if (bars == null || bars.isEmpty()) {
+            return 0;
+        }
+        String sql = """
+                INSERT INTO candlesticks
+                    (symbol, ts, interval_type, open_price, high_price, low_price, close_price, volume, amount, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """;
+        int inserted = 0;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (Bar bar : bars) {
+                if (bar == null || bar.getTimestamp() == null
+                        || bar.getOpen() <= 0.0 || bar.getHigh() <= 0.0
+                        || bar.getLow() <= 0.0 || bar.getClose() <= 0.0) {
+                    continue;
+                }
+                statement.setString(1, symbol);
+                statement.setTimestamp(2, Timestamp.valueOf(bar.getTimestamp()));
+                statement.setString(3, interval);
+                statement.setDouble(4, bar.getOpen());
+                statement.setDouble(5, bar.getHigh());
+                statement.setDouble(6, bar.getLow());
+                statement.setDouble(7, bar.getClose());
+                statement.setLong(8, Math.max(0L, bar.getVolume()));
+                statement.setDouble(9, bar.getClose() * Math.max(0L, bar.getVolume()));
+                statement.addBatch();
+                inserted++;
+            }
+            statement.executeBatch();
+        }
+        return inserted;
     }
 
     public LocalDateTime findLatestDataTime(String symbol) {

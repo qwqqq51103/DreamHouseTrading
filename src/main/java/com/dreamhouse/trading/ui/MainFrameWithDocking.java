@@ -13,6 +13,8 @@ import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
+import com.dreamhouse.trading.core.finmind.FinMindClient;
+import com.dreamhouse.trading.core.finmind.FinMindKBarSqlImporter;
 import com.dreamhouse.trading.core.logging.PaperTradeRecorder;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
@@ -38,6 +40,7 @@ import io.github.andrewauclair.moderndocking.Dockable;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
@@ -75,6 +78,7 @@ public class MainFrameWithDocking extends JFrame {
 
     private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
+    private LocalDate selectedQueryDate = LocalDate.now(TAIPEI_ZONE);
     private int customBarCount = 100;  // 用戶自定義的K線數量，預設100根
     private double lastPrice = 0;
     private int frameCount = 0;
@@ -491,9 +495,9 @@ public class MainFrameWithDocking extends JFrame {
         toolBar.add(customDateBtn);
 
         // 載入歷史數據按鈕
-        JButton loadHistoryBtn = new JButton("📊 載入歷史數據");
-        loadHistoryBtn.setToolTipText("從資料庫載入今日開盤後的所有數據");
-        loadHistoryBtn.addActionListener(e -> loadHistoricalDataFromDatabase());
+        JButton loadHistoryBtn = new JButton("載入日期分K到SQL");
+        loadHistoryBtn.setToolTipText("使用 FinMind TaiwanStockKBar 批量下載目前日期的觀察清單分K，寫入 MarketDataCollector SQL");
+        loadHistoryBtn.addActionListener(e -> importSelectedDateKBarToSql());
         toolBar.add(loadHistoryBtn);
 
         toolBar.addSeparator();
@@ -1038,7 +1042,8 @@ public class MainFrameWithDocking extends JFrame {
      */
     private void loadChartData(String symbol, Timeframe timeframe, int barCount) {
         if (dataFeed instanceof MarketDataCollectorFeed) {
-            List<Bar> bars = dataFeed.fetchHistoricalBars(symbol, timeframe, barCount);
+            List<Bar> bars = ((MarketDataCollectorFeed) dataFeed)
+                    .fetchHistoricalBars(symbol, timeframe, barCount, selectedQueryDate);
             SwingUtilities.invokeLater(() -> {
                 if (symbol != null && symbol.equals(currentSymbol) && timeframe == currentTimeframe) {
                     chartDock.loadHistoricalData(bars);
@@ -1052,15 +1057,24 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private void changeDateQuery(java.time.LocalDate date) {
+        selectedQueryDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
         System.out.println("[MainFrame] 切換查詢日期: " + date);
 
         // 如果當前數據源是 FinMindFeed，設置查詢日期
         if (dataFeed instanceof com.dreamhouse.trading.core.FinMindFeed) {
-            ((com.dreamhouse.trading.core.FinMindFeed) dataFeed).setQueryDate(date);
-            statusBar.setText("已切換至 " + date + " 的數據");
+            ((com.dreamhouse.trading.core.FinMindFeed) dataFeed).setQueryDate(selectedQueryDate);
+            statusBar.setText("已切換至 " + selectedQueryDate + " 的數據；可按「載入日期分K到SQL」批量匯入觀察清單");
+        } else if (dataFeed instanceof MarketDataCollectorFeed) {
+            statusBar.setText("已切換 SQL K 線查詢日期：" + selectedQueryDate);
+            updateWatchlistForSelectedSqlDate();
+            if (currentSymbol != null && !currentSymbol.isBlank()) {
+                chartDock.clearAllData();
+                new Thread(() -> loadChartData(currentSymbol, currentTimeframe, customBarCount),
+                        "SqlDateChartLoader-" + selectedQueryDate).start();
+            }
         } else {
             JOptionPane.showMessageDialog(this,
-                "日期查詢功能僅支援 FinMind 數據源\n請先切換至 FinMind 數據源",
+                "日期查詢功能支援 FinMind 與 MarketDataCollector 數據源",
                 "提示",
                 JOptionPane.INFORMATION_MESSAGE);
         }
@@ -1232,6 +1246,214 @@ public class MainFrameWithDocking extends JFrame {
         worker.execute();
     }
 
+    private void importSelectedDateKBarToSql() {
+        System.out.println("[MainFrame] 手動觸發 FinMind 分K匯入 SQL，日期: " + selectedQueryDate);
+
+        if (!(dataFeed instanceof com.dreamhouse.trading.core.FinMindFeed)) {
+            JOptionPane.showMessageDialog(this,
+                    "日期分K匯入需要使用 FinMind API。\n請先切換至 FinMind 數據源，再按「載入日期分K到SQL」。",
+                    "FinMind API 匯入",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        List<String> symbols = resolveImportSymbols();
+        if (symbols.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "觀察清單沒有股票，也沒有目前商品可匯入。",
+                    "無可匯入股票",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        int confirm = JOptionPane.showConfirmDialog(this,
+                "將使用 FinMind TaiwanStockKBar 匯入 " + selectedQueryDate + " 的分K。\n"
+                        + "股票數：" + symbols.size() + "\n"
+                        + "API 呼叫：約 " + symbols.size() + " 次（每檔股票一次）\n"
+                        + "寫入：market_data.candlesticks 的 M1/M5/M15/M30/H1\n\n"
+                        + "是否開始？",
+                "批量匯入分K到SQL",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.QUESTION_MESSAGE);
+        if (confirm != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        statusBar.setText("正在從 FinMind 匯入 " + selectedQueryDate + " 分K到 SQL...");
+        SwingWorker<FinMindKBarSqlImporter.ImportResult, Void> worker = new SwingWorker<>() {
+            @Override
+            protected FinMindKBarSqlImporter.ImportResult doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    FinMindKBarSqlImporter importer = new FinMindKBarSqlImporter(
+                            new FinMindClient(dataSourceManager.getFinMindApiToken()),
+                            repository);
+                    return importer.importSymbols(symbols, selectedQueryDate);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    FinMindKBarSqlImporter.ImportResult result = get();
+                    showFinMindKBarImportResult(result);
+                    loadImportedCurrentSymbolBars(result);
+                } catch (Exception e) {
+                    String message = rootCauseMessage(e);
+                    statusBar.setText("FinMind 分K匯入失敗：" + message);
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                            "FinMind 分K匯入 SQL 失敗：\n" + message + "\n\n"
+                                    + "請確認 FinMind sponsor 權限、API quota、MarketDataCollector MySQL 連線。",
+                            "匯入失敗",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private List<String> resolveImportSymbols() {
+        List<String> symbols = watchlistPanel != null ? watchlistPanel.getSymbols() : List.of();
+        List<String> normalized = new ArrayList<>();
+        for (String symbol : symbols) {
+            if (symbol != null && !symbol.isBlank() && !normalized.contains(symbol.trim())) {
+                normalized.add(symbol.trim());
+            }
+        }
+        if (normalized.isEmpty() && currentSymbol != null && !currentSymbol.isBlank()) {
+            normalized.add(currentSymbol.trim());
+        }
+        return normalized;
+    }
+
+    private void showFinMindKBarImportResult(FinMindKBarSqlImporter.ImportResult result) {
+        statusBar.setText("FinMind 分K匯入完成：" + result.successSymbols() + "/" + result.requestedSymbols()
+                + " 檔成功，寫入 " + result.totalInsertedBars() + " 根K線");
+
+        StringBuilder detail = new StringBuilder();
+        detail.append("日期：").append(result.date()).append('\n');
+        detail.append("成功：").append(result.successSymbols()).append(" / ").append(result.requestedSymbols()).append(" 檔\n");
+        detail.append("寫入K線：").append(result.totalInsertedBars()).append(" 根\n\n");
+        for (FinMindKBarSqlImporter.SymbolImportResult item : result.symbolResults()) {
+            detail.append(item.success() ? "OK " : "失敗 ")
+                    .append(item.symbol())
+                    .append("：");
+            if (item.success()) {
+                detail.append(item.insertedByInterval()).append('\n');
+            } else {
+                detail.append(item.message()).append('\n');
+            }
+        }
+
+        JTextArea area = new JTextArea(detail.toString(), 18, 64);
+        area.setEditable(false);
+        area.setLineWrap(false);
+        JOptionPane.showMessageDialog(this, new JScrollPane(area), "FinMind 分K匯入結果", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void loadImportedCurrentSymbolBars(FinMindKBarSqlImporter.ImportResult result) {
+        if (currentSymbol == null || currentSymbol.isBlank()
+                || result.symbolResults().stream().noneMatch(item -> currentSymbol.equals(item.symbol()) && item.success())) {
+            return;
+        }
+        try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                dataSourceManager.getMarketCollectorJdbcUrl(),
+                dataSourceManager.getMarketCollectorUser(),
+                dataSourceManager.getMarketCollectorPassword())) {
+            String interval = switch (currentTimeframe) {
+                case M1 -> "M1";
+                case M5 -> "M5";
+                case M15 -> "M15";
+                case M30 -> "M30";
+                case H1 -> "H1";
+                default -> null;
+            };
+            if (interval == null) {
+                return;
+            }
+            List<Bar> bars = repository.findCandlesByTimeRange(
+                    currentSymbol,
+                    interval,
+                    selectedQueryDate.atTime(9, 0),
+                    selectedQueryDate.atTime(13, 30));
+            if (!bars.isEmpty()) {
+                chartDock.loadHistoricalData(bars);
+            }
+        } catch (Exception e) {
+            statusBar.setText("分K已匯入，但載入圖表失敗：" + e.getMessage());
+        }
+    }
+
+    private void updateWatchlistForSelectedSqlDate() {
+        if (watchlistPanel == null) {
+            return;
+        }
+        List<String> symbols = watchlistPanel.getSymbols();
+        if (symbols == null || symbols.isEmpty()) {
+            return;
+        }
+        SwingWorker<Void, WatchlistSnapshot> worker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    for (String symbol : symbols) {
+                        if (symbol == null || symbol.isBlank()) {
+                            continue;
+                        }
+                        List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, Timeframe.M1, 1000, selectedQueryDate);
+                        publish(toWatchlistSnapshot(symbol, bars));
+                    }
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(List<WatchlistSnapshot> chunks) {
+                for (WatchlistSnapshot snapshot : chunks) {
+                    watchlistPanel.updateItem(snapshot.symbol(), snapshot.last(), snapshot.changePct(), snapshot.volume());
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    statusBar.setText("觀察清單已切換為 SQL 日期：" + selectedQueryDate);
+                } catch (Exception e) {
+                    statusBar.setText("觀察清單日期更新失敗：" + rootCauseMessage(e));
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private WatchlistSnapshot toWatchlistSnapshot(String symbol, List<Bar> bars) {
+        if (bars == null || bars.isEmpty()) {
+            return new WatchlistSnapshot(symbol, 0.0, 0.0, 0L);
+        }
+        Bar first = bars.get(0);
+        Bar last = bars.get(bars.size() - 1);
+        double changePct = first.getOpen() > 0.0
+                ? ((last.getClose() - first.getOpen()) / first.getOpen()) * 100.0
+                : 0.0;
+        long volume = bars.stream().mapToLong(Bar::getVolume).sum();
+        return new WatchlistSnapshot(symbol, last.getClose(), changePct, volume);
+    }
+
+    private String rootCauseMessage(Exception e) {
+        Throwable current = e;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage() != null ? current.getMessage() : current.toString();
+    }
+
     private void scanWatchlistForOpportunitiesAsync() {
         if (watchlistPanel == null || opportunityRadarDock == null) {
             return;
@@ -1349,16 +1571,22 @@ public class MainFrameWithDocking extends JFrame {
         Timeframe timeframe = resolveRadarTimeframe(TradeMode.DAY_TRADE);
         MarketScannerService.ScanRequest request = createRadarScanRequest(TradeMode.DAY_TRADE)
                 .initialCapital(1_000_000.0);
-        statusBar.setText("SQL 雷達回測執行中：" + symbol);
+        statusBar.setText("SQL 雷達回測執行中：" + selectedQueryDate + " " + symbol);
 
         SwingWorker<BacktestResult, Void> worker = new SwingWorker<>() {
             private List<Bar> replayBars = List.of();
 
             @Override
-            protected BacktestResult doInBackground() {
-                replayBars = dataFeed.fetchHistoricalBars(symbol, timeframe, 1000);
+            protected BacktestResult doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    replayBars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, selectedQueryDate);
+                }
                 if (replayBars == null || replayBars.size() < 2) {
-                    throw new IllegalStateException("SQL K 線資料不足，無法回測：" + symbol);
+                    throw new IllegalStateException("SQL K 線資料不足，無法回測：" + symbol + " " + selectedQueryDate);
                 }
                 RadarReplayBacktestService service = new RadarReplayBacktestService(
                         1_000_000.0,
@@ -1388,7 +1616,7 @@ public class MainFrameWithDocking extends JFrame {
                     BacktestResultDialog dialog = new BacktestResultDialog(
                             MainFrameWithDocking.this,
                             result,
-                            "SQL 雷達回測-" + symbol,
+                            "SQL 雷達回測-" + symbol + "-" + selectedQueryDate,
                             buildDayTradeBacktestConfigSummary("目前商品", 1, timeframe));
                     dialog.setVisible(true);
                     statusBar.setText(String.format(
@@ -1423,35 +1651,41 @@ public class MainFrameWithDocking extends JFrame {
         Timeframe timeframe = resolveRadarTimeframe(TradeMode.DAY_TRADE);
         MarketScannerService.ScanRequest request = createRadarScanRequest(TradeMode.DAY_TRADE)
                 .initialCapital(1_000_000.0);
-        statusBar.setText("SQL 雷達批次回測執行中：" + symbols.size() + " 檔");
+        statusBar.setText("SQL 雷達批次回測執行中：" + selectedQueryDate + "，" + symbols.size() + " 檔");
 
         SwingWorker<BacktestResult, Void> worker = new SwingWorker<>() {
             private final Map<String, List<Trade>> tradesBySymbol = new HashMap<>();
             private final List<String> skipped = new ArrayList<>();
 
             @Override
-            protected BacktestResult doInBackground() {
+            protected BacktestResult doInBackground() throws Exception {
                 RadarReplayBacktestService service = createRadarReplayService();
                 List<BacktestResult> symbolResults = new ArrayList<>();
-                for (String symbol : symbols) {
-                    if (symbol == null || symbol.isBlank()) {
-                        continue;
-                    }
-                    try {
-                        List<Bar> bars = dataFeed.fetchHistoricalBars(symbol, timeframe, 1000);
-                        if (bars == null || bars.size() < 2) {
-                            skipped.add(symbol + "：SQL K 線不足");
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    for (String symbol : symbols) {
+                        if (symbol == null || symbol.isBlank()) {
                             continue;
                         }
-                        BacktestResult result = service.replay(symbol, bars, request);
-                        symbolResults.add(result);
-                        tradesBySymbol.put(symbol, result.getTrades());
-                    } catch (Exception e) {
-                        skipped.add(symbol + "：" + e.getMessage());
+                        try {
+                            List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, selectedQueryDate);
+                            if (bars == null || bars.size() < 2) {
+                                skipped.add(symbol + "：SQL K 線不足");
+                                continue;
+                            }
+                            BacktestResult result = service.replay(symbol, bars, request);
+                            symbolResults.add(result);
+                            tradesBySymbol.put(symbol, result.getTrades());
+                        } catch (Exception e) {
+                            skipped.add(symbol + "：" + e.getMessage());
+                        }
                     }
                 }
                 if (symbolResults.isEmpty()) {
-                    throw new IllegalStateException("觀察清單沒有可回測的 SQL K 線資料");
+                    throw new IllegalStateException("觀察清單沒有可回測的 SQL K 線資料：" + selectedQueryDate);
                 }
                 return combineBacktestResults(symbolResults);
             }
@@ -1467,7 +1701,7 @@ public class MainFrameWithDocking extends JFrame {
                     BacktestResultDialog dialog = new BacktestResultDialog(
                             MainFrameWithDocking.this,
                             combined,
-                            "SQL 雷達批次回測",
+                            "SQL 雷達批次回測-" + selectedQueryDate,
                             buildDayTradeBacktestConfigSummary("觀察清單批次", tradesBySymbol.size(), timeframe));
                     dialog.setVisible(true);
                     String skipText = skipped.isEmpty() ? "" : "，略過 " + skipped.size() + " 檔";
@@ -1524,8 +1758,9 @@ public class MainFrameWithDocking extends JFrame {
                 : RadarStrategyConfig.createDefault();
         StringBuilder sb = new StringBuilder();
         sb.append("回測範圍: ").append(scope).append('\n');
+        sb.append("資料日期: ").append(selectedQueryDate).append('\n');
         sb.append("回測檔數: ").append(Math.max(1, symbolCount)).append('\n');
-        sb.append("資料源: ").append(dataSourceManager.getCurrentType().getDisplayNameZh()).append('\n');
+        sb.append("資料源: MarketDataCollector SQL\n");
         sb.append("回測週期: ").append(timeframe != null ? timeframe.getLabel() : radar.getDayTradeTimeframe().getLabel()).append('\n');
         sb.append("交易模式: DAY_TRADE（盤中雷達回測強制當沖）\n");
         sb.append("每筆下單: ").append(DAY_TRADE_LOT_SIZE).append(" 股（1 張）\n");
@@ -3126,6 +3361,9 @@ public class MainFrameWithDocking extends JFrame {
     
     // Dockable 包裝類
     private record PanelEntry(String id, String title) {
+    }
+
+    private record WatchlistSnapshot(String symbol, double last, double changePct, long volume) {
     }
 
     private static class DockableWrapper extends JPanel implements Dockable {

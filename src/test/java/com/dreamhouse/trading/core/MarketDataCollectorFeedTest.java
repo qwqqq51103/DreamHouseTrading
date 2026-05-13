@@ -88,6 +88,27 @@ class MarketDataCollectorFeedTest {
     }
 
     @Test
+    void feedReadsRequestedSessionDateAndCanonicalImportedIntervals() throws Exception {
+        try (Connection connection = createSchema()) {
+            LocalDate importedDate = LocalDate.of(2026, 5, 12);
+            insertCandle(connection, "2330.TW", "1m", importedDate.atTime(9, 0).toString(), 1, 1, 1, 1, 1);
+            insertCandle(connection, "2330.TW", "M1", importedDate.atTime(9, 0).toString(), 100, 102, 99, 101, 20);
+            insertCandle(connection, "2330.TW", "M1", importedDate.atTime(9, 1).toString(), 101, 103, 100, 102, 30);
+            insertCandle(connection, "2330.TW", "M1", importedDate.atTime(13, 31).toString(), 130, 131, 129, 130, 40);
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            List<Bar> bars = feed.fetchHistoricalBars("2330.TW", Timeframe.M1, 100, importedDate);
+
+            assertThat(bars).extracting(Bar::getTimestamp)
+                    .containsExactly(importedDate.atTime(9, 0), importedDate.atTime(9, 1));
+            assertThat(bars).extracting(Bar::getClose).containsExactly(101.0, 102.0);
+        }
+    }
+
+    @Test
     void closingAuctionTimeDoesNotCountAsCollectorFailureWindow() {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
 

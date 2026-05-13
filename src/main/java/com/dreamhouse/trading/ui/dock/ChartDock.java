@@ -713,7 +713,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         // 檢查是否已存在相同時間的數據點，使用 addOrUpdate 避免衝突
         try {
             // 嘗試直接添加
-            ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+            replaceOhlcBar(period, lastOpen, lastHigh, lastLow, lastClose);
         } catch (org.jfree.data.general.SeriesException e) {
             // 如果已存在，則移除舊的並添加新的
             System.out.println("警告: 時間點已存在，更新數據: " + period);
@@ -721,7 +721,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
             if (existingIndex >= 0) {
                 ohlcSeries.remove(existingIndex);
             }
-            ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+            replaceOhlcBar(period, lastOpen, lastHigh, lastLow, lastClose);
         }
         volumeSeries.addOrUpdate(period, lastVolume);
 
@@ -746,9 +746,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         RegularTimePeriod period = createTimePeriod(lastBarTime);
         
         // 刪除最後一根並重新添加（JFreeChart OHLCSeries 沒有 update 方法）
-        int lastIndex = ohlcSeries.getItemCount() - 1;
-        ohlcSeries.remove(lastIndex);
-        ohlcSeries.add(period, lastOpen, lastHigh, lastLow, lastClose);
+        replaceOhlcBar(period, lastOpen, lastHigh, lastLow, lastClose);
         volumeSeries.addOrUpdate(period, lastVolume);
         
         // 同步更新 ta4j BarSeries 的最後一根
@@ -763,6 +761,14 @@ public class ChartDock extends JPanel implements MarketDataListener {
         updateIndicators();
     }
     
+    private void replaceOhlcBar(RegularTimePeriod period, double open, double high, double low, double close) {
+        int existingIndex = ohlcSeries.indexOf(period);
+        if (existingIndex >= 0) {
+            ohlcSeries.remove(existingIndex);
+        }
+        ohlcSeries.add(period, open, high, low, close);
+    }
+
     private void updateIndicators() {
         // 清除所有疊線指標
         smaSeries.clear();
@@ -1275,7 +1281,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 // 使用智能時間週期創建
                 RegularTimePeriod timePeriod = createTimePeriod(bar.getTimestamp());
                 
-                ohlcSeries.add(
+                replaceOhlcBar(
                     timePeriod,
                     bar.getOpen(),
                     bar.getHigh(),
@@ -1284,7 +1290,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 );
                 
                 // 添加成交量數據
-                volumeSeries.add(timePeriod, bar.getVolume());
+                volumeSeries.addOrUpdate(timePeriod, bar.getVolume());
                 
                 // 添加到 ta4j BarSeries
                 indicatorService.addBar(

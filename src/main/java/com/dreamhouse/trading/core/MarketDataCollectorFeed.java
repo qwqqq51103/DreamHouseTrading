@@ -161,6 +161,10 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
 
     @Override
     public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        return fetchHistoricalBars(symbol, timeframe, barCount, LocalDate.now(TAIPEI_ZONE));
+    }
+
+    public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount, LocalDate queryDate) {
         if (symbol == null || symbol.isBlank() || timeframe == null || barCount <= 0) {
             return List.of();
         }
@@ -168,9 +172,11 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
             connected = false;
             return List.of();
         }
-        DataFreshness freshness = checkFreshness(symbol);
+        LocalDate sessionDate = queryDate != null ? queryDate : LocalDate.now(TAIPEI_ZONE);
         LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
-        if (isMarketOpen(now) && freshness.stale()) {
+        boolean todaySession = sessionDate.equals(now.toLocalDate());
+        DataFreshness freshness = todaySession ? checkFreshness(symbol) : new DataFreshness(null, 0L, false);
+        if (todaySession && isMarketOpen(now) && freshness.stale()) {
             if (!isClosingAuctionTime(now)) {
                 logger.warn(
                         "{} local collector data is stale; latest={}, lag={}s, threshold={}s; skipping scan instead of calling FinMind",
@@ -188,7 +194,7 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
         }
 
         if (INTRADAY_TIMEFRAMES.contains(timeframe)) {
-            return fetchTodaySessionBars(symbol, timeframe);
+            return fetchSessionBars(symbol, timeframe, sessionDate);
         }
 
         String interval = toCollectorInterval(timeframe);
@@ -197,19 +203,34 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     }
 
     private List<Bar> fetchTodaySessionBars(String symbol, Timeframe timeframe) {
-        String interval = toCollectorInterval(timeframe);
-        List<Bar> candles = interval == null ? List.of() : repository.findTodaySessionCandles(symbol, interval);
-        int expectedBars = expectedSessionBarCount(timeframe);
+        return fetchSessionBars(symbol, timeframe, LocalDate.now(TAIPEI_ZONE));
+    }
+
+    public List<Bar> fetchSessionBars(String symbol, Timeframe timeframe, LocalDate date) {
+        LocalDate sessionDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
+        List<Bar> candles = findSessionCandlesWithIntervalAliases(symbol, timeframe, sessionDate);
+        int expectedBars = expectedSessionBarCount(timeframe, sessionDate);
         if (!candles.isEmpty() && candles.size() >= expectedBars) {
             return candles;
         }
 
-        List<Tick> ticks = repository.findTodayMarketOpenTicks(symbol);
+        List<Tick> ticks = repository.findSessionTicks(symbol, sessionDate);
         List<Bar> bars = aggregateTicks(ticks, timeframe);
         if (!bars.isEmpty()) {
             return bars;
         }
         return candles;
+    }
+
+    private List<Bar> findSessionCandlesWithIntervalAliases(String symbol, Timeframe timeframe, LocalDate date) {
+        List<Bar> best = List.of();
+        for (String interval : collectorIntervals(timeframe)) {
+            List<Bar> candles = repository.findSessionCandles(symbol, interval, date);
+            if (candles.size() > best.size()) {
+                best = candles;
+            }
+        }
+        return best;
     }
 
     @Override
@@ -323,6 +344,29 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
         };
     }
 
+    private List<String> collectorIntervals(Timeframe timeframe) {
+        String legacy = toCollectorInterval(timeframe);
+        String canonical = switch (timeframe) {
+            case M1 -> "M1";
+            case M5 -> "M5";
+            case M15 -> "M15";
+            case M30 -> "M30";
+            case H1 -> "H1";
+            case D1 -> "D1";
+            default -> null;
+        };
+        if (legacy == null && canonical == null) {
+            return List.of();
+        }
+        if (legacy == null || legacy.equals(canonical)) {
+            return List.of(canonical);
+        }
+        if (canonical == null) {
+            return List.of(legacy);
+        }
+        return List.of(legacy, canonical);
+    }
+
     private LocalDateTime floorToTimeframe(LocalDateTime timestamp, Timeframe timeframe) {
         LocalDateTime minute = timestamp.truncatedTo(ChronoUnit.MINUTES);
         int frameMinutes = timeframe.getMinutes();
@@ -332,11 +376,23 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     }
 
     private int expectedSessionBarCount(Timeframe timeframe) {
+        return expectedSessionBarCount(timeframe, LocalDate.now(TAIPEI_ZONE));
+    }
+
+    private int expectedSessionBarCount(Timeframe timeframe, LocalDate date) {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
-        LocalDateTime marketOpen = today.atTime(MARKET_OPEN_TIME);
-        LocalDateTime marketClose = today.atTime(MARKET_CLOSE_TIME);
+        LocalDate sessionDate = date != null ? date : today;
+        LocalDateTime marketOpen = sessionDate.atTime(MARKET_OPEN_TIME);
+        LocalDateTime marketClose = sessionDate.atTime(MARKET_CLOSE_TIME);
         LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
-        LocalDateTime effectiveEnd = now.isBefore(marketOpen) ? marketOpen : now.isAfter(marketClose) ? marketClose : now;
+        LocalDateTime effectiveEnd;
+        if (!sessionDate.equals(today) || now.isAfter(marketClose)) {
+            effectiveEnd = marketClose;
+        } else if (now.isBefore(marketOpen)) {
+            effectiveEnd = marketOpen;
+        } else {
+            effectiveEnd = now;
+        }
         long elapsedMinutes = Math.max(0L, Duration.between(marketOpen, effectiveEnd).toMinutes());
         return (int) (elapsedMinutes / Math.max(1, timeframe.getMinutes())) + 1;
     }
