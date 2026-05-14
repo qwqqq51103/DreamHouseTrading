@@ -88,6 +88,15 @@
 - 盤中日內 K 線預設載入今天 09:00~13:30 的資料；跨日需求應由明確設定控制。
 - FinMind API 面板、觀察清單、雷達、執行狀態等表格 UI 在 resize 時要避免欄位遮蔽文字，欄位與字體縮放應保持一致。
 
+### 3.9 當沖策略 v2 市場脈絡規則
+
+- 自動監控開多前應先建立 `MarketContextSnapshot`，用本地 SQL 的 `TAIEX`、`TPEx` 與觀察清單 K 線判斷 `TREND_UP / RANGE / WEAK / DATA_MISSING`。
+- 盤中即時大盤、個股、VWAP、量能與族群強度一律讀 `MarketDataCollectorFeed` / `market_data` SQL，不得由 DreamHouseTrading 直接呼叫 FinMind 即時 API。
+- 弱勢盤不是完全禁止交易，但 `OPEN_LONG` 必須同時符合：站上自身 VWAP、VWAP 斜率向上、強於對應大盤至少 0.3%、強於所屬族群至少 0.2%。
+- 震盪盤應提高門檻，至少要求 VWAP 結構與量能延續品質；趨勢偏多盤才允許標準 B 組條件。
+- 族群映射使用 FinMind `TaiwanStockIndustryChain` 低頻匯入 SQL 快取，盤中 scanner 只讀快取，不在掃描時打 API。
+- ATR 停損停利屬於核心 scanner / execution 語意，不應只在 UI 顯示；回測與雷達理由要保留 ATR、VWAP、Regime、Industry、Volume Sustain 的判斷資料。
+
 ## 4. 主要檔案
 
 - [README.md](C:\Users\chiat\Desktop\測試UI\DreamHouseTrading\README.md)

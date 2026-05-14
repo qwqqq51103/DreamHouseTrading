@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -249,6 +250,107 @@ class MarketScannerServiceTest {
 
         assertThat(result.hasTradeSignal()).isFalse();
         assertThat(result.getBlockReason()).contains("RSI 超賣訊號缺少 EMA");
+    }
+
+    @Test
+    void weakMarketBlocksOpenLongWhenSymbolIsNotAboveVwap() {
+        DeterministicFeed feed = new DeterministicFeed();
+        MarketScannerService scanner = new MarketScannerService(feed);
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.1);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setMarketRegimeFilterEnabled(true);
+        radarConfig.setWeakMarketStrictLongEnabled(true);
+
+        MarketContextSnapshot context = weakContext(
+                feed.fetchHistoricalBars("TEST", Timeframe.M1, 80),
+                new SymbolMarketContext(
+                        "TEST",
+                        "TAIEX",
+                        "半導體",
+                        110.0,
+                        1.0,
+                        -1.0,
+                        0.0,
+                        2.0,
+                        1.0,
+                        120.0,
+                        0.2,
+                        true,
+                        false,
+                        "未站上 VWAP"));
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig)
+                .marketContext(context));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getBlockReason()).contains("VWAP");
+        assertThat(result.getMarketRegime()).isEqualTo(MarketRegime.WEAK);
+    }
+
+    @Test
+    void atrRiskAddsStopLossTakeProfitAndReason() {
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.1);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setAtrRiskEnabled(true);
+        radarConfig.setAtrPeriod(14);
+        radarConfig.setAtrChaseLimitMultiplier(100.0);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isTrue();
+        assertThat(result.getSuggestedStopLoss()).isNotNull();
+        assertThat(result.getSuggestedTakeProfit()).isNotNull();
+        assertThat(result.getRawSignalSummary()).contains("ATR");
+        assertThat(result.getReason()).contains("ATR");
+    }
+
+    private MarketContextSnapshot weakContext(List<Bar> bars, SymbolMarketContext symbolContext) {
+        return new MarketContextSnapshot(
+                MarketRegime.WEAK,
+                "弱勢盤",
+                new MarketMetric("TAIEX", 100.0, -1.0, 101.0, -0.1, false, 1_000.0, 20),
+                new MarketMetric("TPEx", 100.0, -1.2, 101.0, -0.1, false, 1_000.0, 20),
+                Map.of("TEST", symbolContext),
+                Map.of("半導體", new IndustryStrength("半導體", 0.0, 1_000.0, 1, 1, 0.7)),
+                Map.of("TEST", bars),
+                LocalDateTime.now());
     }
 
     private static class DeterministicFeed implements MarketDataFeed {

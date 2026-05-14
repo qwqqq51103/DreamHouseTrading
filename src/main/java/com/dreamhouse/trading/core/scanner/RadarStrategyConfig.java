@@ -36,6 +36,17 @@ public class RadarStrategyConfig {
     private boolean requireBreakoutNextBarConfirmation = false;
     private double maxEntryRiseFromRecentLowPercent = 0.0;
     private double minimumEntryScore = 0.50;
+    private boolean marketRegimeFilterEnabled = true;
+    private boolean weakMarketStrictLongEnabled = true;
+    private double weakOutperformBenchmarkPercent = 0.30;
+    private double weakOutperformIndustryPercent = 0.20;
+    private boolean rangeMarketRequiresVwapAndVolume = true;
+    private boolean volumeSustainEnabled = false;
+    private boolean atrRiskEnabled = false;
+    private int atrPeriod = 14;
+    private double atrStopMultiplier = 1.00;
+    private double atrTakeProfitMultiplier = 1.60;
+    private double atrChaseLimitMultiplier = 2.00;
 
     private Timeframe dayTradeTimeframe = Timeframe.M1;
     private Timeframe shortSwingTimeframe = Timeframe.M15;
@@ -110,6 +121,15 @@ public class RadarStrategyConfig {
         config.setRequireBreakoutNextBarConfirmation(false);
         config.setMaxEntryRiseFromRecentLowPercent(0.03);
         config.setMinimumEntryScore(0.45);
+        config.setMarketRegimeFilterEnabled(true);
+        config.setWeakMarketStrictLongEnabled(true);
+        config.setRangeMarketRequiresVwapAndVolume(true);
+        config.setVolumeSustainEnabled(true);
+        config.setAtrRiskEnabled(true);
+        config.setAtrPeriod(14);
+        config.setAtrStopMultiplier(1.00);
+        config.setAtrTakeProfitMultiplier(1.60);
+        config.setAtrChaseLimitMultiplier(2.00);
         return config;
     }
 
@@ -191,6 +211,17 @@ public class RadarStrategyConfig {
         copy.requireBreakoutNextBarConfirmation = requireBreakoutNextBarConfirmation;
         copy.maxEntryRiseFromRecentLowPercent = maxEntryRiseFromRecentLowPercent;
         copy.minimumEntryScore = minimumEntryScore;
+        copy.marketRegimeFilterEnabled = marketRegimeFilterEnabled;
+        copy.weakMarketStrictLongEnabled = weakMarketStrictLongEnabled;
+        copy.weakOutperformBenchmarkPercent = weakOutperformBenchmarkPercent;
+        copy.weakOutperformIndustryPercent = weakOutperformIndustryPercent;
+        copy.rangeMarketRequiresVwapAndVolume = rangeMarketRequiresVwapAndVolume;
+        copy.volumeSustainEnabled = volumeSustainEnabled;
+        copy.atrRiskEnabled = atrRiskEnabled;
+        copy.atrPeriod = atrPeriod;
+        copy.atrStopMultiplier = atrStopMultiplier;
+        copy.atrTakeProfitMultiplier = atrTakeProfitMultiplier;
+        copy.atrChaseLimitMultiplier = atrChaseLimitMultiplier;
         copy.dayTradeTimeframe = dayTradeTimeframe;
         copy.shortSwingTimeframe = shortSwingTimeframe;
         copy.swingTradeTimeframe = swingTradeTimeframe;
@@ -242,6 +273,28 @@ public class RadarStrategyConfig {
     public void setMaxEntryRiseFromRecentLowPercent(double maxEntryRiseFromRecentLowPercent) { this.maxEntryRiseFromRecentLowPercent = clamp(maxEntryRiseFromRecentLowPercent, 0.0, 1.0); }
     public double getMinimumEntryScore() { return minimumEntryScore; }
     public void setMinimumEntryScore(double minimumEntryScore) { this.minimumEntryScore = clamp(minimumEntryScore, 0.0, 1.0); }
+    public boolean isMarketRegimeFilterEnabled() { return marketRegimeFilterEnabled; }
+    public void setMarketRegimeFilterEnabled(boolean marketRegimeFilterEnabled) { this.marketRegimeFilterEnabled = marketRegimeFilterEnabled; }
+    public boolean isWeakMarketStrictLongEnabled() { return weakMarketStrictLongEnabled; }
+    public void setWeakMarketStrictLongEnabled(boolean weakMarketStrictLongEnabled) { this.weakMarketStrictLongEnabled = weakMarketStrictLongEnabled; }
+    public double getWeakOutperformBenchmarkPercent() { return weakOutperformBenchmarkPercent; }
+    public void setWeakOutperformBenchmarkPercent(double weakOutperformBenchmarkPercent) { this.weakOutperformBenchmarkPercent = clamp(weakOutperformBenchmarkPercent, 0.0, 10.0); }
+    public double getWeakOutperformIndustryPercent() { return weakOutperformIndustryPercent; }
+    public void setWeakOutperformIndustryPercent(double weakOutperformIndustryPercent) { this.weakOutperformIndustryPercent = clamp(weakOutperformIndustryPercent, 0.0, 10.0); }
+    public boolean isRangeMarketRequiresVwapAndVolume() { return rangeMarketRequiresVwapAndVolume; }
+    public void setRangeMarketRequiresVwapAndVolume(boolean rangeMarketRequiresVwapAndVolume) { this.rangeMarketRequiresVwapAndVolume = rangeMarketRequiresVwapAndVolume; }
+    public boolean isVolumeSustainEnabled() { return volumeSustainEnabled; }
+    public void setVolumeSustainEnabled(boolean volumeSustainEnabled) { this.volumeSustainEnabled = volumeSustainEnabled; }
+    public boolean isAtrRiskEnabled() { return atrRiskEnabled; }
+    public void setAtrRiskEnabled(boolean atrRiskEnabled) { this.atrRiskEnabled = atrRiskEnabled; }
+    public int getAtrPeriod() { return atrPeriod; }
+    public void setAtrPeriod(int atrPeriod) { this.atrPeriod = Math.max(3, atrPeriod); }
+    public double getAtrStopMultiplier() { return atrStopMultiplier; }
+    public void setAtrStopMultiplier(double atrStopMultiplier) { this.atrStopMultiplier = Math.max(0.1, atrStopMultiplier); }
+    public double getAtrTakeProfitMultiplier() { return atrTakeProfitMultiplier; }
+    public void setAtrTakeProfitMultiplier(double atrTakeProfitMultiplier) { this.atrTakeProfitMultiplier = Math.max(0.1, atrTakeProfitMultiplier); }
+    public double getAtrChaseLimitMultiplier() { return atrChaseLimitMultiplier; }
+    public void setAtrChaseLimitMultiplier(double atrChaseLimitMultiplier) { this.atrChaseLimitMultiplier = Math.max(0.1, atrChaseLimitMultiplier); }
     public Timeframe getDayTradeTimeframe() { return dayTradeTimeframe; }
     public void setDayTradeTimeframe(Timeframe dayTradeTimeframe) { this.dayTradeTimeframe = dayTradeTimeframe != null ? dayTradeTimeframe : Timeframe.M1; }
     public Timeframe getShortSwingTimeframe() { return shortSwingTimeframe; }

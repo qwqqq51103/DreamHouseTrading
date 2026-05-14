@@ -14,9 +14,16 @@ import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
 import com.dreamhouse.trading.core.finmind.FinMindClient;
+import com.dreamhouse.trading.core.finmind.FinMindDataset;
+import com.dreamhouse.trading.core.finmind.FinMindIndustryChainImporter;
 import com.dreamhouse.trading.core.finmind.FinMindKBarSqlImporter;
+import com.dreamhouse.trading.core.finmind.FinMindRequest;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.dreamhouse.trading.core.logging.PaperTradeRecorder;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
+import com.dreamhouse.trading.core.scanner.IndustryStrength;
+import com.dreamhouse.trading.core.scanner.MarketContextService;
+import com.dreamhouse.trading.core.scanner.MarketContextSnapshot;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 import com.dreamhouse.trading.ui.chart.DrawingManager;
@@ -47,6 +54,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -75,6 +83,8 @@ public class MainFrameWithDocking extends JFrame {
     private ModeRecommendationDock modeRecommendationDock;
     private ExecutionStatusDock executionStatusDock;
     private PaperTradeAnalysisDock paperTradeAnalysisDock;
+    private MarketStatusDock marketStatusDock;
+    private IndustryDistributionDock industryDistributionDock;
 
     private String currentSymbol = "";
     private Timeframe currentTimeframe = Timeframe.M1;
@@ -149,6 +159,7 @@ public class MainFrameWithDocking extends JFrame {
         // 啟動資料源
         dataFeed.start();
         subscribeWatchlistMarketData();
+        refreshMarketAndIndustryDocksFromSqlV2();
         scanWatchlistForOpportunitiesAsync();
         initializeSignalMonitor();
         autoStartMonitoringIfPossible();
@@ -239,6 +250,20 @@ public class MainFrameWithDocking extends JFrame {
         DockableWrapper radarWrapper = new DockableWrapper("opportunityRadar", "今日機會雷達", opportunityRadarDock);
         Docking.registerDockable(radarWrapper);
         Docking.dock(radarWrapper, watchlistWrapper, DockingRegion.SOUTH);
+
+        marketStatusDock = new MarketStatusDock();
+        DockableWrapper marketStatusWrapper = new DockableWrapper("marketStatus", "大盤狀態", marketStatusDock);
+        Docking.registerDockable(marketStatusWrapper);
+        Docking.dock(marketStatusWrapper, radarWrapper, DockingRegion.EAST);
+
+        industryDistributionDock = new IndustryDistributionDock();
+        industryDistributionDock.setOnAddIndustrySymbols(this::addIndustrySymbolsToWatchlist);
+        industryDistributionDock.setOnRemoveIndustrySymbols(this::removeIndustrySymbolsFromWatchlist);
+        industryDistributionDock.setOnAddSymbols(this::addSymbolsToWatchlist);
+        DockableWrapper industryDistributionWrapper = new DockableWrapper(
+                "industryDistribution", "產業分布", industryDistributionDock);
+        Docking.registerDockable(industryDistributionWrapper);
+        Docking.dock(industryDistributionWrapper, marketStatusWrapper, DockingRegion.SOUTH);
 
         finMindApiDock = new FinMindApiDock(dataSourceManager, chartDock::loadHistoricalData, statusBar::setText);
         DockableWrapper finMindApiWrapper = new DockableWrapper("finMindApi", "FinMind API 查詢", finMindApiDock);
@@ -401,6 +426,10 @@ public class MainFrameWithDocking extends JFrame {
         batchSqlRadarBacktestItem.addActionListener(e -> runSqlRadarBacktestForWatchlist());
         toolsMenu.add(batchSqlRadarBacktestItem);
 
+        JMenuItem importIndustryItem = new JMenuItem("匯入 FinMind 產業到 SQL");
+        importIndustryItem.addActionListener(e -> importFinMindIndustryToSql());
+        toolsMenu.add(importIndustryItem);
+
         JMenuItem monitorSettingsItem = new JMenuItem("監控門檻設定");
         monitorSettingsItem.addActionListener(e -> showMonitorSettingsDialog());
         toolsMenu.add(monitorSettingsItem);
@@ -431,6 +460,10 @@ public class MainFrameWithDocking extends JFrame {
         
         // Help Menu
         JMenu helpMenu = new JMenu(I18n.get("menu.help"));
+        JMenuItem dayTradeGuideItem = new JMenuItem("當沖指標設定說明");
+        dayTradeGuideItem.addActionListener(e -> showDayTradeIndicatorGuideDialog());
+        helpMenu.add(dayTradeGuideItem);
+
         JMenuItem aboutItem = new JMenuItem(I18n.get("menu.help.about"));
         aboutItem.addActionListener(e -> showAboutDialog());
         helpMenu.add(aboutItem);
@@ -499,6 +532,16 @@ public class MainFrameWithDocking extends JFrame {
         loadHistoryBtn.setToolTipText("使用 FinMind TaiwanStockKBar 批量下載目前日期的觀察清單分K，寫入 MarketDataCollector SQL");
         loadHistoryBtn.addActionListener(e -> importSelectedDateKBarToSql());
         toolBar.add(loadHistoryBtn);
+
+        JButton taiexBtn = new JButton("TAIEX");
+        taiexBtn.setToolTipText("從 SQL 載入加權指數到主圖並更新大盤分析");
+        taiexBtn.addActionListener(e -> loadMarketIndexToChart("TAIEX"));
+        toolBar.add(taiexBtn);
+
+        JButton tpexBtn = new JButton("TPEx");
+        tpexBtn.setToolTipText("從 SQL 載入櫃買指數到主圖並更新大盤分析");
+        tpexBtn.addActionListener(e -> loadMarketIndexToChart("TPEx"));
+        toolBar.add(tpexBtn);
 
         toolBar.addSeparator();
 
@@ -591,6 +634,9 @@ public class MainFrameWithDocking extends JFrame {
             JMenuItem indicatorItem = new JMenuItem("指標設定");
             indicatorItem.addActionListener(event -> openIndicatorSettings());
             popup.add(indicatorItem);
+            JMenuItem dayTradeGuideItem = new JMenuItem("當沖指標設定說明");
+            dayTradeGuideItem.addActionListener(event -> showDayTradeIndicatorGuideDialog());
+            popup.add(dayTradeGuideItem);
             JMenuItem aboutItem = new JMenuItem("關於 DreamHouseTrading");
             aboutItem.addActionListener(event -> showAboutDialog());
             popup.add(aboutItem);
@@ -622,6 +668,8 @@ public class MainFrameWithDocking extends JFrame {
                 new PanelEntry("chart", "主圖表"),
                 new PanelEntry("watchlist", "觀察清單"),
                 new PanelEntry("opportunityRadar", "今日機會雷達"),
+                new PanelEntry("marketStatus", "大盤狀態"),
+                new PanelEntry("industryDistribution", "產業分布"),
                 new PanelEntry("finMindApi", "FinMind API 查詢"),
                 new PanelEntry("orderbook", "委託簿"),
                 new PanelEntry("timesales", "逐筆成交"),
@@ -646,19 +694,21 @@ public class MainFrameWithDocking extends JFrame {
                 DreamHouseTrading
 
                 Java Swing 台股交易分析與模擬平台
-                版本：0.1.x
+                版本：0.2.x
 
                 目前定位：
-                - 盤中行情建議使用 MarketDataCollectorFeed 讀取本機 MySQL。
-                - FinMind 保留低頻資料查詢，例如分點、新聞、盤後 K 線與 API 用量。
+                - 盤中行情與雷達掃描以 MarketDataCollectorFeed 讀取本機 market_data MySQL。
+                - FinMind 保留低頻資料、盤後資料、手動查詢與 SQL 匯入，不作為 DreamHouseTrading 盤中即時行情來源。
                 - Yahoo 保留為一般行情資料源。
                 - 系統只做分析、掃描、決策、回測與模擬交易，不做真實券商下單。
 
                 最近更新：
-                - FinMind API 面板支援分 K 匯入圖表。
-                - 分點查詢會彙總券商買進、賣出與買賣超。
-                - 工具列新增面板呼叫入口。
-                - 主視窗支援依尺寸自動縮放 UI 文字與表格。
+                - 大盤狀態加入 TAIEX / TPEx，支援指定日期 SQL 資料載入與市場狀態判斷。
+                - 產業分布改用 SQL 產業全體股票計算，不再只依觀察清單估算。
+                - 產業選股支援加入整個族群、刪除整個族群，並同步 MarketDataCollector symbols.properties。
+                - 觀察清單支援批量新增與批量刪除。
+                - 當沖策略支援 VWAP、Volume Sustain、Market Regime、族群相對強弱與 ATR 風控紀錄。
+                - 交易紀錄與 SQL 雷達回測可輸出含開平倉理由、損益與技術指標的報告。
                 """);
         message.setEditable(false);
         message.setOpaque(false);
@@ -667,6 +717,53 @@ public class MainFrameWithDocking extends JFrame {
         message.setColumns(54);
         UIAutoScaler.apply(this);
         JOptionPane.showMessageDialog(this, message, "關於 DreamHouseTrading", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void showDayTradeIndicatorGuideDialog() {
+        JTextArea message = new JTextArea("""
+                當沖指標設定詳細說明
+
+                一、資料來源
+                - 盤中雷達、K 線、VWAP、成交量、大盤與族群強度都應優先讀取本機 SQL。
+                - DreamHouseTrading 不直接呼叫 FinMind 即時行情；FinMind 主要用於盤後 K 線、產業鏈、分點、新聞與手動匯入。
+                - 指定日期回測與圖表載入會依目前選取日期讀 SQL，不限定今天。
+
+                二、固定交易語意
+                - 自動監控 / 今日機會雷達開多一律視為 DAY_TRADE。
+                - 當沖數量固定 1000 股；資金不足買一張會拒單，不拆零股。
+                - 13:25 後禁止自動監控新開倉，並平掉 auto-managed 未平倉部位。
+                - 09:00~09:10 預設只收資料不開倉，可在監控設定調整。
+                - 停損後同股票預設冷卻 60 分鐘，可在監控設定調整。
+
+                三、進場濾網
+                - SignalRSI = SHORT 時禁止自動監控 OPEN_LONG。
+                - RSI 超賣不得單獨開多，至少需要 EMA 未明顯下彎或放量反轉確認。
+                - B 模板會檢查 VWAP 結構、量能延續、最大持倉、冷卻與收盤時間。
+                - 弱勢盤仍可開多，但必須同時強於自身 VWAP、強於所屬族群、強於對應大盤。
+
+                四、市場與族群
+                - TAIEX / TPEx 用於 Market Regime：TREND_UP、RANGE、WEAK、DATA_MISSING。
+                - TWSE 股票對比 TAIEX；TPEx 股票對比 TPEx。
+                - 弱勢盤放行門檻：個股日內表現至少強於大盤 0.3%，強於族群 0.2%。
+                - 族群強度使用 FinMind TaiwanStockIndustryChain 匯入 SQL 後的產業全體股票計算。
+
+                五、風控與報告
+                - ATR 用於動態停損、停利、追高限制與 RR 評估。
+                - 最大同時持倉數在自動開倉前檢查，避免過度分散。
+                - 回測報告會記錄 RSI、EMA、VWAP、VWAP slope、Volume Sustain、Regime、Industry、ATR 與開平倉理由。
+
+                靜態設定：張數、時間窗、停損冷卻分鐘、最大持倉、弱勢盤門檻與模板權重。
+                動態判斷：市場狀態、VWAP / slope、量能延續、ATR、族群強度、個股相對大盤與族群強弱。
+                """);
+        message.setEditable(false);
+        message.setOpaque(false);
+        message.setLineWrap(true);
+        message.setWrapStyleWord(true);
+        message.setColumns(72);
+        message.setRows(28);
+        JScrollPane scrollPane = new JScrollPane(message);
+        UIAutoScaler.apply(this);
+        JOptionPane.showMessageDialog(this, scrollPane, "當沖指標設定說明", JOptionPane.INFORMATION_MESSAGE);
     }
     
     private void subscribeMarketData() {
@@ -1056,6 +1153,22 @@ public class MainFrameWithDocking extends JFrame {
         dataFeed.loadHistoricalData(symbol, timeframe, barCount);
     }
 
+    private void loadMarketIndexToChart(String indexSymbol) {
+        if (!(dataFeed instanceof MarketDataCollectorFeed)) {
+            statusBar.setText("大盤圖表目前只從 MarketDataCollector SQL 讀取，請先切換資料源。");
+            return;
+        }
+        String previousSymbol = currentSymbol;
+        currentSymbol = indexSymbol;
+        chartDock.clearAllData();
+        statusBar.setText("正在從 SQL 載入 " + indexSymbol + " 大盤資料...");
+        new Thread(() -> {
+            loadChartData(indexSymbol, currentTimeframe, customBarCount);
+            refreshMarketAndIndustryDocksFromSqlV2();
+            System.out.println("[MainFrame] 大盤圖表切換: " + previousSymbol + " -> " + indexSymbol);
+        }, "MarketIndexChartLoader").start();
+    }
+
     private void changeDateQuery(java.time.LocalDate date) {
         selectedQueryDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
         System.out.println("[MainFrame] 切換查詢日期: " + date);
@@ -1067,6 +1180,7 @@ public class MainFrameWithDocking extends JFrame {
         } else if (dataFeed instanceof MarketDataCollectorFeed) {
             statusBar.setText("已切換 SQL K 線查詢日期：" + selectedQueryDate);
             updateWatchlistForSelectedSqlDate();
+            refreshMarketAndIndustryDocksFromSqlV2();
             if (currentSymbol != null && !currentSymbol.isBlank()) {
                 chartDock.clearAllData();
                 new Thread(() -> loadChartData(currentSymbol, currentTimeframe, customBarCount),
@@ -1353,6 +1467,103 @@ public class MainFrameWithDocking extends JFrame {
         JOptionPane.showMessageDialog(this, new JScrollPane(area), "FinMind 分K匯入結果", JOptionPane.INFORMATION_MESSAGE);
     }
 
+    private void importFinMindIndustryToSql() {
+        statusBar.setText("正在匯入 FinMind 台股基本資料與產業鏈到 SQL...");
+        SwingWorker<FinMindIndustryImportResult, Void> worker = new SwingWorker<>() {
+            @Override
+            protected FinMindIndustryImportResult doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    FinMindClient client = new FinMindClient(dataSourceManager.getFinMindApiToken());
+                    JsonNode stockInfoRoot = client.queryData(FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_INFO)
+                            .build());
+                    JsonNode stockInfoRows = stockInfoRoot != null ? stockInfoRoot.path("data") : null;
+                    MarketDataCollectorRepository.FinMindSqlWriteResult stockInfoWrite =
+                            repository.writeFinMindDatasetRows(
+                                    FinMindDataset.TAIWAN_STOCK_INFO,
+                                    null,
+                                    null,
+                                    null,
+                                    stockInfoRows);
+
+                    FinMindIndustryChainImporter importer = new FinMindIndustryChainImporter(
+                            client,
+                            repository);
+                    FinMindIndustryChainImporter.ImportResult industryResult = importer.importIndustryChain();
+                    List<IndustryStrength> industryRows = repository.findIndustrySummaries().stream()
+                            .map(summary -> new IndustryStrength(
+                                    summary.industry(),
+                                    0.0,
+                                    0.0,
+                                    summary.symbolCount(),
+                                    0,
+                                    0.0))
+                            .toList();
+                    List<MarketDataCollectorRepository.IndustryStockInfo> stockRows =
+                            repository.findIndustryStockRows();
+                    return new FinMindIndustryImportResult(stockInfoWrite, industryResult, industryRows, stockRows);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    FinMindIndustryImportResult result = get();
+                    statusBar.setText("FinMind 產業匯入完成：台股基本資料 raw "
+                            + result.stockInfoWrite().rawRows()
+                            + " 筆，產業鏈解析 " + result.industryResult().parsedRows()
+                            + " 筆，寫入 industry_chain " + result.industryResult().insertedRows() + " 筆");
+                    if (industryDistributionDock != null) {
+                        industryDistributionDock.updateIndustryData(
+                                result.industryRows(),
+                                result.stockRows(),
+                                Set.copyOf(watchlistPanel != null ? watchlistPanel.getSymbols() : List.of()));
+                        showDockablePanel("industryDistribution", "產業分布");
+                    }
+                    refreshMarketAndIndustryDocksFromSqlV2();
+                    scanWatchlistForOpportunitiesAsync();
+                    showFinMindIndustryImportResult(result);
+                } catch (Exception e) {
+                    String message = rootCauseMessage(e);
+                    statusBar.setText("FinMind 產業匯入失敗：" + message);
+                    JOptionPane.showMessageDialog(MainFrameWithDocking.this,
+                            "FinMind 產業匯入失敗：\n" + message + "\n\n"
+                                    + "此功能會先查 TaiwanStockInfo，再查 TaiwanStockIndustryChain。"
+                                    + "\n請確認 API token、會員權限與 MarketDataCollector MySQL 連線。",
+                            "FinMind 產業匯入",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void showFinMindIndustryImportResult(FinMindIndustryImportResult result) {
+        String message = "FinMind 產業匯入完成\n\n"
+                + "1. TaiwanStockInfo 已寫入 raw SQL\n"
+                + "   table: " + result.stockInfoWrite().tableName() + "\n"
+                + "   API rows: " + result.stockInfoWrite().rawRows() + "\n"
+                + "   SQL rows: " + result.stockInfoWrite().cachedRows() + "\n\n"
+                + "2. TaiwanStockIndustryChain 已寫入 industry_chain\n"
+                + "   parsed rows: " + result.industryResult().parsedRows() + "\n"
+                + "   inserted rows: " + result.industryResult().insertedRows() + "\n\n"
+                + "產業分布 UI 已刷新。";
+        JOptionPane.showMessageDialog(
+                this,
+                message,
+                "FinMind 產業匯入",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private record FinMindIndustryImportResult(
+            MarketDataCollectorRepository.FinMindSqlWriteResult stockInfoWrite,
+            FinMindIndustryChainImporter.ImportResult industryResult,
+            List<IndustryStrength> industryRows,
+            List<MarketDataCollectorRepository.IndustryStockInfo> stockRows) {
+    }
+
     private void loadImportedCurrentSymbolBars(FinMindKBarSqlImporter.ImportResult result) {
         if (currentSymbol == null || currentSymbol.isBlank()
                 || result.symbolResults().stream().noneMatch(item -> currentSymbol.equals(item.symbol()) && item.success())) {
@@ -1474,12 +1685,15 @@ public class MainFrameWithDocking extends JFrame {
         }
 
         SwingWorker<List<MarketScanResult>, Void> worker = new SwingWorker<>() {
+            private MarketContextSnapshot marketContext;
+
             @Override
             protected List<MarketScanResult> doInBackground() {
                 MarketScannerService scannerService = new MarketScannerService(dataFeed);
+                marketContext = buildMarketContextWithIndustryUniverse(symbols, TradeMode.DAY_TRADE);
                 List<MarketScanResult> results = new ArrayList<>();
                 for (String symbol : symbols) {
-                    MarketScanResult bestResult = findBestRadarCandidate(scannerService, symbol);
+                    MarketScanResult bestResult = findBestRadarCandidate(scannerService, symbol, marketContext);
                     if (bestResult != null) {
                         results.add(bestResult);
                     }
@@ -1492,6 +1706,7 @@ public class MainFrameWithDocking extends JFrame {
             protected void done() {
                 try {
                     List<MarketScanResult> results = get();
+                    updateMarketContextDocks(marketContext);
                     if (results.isEmpty()) {
                         latestScanResults.clear();
                         opportunityRadarDock.clearResults();
@@ -1524,10 +1739,13 @@ public class MainFrameWithDocking extends JFrame {
         worker.execute();
     }
 
-    private MarketScanResult findBestRadarCandidate(MarketScannerService scannerService, String symbol) {
+    private MarketScanResult findBestRadarCandidate(
+            MarketScannerService scannerService,
+            String symbol,
+            MarketContextSnapshot marketContext) {
         MarketScanResult best = null;
         for (TradeMode mode : List.of(TradeMode.DAY_TRADE)) {
-            MarketScanResult candidate = scannerService.scan(symbol, createRadarScanRequest(mode));
+            MarketScanResult candidate = scannerService.scan(symbol, createRadarScanRequest(mode).marketContext(marketContext));
             if (candidate == null) {
                 continue;
             }
@@ -1559,6 +1777,454 @@ public class MainFrameWithDocking extends JFrame {
             .radarStrategyConfig(monitorConfig != null
                     ? monitorConfig.getRadarStrategyConfig()
                     : RadarStrategyConfig.createDefault());
+    }
+
+    private MarketContextSnapshot buildMarketContextWithIndustryUniverse(List<String> symbols, TradeMode mode) {
+        if (symbols == null || symbols.isEmpty()) {
+            return MarketContextSnapshot.empty("觀察清單沒有商品");
+        }
+        Timeframe timeframe = resolveRadarTimeframe(mode);
+        int barCount = resolveRadarBarCount(mode);
+        IndustryUniverseData universeData = loadIndustryUniverseData(selectedQueryDate);
+        MarketContextService contextService = new MarketContextService(
+                dataFeed,
+                symbol -> universeData.industryBySymbol().getOrDefault(normalizeSymbolForIndustry(symbol), "未分類"));
+        return contextService.build(
+                symbols,
+                timeframe,
+                barCount,
+                selectedQueryDate,
+                universeData.availableIndustryBySymbol(),
+                universeData.totalCountsByIndustry());
+    }
+
+    private MarketContextSnapshot buildMarketContext(List<String> symbols, TradeMode mode) {
+        if (symbols == null || symbols.isEmpty()) {
+            return MarketContextSnapshot.empty("觀察清單沒有商品");
+        }
+        Timeframe timeframe = resolveRadarTimeframe(mode);
+        int barCount = resolveRadarBarCount(mode);
+        Map<String, MarketDataCollectorRepository.IndustryInfo> industryInfos = loadIndustryInfo(symbols);
+        MarketContextService contextService = new MarketContextService(dataFeed, symbol -> {
+            MarketDataCollectorRepository.IndustryInfo info = industryInfos.get(symbol);
+            if (info == null) {
+                String stockId = normalizeStockId(symbol);
+                info = industryInfos.get(stockId);
+            }
+            return info != null ? info.displayIndustry() : "未分類";
+        });
+        return contextService.build(symbols, timeframe, barCount, selectedQueryDate);
+    }
+
+    private Map<String, MarketDataCollectorRepository.IndustryInfo> loadIndustryInfo(List<String> symbols) {
+        try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                dataSourceManager.getMarketCollectorJdbcUrl(),
+                dataSourceManager.getMarketCollectorUser(),
+                dataSourceManager.getMarketCollectorPassword())) {
+            return repository.findIndustryInfoForSymbols(symbols);
+        } catch (Exception e) {
+            System.err.println("Failed to load industry info: " + e.getMessage());
+            return Map.of();
+        }
+    }
+
+    private IndustryUniverseData loadIndustryUniverseData(LocalDate date) {
+        try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                dataSourceManager.getMarketCollectorJdbcUrl(),
+                dataSourceManager.getMarketCollectorUser(),
+                dataSourceManager.getMarketCollectorPassword())) {
+            return buildIndustryUniverseData(
+                    repository.findIndustryStockRows(),
+                    repository.findSymbolsWithSessionData(date != null ? date : LocalDate.now(TAIPEI_ZONE)));
+        } catch (Exception e) {
+            System.err.println("Failed to load industry universe: " + e.getMessage());
+            return new IndustryUniverseData(List.of(), Map.of(), Map.of(), Map.of(), List.of());
+        }
+    }
+
+    private IndustryUniverseData buildIndustryUniverseData(
+            List<MarketDataCollectorRepository.IndustryStockInfo> stockRows,
+            Set<String> availableSymbols) {
+        List<MarketDataCollectorRepository.IndustryStockInfo> safeRows =
+                stockRows != null ? stockRows : List.of();
+        Set<String> safeAvailable = availableSymbols != null ? availableSymbols : Set.of();
+        Map<String, String> industryBySymbol = new LinkedHashMap<>();
+        Map<String, String> availableIndustryBySymbol = new LinkedHashMap<>();
+        Map<String, Integer> totalCounts = new LinkedHashMap<>();
+
+        for (MarketDataCollectorRepository.IndustryStockInfo row : safeRows) {
+            String symbol = normalizeSymbolForIndustry(row.symbol());
+            if (symbol.isBlank()) {
+                continue;
+            }
+            String industry = row.industryGroup() != null && !row.industryGroup().isBlank()
+                    ? row.industryGroup().trim()
+                    : "未分類";
+            industryBySymbol.put(symbol, industry);
+            totalCounts.merge(industry, 1, Integer::sum);
+            if (safeAvailable.contains(symbol)) {
+                availableIndustryBySymbol.put(symbol, industry);
+            }
+        }
+
+        List<IndustryStrength> summaryRows = totalCounts.entrySet().stream()
+                .map(entry -> new IndustryStrength(
+                        entry.getKey(),
+                        0.0,
+                        0.0,
+                        0,
+                        0,
+                        0.0,
+                        entry.getValue(),
+                        0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        "SQL產業成分股"))
+                .toList();
+        return new IndustryUniverseData(
+                safeRows,
+                industryBySymbol,
+                availableIndustryBySymbol,
+                totalCounts,
+                summaryRows);
+    }
+
+    private void refreshMarketAndIndustryDocksFromSqlV2() {
+        if (marketStatusDock == null && industryDistributionDock == null) {
+            return;
+        }
+        List<String> symbols = watchlistPanel != null ? watchlistPanel.getSymbols() : List.of();
+        SwingWorker<MarketContextSnapshot, Void> worker = new SwingWorker<>() {
+            private IndustryUniverseData universeData =
+                    new IndustryUniverseData(List.of(), Map.of(), Map.of(), Map.of(), List.of());
+
+            @Override
+            protected MarketContextSnapshot doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    universeData = buildIndustryUniverseData(
+                            repository.findIndustryStockRows(),
+                            repository.findSymbolsWithSessionData(
+                                    selectedQueryDate != null ? selectedQueryDate : LocalDate.now(TAIPEI_ZONE)));
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    MarketContextService contextService = new MarketContextService(
+                            sqlFeed,
+                            symbol -> universeData.industryBySymbol().getOrDefault(normalizeSymbolForIndustry(symbol), "未分類"));
+                    return contextService.build(
+                            symbols,
+                            resolveRadarTimeframe(TradeMode.DAY_TRADE),
+                            resolveRadarBarCount(TradeMode.DAY_TRADE),
+                            selectedQueryDate,
+                            universeData.availableIndustryBySymbol(),
+                            universeData.totalCountsByIndustry());
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    MarketContextSnapshot snapshot = get();
+                    if (marketStatusDock != null) {
+                        marketStatusDock.updateSnapshot(snapshot);
+                    }
+                    if (industryDistributionDock != null) {
+                        List<IndustryStrength> industryRows = universeData.summaryRows();
+                        if (snapshot != null && snapshot.industries() != null && !snapshot.industries().isEmpty()) {
+                            industryRows = snapshot.industries().values().stream()
+                                    .sorted(Comparator.comparingDouble(IndustryStrength::score).reversed())
+                                    .toList();
+                        }
+                        industryDistributionDock.updateIndustryData(
+                                industryRows,
+                                universeData.stockRows(),
+                                Set.copyOf(watchlistPanel != null ? watchlistPanel.getSymbols() : List.of()));
+                    }
+                } catch (Exception e) {
+                    statusBar.setText("大盤/產業資料載入失敗：" + rootCauseMessage(e));
+                    if (industryDistributionDock != null) {
+                        industryDistributionDock.updateIndustryData(List.of(), List.of(), Set.of());
+                    }
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private String normalizeSymbolForIndustry(String symbol) {
+        if (symbol == null) {
+            return "";
+        }
+        return symbol.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private record IndustryUniverseData(
+            List<MarketDataCollectorRepository.IndustryStockInfo> stockRows,
+            Map<String, String> industryBySymbol,
+            Map<String, String> availableIndustryBySymbol,
+            Map<String, Integer> totalCountsByIndustry,
+            List<IndustryStrength> summaryRows) {
+    }
+
+    private void refreshMarketAndIndustryDocksFromSql() {
+        if (marketStatusDock == null && industryDistributionDock == null) {
+            return;
+        }
+        List<String> symbols = watchlistPanel != null ? watchlistPanel.getSymbols() : List.of();
+        SwingWorker<MarketContextSnapshot, Void> worker = new SwingWorker<>() {
+            private List<IndustryStrength> sqlIndustryRows = List.of();
+            private List<MarketDataCollectorRepository.IndustryStockInfo> sqlIndustryStockRows = List.of();
+
+            @Override
+            protected MarketContextSnapshot doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    sqlIndustryRows = repository.findIndustrySummaries().stream()
+                            .map(summary -> new IndustryStrength(
+                                    summary.industry(),
+                                    0.0,
+                                    0.0,
+                                    summary.symbolCount(),
+                                    0,
+                                    0.0))
+                            .toList();
+                    sqlIndustryStockRows = repository.findIndustryStockRows();
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    Map<String, MarketDataCollectorRepository.IndustryInfo> industryInfos =
+                            repository.findIndustryInfoForSymbols(symbols);
+                    MarketContextService contextService = new MarketContextService(sqlFeed, symbol -> {
+                        MarketDataCollectorRepository.IndustryInfo info = industryInfos.get(symbol);
+                        if (info == null) {
+                            info = industryInfos.get(normalizeStockId(symbol));
+                        }
+                        return info != null ? info.displayIndustry() : "未知產業";
+                    });
+                    return contextService.build(symbols, resolveRadarTimeframe(TradeMode.DAY_TRADE), resolveRadarBarCount(TradeMode.DAY_TRADE), selectedQueryDate);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    MarketContextSnapshot snapshot = get();
+                    if (marketStatusDock != null) {
+                        marketStatusDock.updateSnapshot(snapshot);
+                    }
+                    if (industryDistributionDock != null) {
+                        List<IndustryStrength> industryRows = sqlIndustryRows;
+                        if (snapshot != null && snapshot.industries() != null && !snapshot.industries().isEmpty()) {
+                            industryRows = snapshot.industries().values().stream()
+                                    .filter(IndustryStrength::hasData)
+                                    .sorted(Comparator.comparingDouble(IndustryStrength::score).reversed())
+                                    .toList();
+                        }
+                        industryDistributionDock.updateIndustryData(
+                                industryRows,
+                                sqlIndustryStockRows,
+                                Set.copyOf(watchlistPanel != null ? watchlistPanel.getSymbols() : List.of()));
+                    }
+                } catch (Exception e) {
+                    statusBar.setText("大盤/產業資料載入失敗：" + rootCauseMessage(e));
+                    if (industryDistributionDock != null) {
+                        industryDistributionDock.updateIndustryData(List.of(), List.of(), Set.of());
+                    }
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void addIndustrySymbolsToWatchlist(String industry) {
+        if (industry == null || industry.isBlank() || watchlistPanel == null) {
+            return;
+        }
+        statusBar.setText("正在載入產業族群股票：" + industry);
+        SwingWorker<List<String>, Void> worker = new SwingWorker<>() {
+            @Override
+            protected List<String> doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    return repository.findSymbolsByIndustry(industry);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    List<String> symbols = get();
+                    if (symbols == null || symbols.isEmpty()) {
+                        JOptionPane.showMessageDialog(
+                                MainFrameWithDocking.this,
+                                "SQL industry_chain 找不到族群股票：" + industry + "\n請先匯入 FinMind TaiwanStockIndustryChain。",
+                                "產業選股",
+                                JOptionPane.INFORMATION_MESSAGE);
+                        statusBar.setText("產業族群沒有可加入股票：" + industry);
+                        return;
+                    }
+
+                    int added = 0;
+                    int synced = 0;
+                    AddSymbolsResult result = addSymbolsToWatchlistInternal(symbols);
+                    added = result.added();
+                    synced = result.synced();
+                    statusBar.setText("產業族群已加入觀察清單：" + industry
+                            + "，新增 " + added + " 檔，同步 Collector " + synced + " 檔");
+                } catch (Exception e) {
+                    String message = rootCauseMessage(e);
+                    statusBar.setText("產業族群加入失敗：" + message);
+                    JOptionPane.showMessageDialog(
+                            MainFrameWithDocking.this,
+                            "產業族群加入觀察清單失敗：\n" + message,
+                            "產業選股",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void removeIndustrySymbolsFromWatchlist(String industry) {
+        if (industry == null || industry.isBlank() || watchlistPanel == null) {
+            return;
+        }
+        statusBar.setText("正在刪除產業族群股票：" + industry);
+        SwingWorker<List<String>, Void> worker = new SwingWorker<>() {
+            @Override
+            protected List<String> doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    return repository.findSymbolsByIndustry(industry);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    List<String> symbols = get();
+                    if (symbols == null || symbols.isEmpty()) {
+                        statusBar.setText("產業族群沒有可刪除股票：" + industry);
+                        return;
+                    }
+                    RemoveSymbolsResult result = removeSymbolsFromWatchlistInternal(symbols);
+                    statusBar.setText("產業族群已刪除：" + industry
+                            + "，觀察清單移除 " + result.removed()
+                            + " 檔，同步 Collector " + result.synced() + " 檔");
+                } catch (Exception e) {
+                    String message = rootCauseMessage(e);
+                    statusBar.setText("產業族群刪除失敗：" + message);
+                    JOptionPane.showMessageDialog(
+                            MainFrameWithDocking.this,
+                            "產業族群刪除失敗：\n" + message,
+                            "刪除族群",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void addSymbolsToWatchlist(List<String> symbols) {
+        if (symbols == null || symbols.isEmpty()) {
+            return;
+        }
+        AddSymbolsResult result = addSymbolsToWatchlistInternal(symbols);
+        statusBar.setText("已加入產業選股清單：新增 " + result.added()
+                + " 檔，同步 Collector " + result.synced() + " 檔");
+    }
+
+    private AddSymbolsResult addSymbolsToWatchlistInternal(List<String> symbols) {
+        if (watchlistPanel == null || symbols == null || symbols.isEmpty()) {
+            return new AddSymbolsResult(0, 0);
+        }
+        int added = 0;
+        int synced = 0;
+        for (String symbol : symbols.stream().filter(s -> s != null && !s.isBlank()).distinct().toList()) {
+            boolean newlyAdded = watchlistPanel.addSymbolProgrammatically(symbol);
+            boolean syncOk = MarketDataCollectorSymbolSync.addSymbol(symbol);
+            if (newlyAdded) {
+                added++;
+                subscribeWatchlistSymbol(symbol);
+            }
+            if (syncOk) {
+                synced++;
+            }
+        }
+        StockNameResolver.loadMarketDataCollectorNames();
+        refreshMarketAndIndustryDocksFromSqlV2();
+        scanWatchlistForOpportunitiesAsync();
+        restartMonitoringIfRunning();
+        return new AddSymbolsResult(added, synced);
+    }
+
+    private record AddSymbolsResult(int added, int synced) {
+    }
+
+    private RemoveSymbolsResult removeSymbolsFromWatchlistInternal(List<String> symbols) {
+        if (watchlistPanel == null || symbols == null || symbols.isEmpty()) {
+            return new RemoveSymbolsResult(0, 0);
+        }
+        List<String> removed = watchlistPanel.removeSymbolsProgrammatically(symbols, false);
+        int synced = 0;
+        for (String symbol : symbols.stream().filter(s -> s != null && !s.isBlank()).distinct().toList()) {
+            if (MarketDataCollectorSymbolSync.removeSymbol(symbol)) {
+                synced++;
+            }
+        }
+        for (String symbol : removed) {
+            cleanupRemovedWatchlistSymbol(symbol);
+        }
+        StockNameResolver.loadMarketDataCollectorNames();
+        refreshMarketAndIndustryDocksFromSqlV2();
+        scanWatchlistForOpportunitiesAsync();
+        restartMonitoringIfRunning();
+        return new RemoveSymbolsResult(removed.size(), synced);
+    }
+
+    private void cleanupRemovedWatchlistSymbol(String symbol) {
+        unsubscribeWatchlistSymbol(symbol);
+        latestScanResults.remove(symbol);
+        latestPrices.remove(symbol);
+        watchlistOpenPrices.remove(symbol);
+        watchlistVolumes.remove(symbol);
+        activeStopLosses.remove(symbol);
+        activeTakeProfits.remove(symbol);
+        activeTradeModes.remove(symbol);
+        autoManagedPositions.remove(symbol);
+        pendingAutoEntries.remove(symbol);
+        stopLossCooldownUntil.remove(symbol);
+    }
+
+    private record RemoveSymbolsResult(int removed, int synced) {
+    }
+
+    private void updateMarketContextDocks(MarketContextSnapshot snapshot) {
+        if (marketStatusDock != null) {
+            marketStatusDock.updateSnapshot(snapshot);
+        }
+        if (industryDistributionDock != null
+                && snapshot != null
+                && snapshot.industries() != null
+                && !snapshot.industries().isEmpty()) {
+            industryDistributionDock.updateSnapshot(snapshot);
+        }
+    }
+
+    private String normalizeStockId(String symbol) {
+        if (symbol == null) {
+            return "";
+        }
+        String normalized = symbol.trim().toUpperCase(Locale.ROOT);
+        int dot = normalized.indexOf('.');
+        return dot >= 0 ? normalized.substring(0, dot) : normalized;
     }
 
     private void runSqlRadarBacktestForCurrentSymbol() {
@@ -1911,6 +2577,8 @@ public class MainFrameWithDocking extends JFrame {
         }
 
         signalMonitor = new SignalMonitorService(dataFeed, monitorConfig, monitorDecisionConfig);
+        signalMonitor.setMarketContextProvider(symbols -> buildMarketContextWithIndustryUniverse(new ArrayList<>(symbols), TradeMode.DAY_TRADE));
+        signalMonitor.setOnMarketContextUpdate(this::updateMarketContextDocks);
         signalMonitor.setOnScanResults(this::updateScanResultsOnUi);
         signalMonitor.setOnSignalDetected(this::handleTradingSignal);
         signalMonitor.setOnStatusUpdate(message -> SwingUtilities.invokeLater(() -> statusBar.setText(message)));
@@ -2182,6 +2850,17 @@ public class MainFrameWithDocking extends JFrame {
         JCheckBox requirePriceAboveVwap = new JCheckBox("做多需站上 VWAP", radarConfig.isRequirePriceAboveVwapForLong());
         JCheckBox requireBreakoutNextBarConfirmation = new JCheckBox("突破後一根 K 確認", radarConfig.isRequireBreakoutNextBarConfirmation());
         JSpinner maxEntryRiseFromRecentLow = percentSpinner(radarConfig.getMaxEntryRiseFromRecentLowPercent());
+        JCheckBox marketRegimeFilterEnabled = new JCheckBox("啟用大盤狀態過濾", radarConfig.isMarketRegimeFilterEnabled());
+        JCheckBox weakMarketStrictLongEnabled = new JCheckBox("弱勢盤只允許強勢股開多", radarConfig.isWeakMarketStrictLongEnabled());
+        JSpinner weakOutperformBenchmark = decimalSpinner(radarConfig.getWeakOutperformBenchmarkPercent(), 0.0, 5.0, 0.05);
+        JSpinner weakOutperformIndustry = decimalSpinner(radarConfig.getWeakOutperformIndustryPercent(), 0.0, 5.0, 0.05);
+        JCheckBox rangeRequiresVwapVolume = new JCheckBox("震盪盤要求 VWAP 與量能延續", radarConfig.isRangeMarketRequiresVwapAndVolume());
+        JCheckBox volumeSustainEnabled = new JCheckBox("啟用 Volume Sustain Filter", radarConfig.isVolumeSustainEnabled());
+        JCheckBox atrRiskEnabled = new JCheckBox("啟用 ATR 動態停損停利", radarConfig.isAtrRiskEnabled());
+        JSpinner atrPeriod = new JSpinner(new SpinnerNumberModel(radarConfig.getAtrPeriod(), 3, 60, 1));
+        JSpinner atrStopMultiplier = decimalSpinner(radarConfig.getAtrStopMultiplier(), 0.1, 5.0, 0.1);
+        JSpinner atrTakeProfitMultiplier = decimalSpinner(radarConfig.getAtrTakeProfitMultiplier(), 0.1, 8.0, 0.1);
+        JSpinner atrChaseLimitMultiplier = decimalSpinner(radarConfig.getAtrChaseLimitMultiplier(), 0.1, 8.0, 0.1);
 
         templateBox.addActionListener(e -> {
             if (templateBox.getSelectedIndex() == 0) {
@@ -2240,6 +2919,17 @@ public class MainFrameWithDocking extends JFrame {
             requirePriceAboveVwap.setSelected(radarTemplate.isRequirePriceAboveVwapForLong());
             requireBreakoutNextBarConfirmation.setSelected(radarTemplate.isRequireBreakoutNextBarConfirmation());
             maxEntryRiseFromRecentLow.setValue(radarTemplate.getMaxEntryRiseFromRecentLowPercent());
+            marketRegimeFilterEnabled.setSelected(radarTemplate.isMarketRegimeFilterEnabled());
+            weakMarketStrictLongEnabled.setSelected(radarTemplate.isWeakMarketStrictLongEnabled());
+            weakOutperformBenchmark.setValue(radarTemplate.getWeakOutperformBenchmarkPercent());
+            weakOutperformIndustry.setValue(radarTemplate.getWeakOutperformIndustryPercent());
+            rangeRequiresVwapVolume.setSelected(radarTemplate.isRangeMarketRequiresVwapAndVolume());
+            volumeSustainEnabled.setSelected(radarTemplate.isVolumeSustainEnabled());
+            atrRiskEnabled.setSelected(radarTemplate.isAtrRiskEnabled());
+            atrPeriod.setValue(radarTemplate.getAtrPeriod());
+            atrStopMultiplier.setValue(radarTemplate.getAtrStopMultiplier());
+            atrTakeProfitMultiplier.setValue(radarTemplate.getAtrTakeProfitMultiplier());
+            atrChaseLimitMultiplier.setValue(radarTemplate.getAtrChaseLimitMultiplier());
             longThreshold.setValue(decisionTemplate.getVotingConfig().getLongEntryThreshold());
             exitThreshold.setValue(decisionTemplate.getVotingConfig().getExitThreshold());
             minRiskReward.setValue(decisionTemplate.getRiskConfig().getMinRiskRewardRatio());
@@ -2295,6 +2985,17 @@ public class MainFrameWithDocking extends JFrame {
         addSettingsRow(panel, gbc, 41, "追價限制（近低漲幅）", maxEntryRiseFromRecentLow);
 
         addSettingsRow(panel, gbc, 42, "", requireRsiEntryConfirmation);
+        addSettingsRow(panel, gbc, 43, "", marketRegimeFilterEnabled);
+        addSettingsRow(panel, gbc, 44, "", weakMarketStrictLongEnabled);
+        addSettingsRow(panel, gbc, 45, "弱勢盤強於大盤%", weakOutperformBenchmark);
+        addSettingsRow(panel, gbc, 46, "弱勢盤強於族群%", weakOutperformIndustry);
+        addSettingsRow(panel, gbc, 47, "", rangeRequiresVwapVolume);
+        addSettingsRow(panel, gbc, 48, "", volumeSustainEnabled);
+        addSettingsRow(panel, gbc, 49, "", atrRiskEnabled);
+        addSettingsRow(panel, gbc, 50, "ATR 週期", atrPeriod);
+        addSettingsRow(panel, gbc, 51, "ATR 停損倍數", atrStopMultiplier);
+        addSettingsRow(panel, gbc, 52, "ATR 停利倍數", atrTakeProfitMultiplier);
+        addSettingsRow(panel, gbc, 53, "ATR 追高限制倍數", atrChaseLimitMultiplier);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancelButton = new JButton("取消");
@@ -2340,6 +3041,17 @@ public class MainFrameWithDocking extends JFrame {
             updatedRadarConfig.setRequirePriceAboveVwapForLong(requirePriceAboveVwap.isSelected());
             updatedRadarConfig.setRequireBreakoutNextBarConfirmation(requireBreakoutNextBarConfirmation.isSelected());
             updatedRadarConfig.setMaxEntryRiseFromRecentLowPercent(((Number) maxEntryRiseFromRecentLow.getValue()).doubleValue());
+            updatedRadarConfig.setMarketRegimeFilterEnabled(marketRegimeFilterEnabled.isSelected());
+            updatedRadarConfig.setWeakMarketStrictLongEnabled(weakMarketStrictLongEnabled.isSelected());
+            updatedRadarConfig.setWeakOutperformBenchmarkPercent(((Number) weakOutperformBenchmark.getValue()).doubleValue());
+            updatedRadarConfig.setWeakOutperformIndustryPercent(((Number) weakOutperformIndustry.getValue()).doubleValue());
+            updatedRadarConfig.setRangeMarketRequiresVwapAndVolume(rangeRequiresVwapVolume.isSelected());
+            updatedRadarConfig.setVolumeSustainEnabled(volumeSustainEnabled.isSelected());
+            updatedRadarConfig.setAtrRiskEnabled(atrRiskEnabled.isSelected());
+            updatedRadarConfig.setAtrPeriod(((Number) atrPeriod.getValue()).intValue());
+            updatedRadarConfig.setAtrStopMultiplier(((Number) atrStopMultiplier.getValue()).doubleValue());
+            updatedRadarConfig.setAtrTakeProfitMultiplier(((Number) atrTakeProfitMultiplier.getValue()).doubleValue());
+            updatedRadarConfig.setAtrChaseLimitMultiplier(((Number) atrChaseLimitMultiplier.getValue()).doubleValue());
             monitorConfig.setRadarStrategyConfig(updatedRadarConfig);
 
             DecisionConfig updatedDecisionConfig = copyDecisionConfig(monitorDecisionConfig);

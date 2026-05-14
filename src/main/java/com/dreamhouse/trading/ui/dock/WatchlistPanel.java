@@ -16,6 +16,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
+import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import javax.swing.table.DefaultTableCellRenderer;
 import java.awt.BorderLayout;
@@ -24,7 +25,10 @@ import java.awt.Component;
 import java.awt.FlowLayout;
 import java.text.DecimalFormat;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
 public class WatchlistPanel extends JPanel {
@@ -74,11 +78,17 @@ public class WatchlistPanel extends JPanel {
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton addBtn = new JButton(I18n.get("watchlist.add"));
+        JButton batchAddBtn = new JButton("批量新增");
         JButton removeBtn = new JButton(I18n.get("watchlist.remove"));
+        JButton batchRemoveBtn = new JButton("批量刪除");
         addBtn.addActionListener(e -> addSymbol());
-        removeBtn.addActionListener(e -> removeSelectedSymbol());
+        batchAddBtn.addActionListener(e -> addSymbolsBatch());
+        removeBtn.addActionListener(e -> removeSelectedSymbols(false));
+        batchRemoveBtn.addActionListener(e -> removeSelectedSymbols(true));
         buttonPanel.add(addBtn);
+        buttonPanel.add(batchAddBtn);
         buttonPanel.add(removeBtn);
+        buttonPanel.add(batchRemoveBtn);
         add(buttonPanel, BorderLayout.SOUTH);
     }
 
@@ -116,24 +126,43 @@ public class WatchlistPanel extends JPanel {
             }
         }
 
-        WatchlistItem addedItem = new WatchlistItem(symbol, 0, 0, 0);
-        items.add(addedItem);
-        tableModel.fireTableDataChanged();
-
-        if (cache != null) {
-            cache.addToWatchlist(symbol);
+        if (addSymbolInternal(symbol, true)) {
+            System.out.println("Added " + symbol + " to watchlist");
         }
-        if (onSymbolAdded != null) {
-            onSymbolAdded.accept(symbol);
-            addedItem.refreshChineseName();
-            tableModel.fireTableDataChanged();
-        }
-        System.out.println("Added " + symbol + " to watchlist");
     }
 
-    private void removeSelectedSymbol() {
-        int selectedRow = table.getSelectedRow();
-        if (selectedRow < 0) {
+    private void addSymbolsBatch() {
+        JTextArea input = new JTextArea(8, 36);
+        input.setLineWrap(true);
+        input.setWrapStyleWord(true);
+        int option = JOptionPane.showConfirmDialog(
+                this,
+                new JScrollPane(input),
+                "批量新增觀察清單",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (option != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        List<String> symbols = parseSymbols(input.getText());
+        if (symbols.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "請輸入股票代碼，可用換行、逗號或空白分隔。", "批量新增", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        int added = 0;
+        for (String symbol : symbols) {
+            if (addSymbolInternal(symbol, true)) {
+                added++;
+            }
+        }
+        JOptionPane.showMessageDialog(this, "批量新增完成，新增 " + added + " 檔。", "批量新增", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void removeSelectedSymbols(boolean batchMode) {
+        int[] selectedRows = table.getSelectedRows();
+        if (selectedRows.length == 0) {
             JOptionPane.showMessageDialog(
                     this,
                     I18n.get("watchlist.remove.noselection"),
@@ -142,24 +171,26 @@ public class WatchlistPanel extends JPanel {
             return;
         }
 
-        int modelRow = table.convertRowIndexToModel(selectedRow);
-        WatchlistItem item = items.get(modelRow);
+        List<String> symbols = new ArrayList<>();
+        if (batchMode) {
+            for (int selectedRow : selectedRows) {
+                int modelRow = table.convertRowIndexToModel(selectedRow);
+                symbols.add(items.get(modelRow).symbol);
+            }
+        } else {
+            int modelRow = table.convertRowIndexToModel(selectedRows[0]);
+            symbols.add(items.get(modelRow).symbol);
+        }
+
         int confirm = JOptionPane.showConfirmDialog(
                 this,
-                I18n.get("watchlist.remove.confirm") + " " + item.symbol + "?",
+                "確定要刪除 " + symbols.size() + " 檔觀察清單股票？\n" + String.join(", ", symbols),
                 I18n.get("watchlist.remove.title"),
                 JOptionPane.YES_NO_OPTION);
 
         if (confirm == JOptionPane.YES_OPTION) {
-            items.remove(modelRow);
-            tableModel.fireTableDataChanged();
-            if (cache != null) {
-                cache.removeFromWatchlist(item.symbol);
-            }
-            if (onSymbolRemoved != null) {
-                onSymbolRemoved.accept(item.symbol);
-            }
-            System.out.println("Removed " + item.symbol + " from watchlist");
+            List<String> removed = removeSymbolsProgrammatically(symbols, true);
+            System.out.println("Removed " + removed.size() + " symbols from watchlist");
         }
     }
 
@@ -179,15 +210,19 @@ public class WatchlistPanel extends JPanel {
         return items.stream().map(item -> item.symbol).toList();
     }
 
-    public void addSymbolProgrammatically(String symbol) {
+    public boolean addSymbolProgrammatically(String symbol) {
+        return addSymbolInternal(symbol, false);
+    }
+
+    private boolean addSymbolInternal(String symbol, boolean notify) {
         if (symbol == null || symbol.trim().isEmpty()) {
-            return;
+            return false;
         }
 
         symbol = symbol.trim().toUpperCase();
         for (WatchlistItem item : items) {
             if (item.symbol.equals(symbol)) {
-                return;
+                return false;
             }
         }
 
@@ -196,6 +231,61 @@ public class WatchlistPanel extends JPanel {
         if (cache != null) {
             cache.addToWatchlist(symbol);
         }
+        if (notify && onSymbolAdded != null) {
+            onSymbolAdded.accept(symbol);
+            items.get(items.size() - 1).refreshChineseName();
+            tableModel.fireTableDataChanged();
+        }
+        return true;
+    }
+
+    public List<String> removeSymbolsProgrammatically(List<String> symbols, boolean notify) {
+        if (symbols == null || symbols.isEmpty()) {
+            return List.of();
+        }
+        Set<String> normalizedTargets = new LinkedHashSet<>();
+        for (String symbol : symbols) {
+            if (symbol != null && !symbol.isBlank()) {
+                normalizedTargets.add(StockNameResolver.normalize(symbol));
+            }
+        }
+        List<String> removed = new ArrayList<>();
+        for (int index = items.size() - 1; index >= 0; index--) {
+            WatchlistItem item = items.get(index);
+            if (normalizedTargets.contains(StockNameResolver.normalize(item.symbol))) {
+                removed.add(0, item.symbol);
+                items.remove(index);
+                if (cache != null) {
+                    cache.removeFromWatchlist(item.symbol);
+                }
+            }
+        }
+        if (!removed.isEmpty()) {
+            tableModel.fireTableDataChanged();
+            if (notify && onSymbolRemoved != null) {
+                for (String symbol : removed) {
+                    onSymbolRemoved.accept(symbol);
+                }
+            }
+        }
+        return removed;
+    }
+
+    private List<String> parseSymbols(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        Set<String> symbols = new LinkedHashSet<>();
+        for (String token : text.split("[,，;；\\s]+")) {
+            String symbol = token.trim().toUpperCase();
+            if (symbol.matches("\\d{4}")) {
+                symbol += ".TW";
+            }
+            if (!symbol.isBlank()) {
+                symbols.add(symbol);
+            }
+        }
+        return new ArrayList<>(symbols);
     }
 
     public void updateItem(String symbol, double last, double changePct, long volume) {

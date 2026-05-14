@@ -1,6 +1,7 @@
 package com.dreamhouse.trading.ui.dock;
 
 import com.dreamhouse.trading.core.DataSourceManager;
+import com.dreamhouse.trading.core.MarketDataCollectorRepository;
 import com.dreamhouse.trading.core.finmind.FinMindApiUsage;
 import com.dreamhouse.trading.core.finmind.FinMindClient;
 import com.dreamhouse.trading.core.finmind.FinMindDataset;
@@ -14,6 +15,7 @@ import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -59,6 +61,11 @@ public class FinMindApiDock extends JPanel {
     private final DefaultTableModel tableModel = new DefaultTableModel();
     private final JTable resultTable = new JTable(tableModel);
     private final JTextArea rawArea = new JTextArea();
+    private JsonNode lastQueryRoot;
+    private FinMindDataset lastQueryDataset;
+    private String lastQueryDataId;
+    private LocalDate lastQueryStartDate;
+    private LocalDate lastQueryEndDate;
 
     public FinMindApiDock(DataSourceManager dataSourceManager) {
         this(dataSourceManager, null, null);
@@ -96,7 +103,13 @@ public class FinMindApiDock extends JPanel {
         add(splitPane, BorderLayout.CENTER);
 
         usageLabel.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
-        add(usageLabel, BorderLayout.SOUTH);
+        JButton writeSqlButton = new JButton("寫入SQL");
+        writeSqlButton.setToolTipText("將目前 FinMind 查詢結果寫入 MarketDataCollector SQL");
+        writeSqlButton.addActionListener(e -> writeLastResultToSql());
+        JPanel footer = new JPanel(new BorderLayout(8, 0));
+        footer.add(usageLabel, BorderLayout.CENTER);
+        footer.add(writeSqlButton, BorderLayout.EAST);
+        add(footer, BorderLayout.SOUTH);
         updateUsageLabel(null);
         UIAutoScaler.install(this);
     }
@@ -268,19 +281,25 @@ public class FinMindApiDock extends JPanel {
         LocalDate startDate = parseDate(startDateField.getText());
         LocalDate endDate = parseDate(endDateField.getText());
         LocalDate singleDayDate = singleDayQueryDate(dataset, startDate, endDate);
+        lastQueryDataset = dataset;
+        lastQueryDataId = dataset.isDataIdDataset() ? normalizedDataId() : null;
+        lastQueryStartDate = dataset.isSingleDayQuery() ? singleDayDate : startDate;
+        lastQueryEndDate = dataset.isSingleDayQuery() ? null : endDate;
 
         runApiTask(dataset, () -> newClient().queryData(FinMindRequest.dataset(dataset)
-                .dataId(dataset.isDataIdDataset() ? normalizedDataId() : null)
-                .startDate(dataset.isSingleDayQuery() ? singleDayDate : startDate)
-                .endDate(dataset.isSingleDayQuery() ? null : endDate)
+                .dataId(lastQueryDataId)
+                .startDate(lastQueryStartDate)
+                .endDate(lastQueryEndDate)
                 .build()));
     }
 
     private void queryDatalist() {
+        clearLastSqlWritableResult();
         runApiTask(null, () -> newClient().queryDatalist(selectedDataset()));
     }
 
     private void queryTranslation() {
+        clearLastSqlWritableResult();
         runApiTask(null, () -> newClient().queryTranslation(selectedDataset()));
     }
 
@@ -316,9 +335,81 @@ public class FinMindApiDock extends JPanel {
                 setBusy(false);
                 try {
                     JsonNode root = get();
+                    if (dataset != null) {
+                        lastQueryRoot = root;
+                    }
                     renderJson(root, dataset);
                     updateUsageLabel(null);
                     maybeLoadKBarToChart(root, dataset);
+                } catch (Exception e) {
+                    showError(e);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void clearLastSqlWritableResult() {
+        lastQueryRoot = null;
+        lastQueryDataset = null;
+        lastQueryDataId = null;
+        lastQueryStartDate = null;
+        lastQueryEndDate = null;
+    }
+
+    private void writeLastResultToSql() {
+        if (lastQueryDataset == null || lastQueryRoot == null) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "請先查詢 FinMind API，再寫入 SQL。",
+                    "FinMind 寫入 SQL",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        JsonNode data = lastQueryRoot.has("data") ? lastQueryRoot.get("data") : lastQueryRoot;
+        if (data == null || !data.isArray() || data.isEmpty()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "目前查詢結果沒有可寫入的資料列。",
+                    "FinMind 寫入 SQL",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        setBusy(true);
+        notifyStatus("正在將 FinMind " + lastQueryDataset.apiName() + " 寫入 SQL...");
+        SwingWorker<MarketDataCollectorRepository.FinMindSqlWriteResult, Void> worker = new SwingWorker<>() {
+            @Override
+            protected MarketDataCollectorRepository.FinMindSqlWriteResult doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    return repository.writeFinMindDatasetRows(
+                            lastQueryDataset,
+                            lastQueryDataId,
+                            lastQueryStartDate,
+                            lastQueryEndDate,
+                            data);
+                }
+            }
+
+            @Override
+            protected void done() {
+                setBusy(false);
+                try {
+                    MarketDataCollectorRepository.FinMindSqlWriteResult result = get();
+                    String message = "FinMind 寫入 SQL 完成："
+                            + result.tableName()
+                            + " 原始 " + result.cachedRows()
+                            + " 筆，策略表 " + result.marketRows()
+                            + " 筆";
+                    notifyStatus(message);
+                    JOptionPane.showMessageDialog(
+                            FinMindApiDock.this,
+                            message,
+                            "FinMind 寫入 SQL",
+                            JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception e) {
                     showError(e);
                 }

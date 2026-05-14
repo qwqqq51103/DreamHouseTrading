@@ -7,6 +7,7 @@ import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.finmind.FinMindAccessDeniedException;
 import com.dreamhouse.trading.core.finmind.FinMindQuotaExceededException;
+import com.dreamhouse.trading.core.scanner.MarketContextSnapshot;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import org.slf4j.Logger;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * 監控服務，負責批次掃描觀察清單並依排名觸發交易信號。
@@ -54,6 +56,8 @@ public class SignalMonitorService {
     private BiConsumer<String, DecisionResult> onSignalDetected;
     private Consumer<String> onStatusUpdate;
     private Consumer<List<MarketScanResult>> onScanResults;
+    private Consumer<MarketContextSnapshot> onMarketContextUpdate;
+    private Function<Collection<String>, MarketContextSnapshot> marketContextProvider;
 
     public SignalMonitorService(MarketDataFeed dataFeed, SignalMonitorConfig config, DecisionConfig decisionConfig) {
         this.dataFeed = dataFeed;
@@ -130,11 +134,14 @@ public class SignalMonitorService {
         int round = roundCounter.incrementAndGet();
         notifyStatus(String.format("第 %d 輪掃描開始", round));
 
+        MarketContextSnapshot marketContext = buildMarketContext();
+        notifyMarketContext(marketContext);
+
         List<MarketScanResult> results = new ArrayList<>();
         boolean scanPaused = false;
         for (String symbol : monitoredSymbols) {
             try {
-                MarketScanResult bestResult = findBestRadarCandidate(symbol);
+                MarketScanResult bestResult = findBestRadarCandidate(symbol, marketContext);
                 if (bestResult != null) {
                     results.add(bestResult);
                 }
@@ -175,10 +182,10 @@ public class SignalMonitorService {
                 round, results.size(), signalCount));
     }
 
-    private MarketScanResult findBestRadarCandidate(String symbol) {
+    private MarketScanResult findBestRadarCandidate(String symbol, MarketContextSnapshot marketContext) {
         MarketScanResult best = null;
         for (TradeMode mode : RADAR_MODES) {
-            MarketScanResult candidate = scannerService.scan(symbol, createScanRequest(mode));
+            MarketScanResult candidate = scannerService.scan(symbol, createScanRequest(mode, marketContext));
             if (candidate == null) {
                 continue;
             }
@@ -201,13 +208,26 @@ public class SignalMonitorService {
         return Double.compare(left.getConfidence(), right.getConfidence());
     }
 
-    private MarketScannerService.ScanRequest createScanRequest(TradeMode mode) {
+    private MarketScannerService.ScanRequest createScanRequest(TradeMode mode, MarketContextSnapshot marketContext) {
         return MarketScannerService.ScanRequest.createDefault()
                 .tradeMode(mode)
                 .timeframe(resolveTimeframe(mode))
                 .barCount(resolveBarCount(mode))
                 .decisionConfig(decisionConfig)
-                .radarStrategyConfig(config.getRadarStrategyConfig());
+                .radarStrategyConfig(config.getRadarStrategyConfig())
+                .marketContext(marketContext);
+    }
+
+    private MarketContextSnapshot buildMarketContext() {
+        if (marketContextProvider == null) {
+            return null;
+        }
+        try {
+            return marketContextProvider.apply(List.copyOf(monitoredSymbols));
+        } catch (Exception e) {
+            logger.warn("Failed to build market context: {}", e.getMessage());
+            return MarketContextSnapshot.empty("市場脈絡建立失敗：" + e.getMessage());
+        }
     }
 
     private Timeframe resolveTimeframe(TradeMode mode) {
@@ -276,6 +296,17 @@ public class SignalMonitorService {
         }
     }
 
+    private void notifyMarketContext(MarketContextSnapshot snapshot) {
+        if (snapshot == null || onMarketContextUpdate == null) {
+            return;
+        }
+        try {
+            onMarketContextUpdate.accept(snapshot);
+        } catch (Exception e) {
+            logger.error("Market context callback failed", e);
+        }
+    }
+
     public void setOnSignalDetected(BiConsumer<String, DecisionResult> onSignalDetected) {
         this.onSignalDetected = onSignalDetected;
     }
@@ -286,6 +317,14 @@ public class SignalMonitorService {
 
     public void setOnScanResults(Consumer<List<MarketScanResult>> onScanResults) {
         this.onScanResults = onScanResults;
+    }
+
+    public void setOnMarketContextUpdate(Consumer<MarketContextSnapshot> onMarketContextUpdate) {
+        this.onMarketContextUpdate = onMarketContextUpdate;
+    }
+
+    public void setMarketContextProvider(Function<Collection<String>, MarketContextSnapshot> marketContextProvider) {
+        this.marketContextProvider = marketContextProvider;
     }
 
     public boolean isRunning() {

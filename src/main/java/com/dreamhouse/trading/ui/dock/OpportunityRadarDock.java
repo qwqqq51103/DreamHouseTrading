@@ -35,7 +35,7 @@ public class OpportunityRadarDock extends JPanel {
     private final RadarTableModel tableModel = new RadarTableModel();
     private final JTable table = new JTable(tableModel);
     private final JComboBox<TradeModeFilter> modeFilter = new JComboBox<>(TradeModeFilter.values());
-    private final JLabel updateStatus = new JLabel("尚未掃描");
+    private final JLabel updateStatus = new JLabel("等待掃描");
 
     private Consumer<String> onSymbolSelected;
 
@@ -54,6 +54,7 @@ public class OpportunityRadarDock extends JPanel {
 
         table.setFillsViewportHeight(true);
         table.setRowHeight(26);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setAutoCreateRowSorter(true);
         table.setDefaultRenderer(Object.class, new RadarCellRenderer());
         table.addMouseListener(new java.awt.event.MouseAdapter() {
@@ -85,7 +86,7 @@ public class OpportunityRadarDock extends JPanel {
         if (SwingUtilities.isEventDispatchThread()) {
             resultsBySymbol.clear();
             tableModel.refresh();
-            updateStatus.setText("尚未掃描觀察清單");
+            updateStatus.setText("掃描結果已清空");
         } else {
             SwingUtilities.invokeLater(this::clearResults);
         }
@@ -143,7 +144,7 @@ public class OpportunityRadarDock extends JPanel {
 
     private enum TradeModeFilter {
         ALL("全部", null),
-        DAY_TRADE("日內", TradeMode.DAY_TRADE),
+        DAY_TRADE("當沖", TradeMode.DAY_TRADE),
         SHORT_SWING("短波段", TradeMode.SHORT_SWING),
         SWING_TRADE("波段", TradeMode.SWING_TRADE);
 
@@ -167,8 +168,10 @@ public class OpportunityRadarDock extends JPanel {
 
     private class RadarTableModel extends AbstractTableModel {
         private final String[] columns = {
-                "排名", "代碼", "中文名稱", "模式", "分數", "動作", "信心",
-                "風報比", "停損", "停利", "訊號摘要", "阻擋原因", "原因", "掃描時間"
+                "排名", "代碼", "中文", "模式", "分數", "動作", "信心", "RR",
+                "市場", "大盤", "強大盤%", "族群", "族群強度", "強族群%",
+                "VWAP", "VWAP斜率%", "量能延續", "ATR停損", "ATR停利",
+                "訊號", "阻擋原因", "理由", "掃描時間"
         };
         private List<MarketScanResult> rows = new ArrayList<>();
 
@@ -209,12 +212,21 @@ public class OpportunityRadarDock extends JPanel {
                 case 5 -> decision != null ? decision.getAction().getDisplayName() : "";
                 case 6 -> result.getConfidence();
                 case 7 -> result.getRiskRewardRatio();
-                case 8 -> result.getSuggestedStopLoss();
-                case 9 -> result.getSuggestedTakeProfit();
-                case 10 -> result.getRawSignalSummary();
-                case 11 -> result.getBlockReason();
-                case 12 -> result.getReason();
-                case 13 -> result.getScannedAt() != null ? result.getScannedAt().format(TIME_FMT) : "";
+                case 8 -> result.getMarketRegime() != null ? result.getMarketRegime().getDisplayName() : "";
+                case 9 -> result.getBenchmarkSymbol();
+                case 10 -> result.getRelativeToBenchmarkPercent();
+                case 11 -> result.getIndustry();
+                case 12 -> result.getIndustryStrength();
+                case 13 -> result.getRelativeToIndustryPercent();
+                case 14 -> result.getVwap();
+                case 15 -> result.getVwapSlopePercent();
+                case 16 -> Boolean.TRUE.equals(result.getVolumeSustain()) ? "是" : "否";
+                case 17 -> result.getAtrStopLoss();
+                case 18 -> result.getAtrTakeProfit();
+                case 19 -> result.getRawSignalSummary();
+                case 20 -> result.getBlockReason();
+                case 21 -> result.getReason();
+                case 22 -> result.getScannedAt() != null ? result.getScannedAt().format(TIME_FMT) : "";
                 default -> "";
             };
         }
@@ -223,7 +235,7 @@ public class OpportunityRadarDock extends JPanel {
         public Class<?> getColumnClass(int columnIndex) {
             return switch (columnIndex) {
                 case 0 -> Integer.class;
-                case 4, 6 -> Double.class;
+                case 4, 6, 7, 10, 12, 13, 14, 15, 17, 18 -> Double.class;
                 default -> Object.class;
             };
         }
@@ -231,15 +243,18 @@ public class OpportunityRadarDock extends JPanel {
 
     private static class RadarCellRenderer extends DefaultTableCellRenderer {
         private final DecimalFormat percentFmt = new DecimalFormat("0.0%");
+        private final DecimalFormat pctPointFmt = new DecimalFormat("0.00");
         private final DecimalFormat numberFmt = new DecimalFormat("0.00");
 
         @Override
         public Component getTableCellRendererComponent(
                 JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            if ((column == 4 || column == 6) && value instanceof Double number) {
+            if ((column == 4 || column == 6 || column == 12) && value instanceof Double number) {
                 setText(percentFmt.format(number));
-            } else if ((column == 7 || column == 8 || column == 9) && value instanceof Double number) {
+            } else if ((column == 10 || column == 13 || column == 15) && value instanceof Double number) {
+                setText(pctPointFmt.format(number));
+            } else if ((column == 7 || column == 14 || column == 17 || column == 18) && value instanceof Double number) {
                 setText(number > 0 ? numberFmt.format(number) : "--");
             } else if (value == null || value.toString().isBlank()) {
                 setText("--");
@@ -248,10 +263,10 @@ public class OpportunityRadarDock extends JPanel {
             if (!isSelected) {
                 setForeground(table.getForeground());
                 if (column == 5 && value != null) {
-                    String text = value.toString();
-                    if (text.contains("買") || text.toUpperCase().contains("LONG")) {
+                    String text = value.toString().toUpperCase();
+                    if (text.contains("LONG") || text.contains("開多")) {
                         setForeground(new Color(0, 150, 70));
-                    } else if (text.contains("賣") || text.toUpperCase().contains("SHORT")) {
+                    } else if (text.contains("SHORT") || text.contains("放空")) {
                         setForeground(new Color(190, 50, 50));
                     }
                 }

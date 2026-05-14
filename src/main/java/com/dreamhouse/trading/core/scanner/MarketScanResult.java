@@ -22,6 +22,17 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
     private final Double riskRewardRatio;
     private final String rawSignalSummary;
     private final String blockReason;
+    private final MarketRegime marketRegime;
+    private final String benchmarkSymbol;
+    private final Double relativeToBenchmarkPercent;
+    private final String industry;
+    private final Double industryStrength;
+    private final Double relativeToIndustryPercent;
+    private final Double vwap;
+    private final Double vwapSlopePercent;
+    private final Boolean volumeSustain;
+    private final Double atrStopLoss;
+    private final Double atrTakeProfit;
     private final LocalDateTime scannedAt;
 
     private MarketScanResult(Builder builder) {
@@ -37,6 +48,17 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         this.riskRewardRatio = builder.riskRewardRatio;
         this.rawSignalSummary = builder.rawSignalSummary;
         this.blockReason = builder.blockReason;
+        this.marketRegime = builder.marketRegime;
+        this.benchmarkSymbol = builder.benchmarkSymbol;
+        this.relativeToBenchmarkPercent = builder.relativeToBenchmarkPercent;
+        this.industry = builder.industry;
+        this.industryStrength = builder.industryStrength;
+        this.relativeToIndustryPercent = builder.relativeToIndustryPercent;
+        this.vwap = builder.vwap;
+        this.vwapSlopePercent = builder.vwapSlopePercent;
+        this.volumeSustain = builder.volumeSustain;
+        this.atrStopLoss = builder.atrStopLoss;
+        this.atrTakeProfit = builder.atrTakeProfit;
         this.scannedAt = builder.scannedAt;
     }
 
@@ -92,6 +114,50 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         return blockReason;
     }
 
+    public MarketRegime getMarketRegime() {
+        return marketRegime;
+    }
+
+    public String getBenchmarkSymbol() {
+        return benchmarkSymbol;
+    }
+
+    public Double getRelativeToBenchmarkPercent() {
+        return relativeToBenchmarkPercent;
+    }
+
+    public String getIndustry() {
+        return industry;
+    }
+
+    public Double getIndustryStrength() {
+        return industryStrength;
+    }
+
+    public Double getRelativeToIndustryPercent() {
+        return relativeToIndustryPercent;
+    }
+
+    public Double getVwap() {
+        return vwap;
+    }
+
+    public Double getVwapSlopePercent() {
+        return vwapSlopePercent;
+    }
+
+    public Boolean getVolumeSustain() {
+        return volumeSustain;
+    }
+
+    public Double getAtrStopLoss() {
+        return atrStopLoss;
+    }
+
+    public Double getAtrTakeProfit() {
+        return atrTakeProfit;
+    }
+
     public LocalDateTime getScannedAt() {
         return scannedAt;
     }
@@ -118,6 +184,17 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         private Double riskRewardRatio;
         private String rawSignalSummary = "";
         private String blockReason = "";
+        private MarketRegime marketRegime;
+        private String benchmarkSymbol = "";
+        private Double relativeToBenchmarkPercent;
+        private String industry = "";
+        private Double industryStrength;
+        private Double relativeToIndustryPercent;
+        private Double vwap;
+        private Double vwapSlopePercent;
+        private Boolean volumeSustain;
+        private Double atrStopLoss;
+        private Double atrTakeProfit;
         private LocalDateTime scannedAt = LocalDateTime.now();
 
         private Builder(String symbol) {
@@ -184,6 +261,32 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
 
         public Builder blockReason(String blockReason) {
             this.blockReason = blockReason != null ? blockReason : "";
+            return this;
+        }
+
+        public Builder marketContext(MarketContextSnapshot snapshot, SymbolMarketContext context) {
+            if (snapshot != null) {
+                this.marketRegime = snapshot.regime();
+            }
+            if (context != null) {
+                this.benchmarkSymbol = context.benchmarkSymbol();
+                this.relativeToBenchmarkPercent = context.relativeToBenchmarkPercent();
+                this.industry = context.industry();
+                this.relativeToIndustryPercent = context.relativeToIndustryPercent();
+                this.vwap = context.vwap();
+                this.vwapSlopePercent = context.vwapSlopePercent();
+                this.volumeSustain = context.volumeSustain();
+                if (snapshot != null && context.industry() != null) {
+                    IndustryStrength strength = snapshot.industries().get(context.industry());
+                    this.industryStrength = strength != null ? strength.score() : null;
+                }
+            }
+            return this;
+        }
+
+        public Builder atrLevels(Double stopLoss, Double takeProfit) {
+            this.atrStopLoss = stopLoss;
+            this.atrTakeProfit = takeProfit;
             return this;
         }
 

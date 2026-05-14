@@ -38,6 +38,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -81,9 +82,15 @@ public class MarketScannerService {
                 : profile.timeframe();
 
         try {
-            List<Bar> bars = normalizeBars(
-                    dataFeed.fetchHistoricalBars(symbol, timeframe, effectiveRequest.getBarCount()),
-                    effectiveRequest.getBarCount());
+            MarketContextSnapshot marketContext = effectiveRequest.getMarketContext();
+            SymbolMarketContext symbolContext = marketContext != null ? marketContext.symbolContext(symbol) : null;
+            List<Bar> preloadedBars = marketContext != null && effectiveRequest.isUseMarketContextBars()
+                    ? marketContext.barsFor(symbol)
+                    : List.of();
+            List<Bar> sourceBars = preloadedBars.isEmpty()
+                    ? dataFeed.fetchHistoricalBars(symbol, timeframe, effectiveRequest.getBarCount())
+                    : preloadedBars;
+            List<Bar> bars = normalizeBars(sourceBars, effectiveRequest.getBarCount());
             bars = removeIncompleteLastBar(bars, timeframe);
 
             if (bars.size() < 2) {
@@ -109,14 +116,20 @@ public class MarketScannerService {
             decisionEngine.setStrategySignals(signals);
 
             DecisionResult decision = decisionEngine.onBar(toTa4jBar(lastBar, timeframe));
+            AtrLevels atrLevels = resolveAtrLevels(bars, effectiveRequest.getRadarStrategyConfig(), effectiveRequest.getTradeMode());
+            if (atrLevels != null && decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
+                decision = withAtrLevels(decision, atrLevels);
+            }
             Double riskReward = resolveRiskReward(lastBar.getClose(), decision);
-            String rawSignalSummary = summarizeSignals(signals);
+            String rawSignalSummary = appendMarketContextSummary(summarizeSignals(signals), marketContext, symbolContext, atrLevels);
             String entryBlockReason = resolveEntryQualityBlockReason(
                     decision,
                     signals,
                     bars,
                     effectiveRequest.getRadarStrategyConfig(),
-                    effectiveRequest.getTradeMode());
+                    effectiveRequest.getTradeMode(),
+                    marketContext,
+                    symbolContext);
             if (entryBlockReason != null) {
                 DecisionResult blockedDecision = new DecisionResult.Builder()
                         .symbol(symbol)
@@ -133,6 +146,9 @@ public class MarketScannerService {
                         .riskRewardRatio(riskReward)
                         .rawSignalSummary(rawSignalSummary)
                         .blockReason(entryBlockReason)
+                        .marketContext(marketContext, symbolContext)
+                        .atrLevels(atrLevels != null ? atrLevels.stopLoss() : null,
+                                atrLevels != null ? atrLevels.takeProfit() : null)
                         .build();
             }
 
@@ -143,6 +159,9 @@ public class MarketScannerService {
                     .riskRewardRatio(riskReward)
                     .rawSignalSummary(rawSignalSummary)
                     .blockReason(resolveBlockReason(decision))
+                    .marketContext(marketContext, symbolContext)
+                    .atrLevels(atrLevels != null ? atrLevels.stopLoss() : null,
+                            atrLevels != null ? atrLevels.takeProfit() : null)
                     .build();
         } catch (UnsupportedOperationException e) {
             logger.warn("{} does not support synchronous bar scans: {}", symbol, e.getMessage());
@@ -310,7 +329,9 @@ public class MarketScannerService {
             List<IStrategySignal> signals,
             List<Bar> bars,
             RadarStrategyConfig config,
-            TradeMode mode) {
+            TradeMode mode,
+            MarketContextSnapshot marketContext,
+            SymbolMarketContext symbolContext) {
         RadarStrategyConfig effectiveConfig = (config != null ? config : RadarStrategyConfig.createDefault())
                 .copyForMode(mode);
         if (decision == null || decision.getAction() != DecisionResult.Action.OPEN_LONG) {
@@ -372,6 +393,23 @@ public class MarketScannerService {
             String vwapBlockReason = resolveVwapBlockReason(bars);
             if (vwapBlockReason != null) {
                 return vwapBlockReason;
+            }
+        }
+        String marketContextBlockReason = resolveMarketContextBlockReason(
+                effectiveConfig,
+                marketContext,
+                symbolContext);
+        if (marketContextBlockReason != null) {
+            return marketContextBlockReason;
+        }
+        if (effectiveConfig.isVolumeSustainEnabled()
+                && (symbolContext == null || !symbolContext.volumeSustain())) {
+            return "量能延續不足：最近 K 線沒有維持放量與突破後價格結構";
+        }
+        if (effectiveConfig.isAtrRiskEnabled()) {
+            String atrChaseBlockReason = resolveAtrChaseBlockReason(bars, effectiveConfig);
+            if (atrChaseBlockReason != null) {
+                return atrChaseBlockReason;
             }
         }
 
@@ -492,6 +530,182 @@ public class MarketScannerService {
         return null;
     }
 
+    private String resolveMarketContextBlockReason(
+            RadarStrategyConfig config,
+            MarketContextSnapshot snapshot,
+            SymbolMarketContext context) {
+        if (snapshot == null || !config.isMarketRegimeFilterEnabled()) {
+            return null;
+        }
+        if (snapshot.regime() == MarketRegime.DATA_MISSING) {
+            return snapshot.status();
+        }
+        if (context == null) {
+            return "市場脈絡不足：找不到個股的大盤/族群/VWAP 資料";
+        }
+        if (snapshot.regime() == MarketRegime.WEAK && config.isWeakMarketStrictLongEnabled()) {
+            if (context.close() <= context.vwap()) {
+                return "弱勢盤禁止開多：個股未站上自身 VWAP";
+            }
+            if (context.vwapSlopePercent() <= 0.0) {
+                return "弱勢盤禁止開多：VWAP 斜率未向上";
+            }
+            if (context.relativeToBenchmarkPercent() < config.getWeakOutperformBenchmarkPercent()) {
+                return String.format(Locale.US,
+                        "弱勢盤禁止開多：強於大盤 %.2f%%，未達 %.2f%%",
+                        context.relativeToBenchmarkPercent(),
+                        config.getWeakOutperformBenchmarkPercent());
+            }
+            if (context.relativeToIndustryPercent() < config.getWeakOutperformIndustryPercent()) {
+                return String.format(Locale.US,
+                        "弱勢盤禁止開多：強於族群 %.2f%%，未達 %.2f%%",
+                        context.relativeToIndustryPercent(),
+                        config.getWeakOutperformIndustryPercent());
+            }
+            return null;
+        }
+        if (snapshot.regime() == MarketRegime.RANGE && config.isRangeMarketRequiresVwapAndVolume()) {
+            if (context.close() <= context.vwap()) {
+                return "震盪盤提高門檻：個股未站上 VWAP";
+            }
+            if (context.vwapSlopePercent() <= 0.0) {
+                return "震盪盤提高門檻：VWAP 斜率未向上";
+            }
+            if (!context.volumeSustain()) {
+                return "震盪盤提高門檻：量能延續不足";
+            }
+        }
+        return null;
+    }
+
+    private String resolveAtrChaseBlockReason(List<Bar> bars, RadarStrategyConfig config) {
+        AtrLevels atr = resolveAtrLevels(bars, config, TradeMode.DAY_TRADE);
+        if (atr == null || atr.atr() <= 0.0 || bars == null || bars.isEmpty()) {
+            return null;
+        }
+        int lookback = Math.max(5, config.getBreakoutLookbackBars());
+        int start = Math.max(0, bars.size() - lookback);
+        double recentLow = Double.POSITIVE_INFINITY;
+        for (int i = start; i < bars.size(); i++) {
+            Bar bar = bars.get(i);
+            if (bar != null) {
+                recentLow = Math.min(recentLow, bar.getLow());
+            }
+        }
+        if (recentLow <= 0.0 || recentLow == Double.POSITIVE_INFINITY) {
+            return null;
+        }
+        Bar current = bars.get(bars.size() - 1);
+        double riseFromLow = current.getClose() - recentLow;
+        double limit = atr.atr() * config.getAtrChaseLimitMultiplier();
+        if (riseFromLow > limit) {
+            return String.format(Locale.US,
+                    "ATR 追高限制：距近期低點 %.2f，超過 ATR %.2f x %.2f",
+                    riseFromLow,
+                    atr.atr(),
+                    config.getAtrChaseLimitMultiplier());
+        }
+        return null;
+    }
+
+    private AtrLevels resolveAtrLevels(List<Bar> bars, RadarStrategyConfig config, TradeMode mode) {
+        RadarStrategyConfig effectiveConfig = (config != null ? config : RadarStrategyConfig.createDefault())
+                .copyForMode(mode);
+        if (!effectiveConfig.isAtrRiskEnabled() || bars == null || bars.size() < effectiveConfig.getAtrPeriod() + 1) {
+            return null;
+        }
+        double atr = calculateAtr(bars, effectiveConfig.getAtrPeriod());
+        if (atr <= 0.0) {
+            return null;
+        }
+        Bar current = bars.get(bars.size() - 1);
+        double stopLoss = current.getClose() - atr * effectiveConfig.getAtrStopMultiplier();
+        double takeProfit = current.getClose() + atr * effectiveConfig.getAtrTakeProfitMultiplier();
+        return new AtrLevels(atr, current.getClose(), stopLoss, takeProfit);
+    }
+
+    private double calculateAtr(List<Bar> bars, int period) {
+        if (bars == null || bars.size() < period + 1) {
+            return 0.0;
+        }
+        int start = Math.max(1, bars.size() - period);
+        double total = 0.0;
+        int count = 0;
+        for (int i = start; i < bars.size(); i++) {
+            Bar current = bars.get(i);
+            Bar previous = bars.get(i - 1);
+            if (current == null || previous == null) {
+                continue;
+            }
+            double highLow = current.getHigh() - current.getLow();
+            double highPrevClose = Math.abs(current.getHigh() - previous.getClose());
+            double lowPrevClose = Math.abs(current.getLow() - previous.getClose());
+            total += Math.max(highLow, Math.max(highPrevClose, lowPrevClose));
+            count++;
+        }
+        return count > 0 ? total / count : 0.0;
+    }
+
+    private DecisionResult withAtrLevels(DecisionResult decision, AtrLevels atrLevels) {
+        if (decision == null || atrLevels == null) {
+            return decision;
+        }
+        double risk = atrLevels.entryPrice() - atrLevels.stopLoss();
+        double reward = atrLevels.takeProfit() - atrLevels.entryPrice();
+        Double rr = risk > 0.0 ? reward / risk : decision.getRiskRewardRatio();
+        String reason = decision.getReason();
+        String atrText = String.format(Locale.US,
+                "ATR風控: ATR=%.2f, stop=%.2f, take=%.2f",
+                atrLevels.atr(),
+                atrLevels.stopLoss(),
+                atrLevels.takeProfit());
+        return new DecisionResult.Builder()
+                .symbol(decision.getSymbol())
+                .tradeMode(decision.getTradeMode())
+                .action(decision.getAction())
+                .source(decision.getSource())
+                .reason((reason != null && !reason.isBlank()) ? reason + " | " + atrText : atrText)
+                .timestamp(decision.getTimestamp())
+                .orderType(decision.getOrderType())
+                .orderSide(decision.getOrderSide())
+                .suggestedStopLoss(atrLevels.stopLoss())
+                .suggestedTakeProfit(atrLevels.takeProfit())
+                .suggestedQuantity(decision.getSuggestedQuantity())
+                .riskRewardRatio(rr)
+                .regimeAnalysis(decision.getRegimeAnalysis())
+                .trendAnalysis(decision.getTrendAnalysis())
+                .votingResult(decision.getVotingResult())
+                .riskViolation(decision.getRiskViolation())
+                .confidence(decision.getConfidence())
+                .build();
+    }
+
+    private String appendMarketContextSummary(
+            String rawSignalSummary,
+            MarketContextSnapshot snapshot,
+            SymbolMarketContext context,
+            AtrLevels atrLevels) {
+        String base = rawSignalSummary != null ? rawSignalSummary : "";
+        List<String> parts = new ArrayList<>();
+        if (snapshot != null && snapshot.regime() != null) {
+            parts.add("Regime:" + snapshot.regime().name());
+        }
+        if (context != null) {
+            parts.add(String.format(Locale.US, "VWAP %.2f slope %.3f%%", context.vwap(), context.vwapSlopePercent()));
+            parts.add(String.format(Locale.US, "RelIndex %.2f%%", context.relativeToBenchmarkPercent()));
+            parts.add(String.format(Locale.US, "Industry %s Rel %.2f%%", context.industry(), context.relativeToIndustryPercent()));
+            parts.add("VolumeSustain:" + (context.volumeSustain() ? "Y" : "N"));
+        }
+        if (atrLevels != null) {
+            parts.add(String.format(Locale.US, "ATR %.2f stop %.2f take %.2f",
+                    atrLevels.atr(), atrLevels.stopLoss(), atrLevels.takeProfit()));
+        }
+        if (parts.isEmpty()) {
+            return base;
+        }
+        return base.isBlank() ? String.join(" | ", parts) : base + " | " + String.join(" | ", parts);
+    }
+
     private String resolveBreakoutContinuationBlockReason(List<Bar> bars) {
         if (bars == null || bars.size() < 2) {
             return "量能突破缺少足夠 K 線確認價格延續，略過";
@@ -585,6 +799,9 @@ public class MarketScannerService {
     private record StrategyProfile(DecisionConfig decisionConfig, Timeframe timeframe) {
     }
 
+    private record AtrLevels(double atr, double entryPrice, double stopLoss, double takeProfit) {
+    }
+
     public static class ScanRequest {
         private Timeframe timeframe;
         private int barCount = 160;
@@ -592,6 +809,8 @@ public class MarketScannerService {
         private DecisionConfig decisionConfig;
         private RadarStrategyConfig radarStrategyConfig = RadarStrategyConfig.createDefault();
         private double initialCapital = 100000.0;
+        private MarketContextSnapshot marketContext;
+        private boolean useMarketContextBars = true;
 
         public static ScanRequest createDefault() {
             return new ScanRequest();
@@ -639,6 +858,24 @@ public class MarketScannerService {
 
         public ScanRequest radarStrategyConfig(RadarStrategyConfig radarStrategyConfig) {
             this.radarStrategyConfig = radarStrategyConfig != null ? radarStrategyConfig : RadarStrategyConfig.createDefault();
+            return this;
+        }
+
+        public MarketContextSnapshot getMarketContext() {
+            return marketContext;
+        }
+
+        public ScanRequest marketContext(MarketContextSnapshot marketContext) {
+            this.marketContext = marketContext;
+            return this;
+        }
+
+        public boolean isUseMarketContextBars() {
+            return useMarketContextBars;
+        }
+
+        public ScanRequest useMarketContextBars(boolean useMarketContextBars) {
+            this.useMarketContextBars = useMarketContextBars;
             return this;
         }
 
