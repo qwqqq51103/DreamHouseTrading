@@ -35,6 +35,7 @@ public class BacktestResult {
     // 詳細記錄
     private final List<Trade> trades;
     private final List<PortfolioSnapshot> snapshots;
+    private final List<SignalObservation> signalObservations;
     
     /**
      * 構造函數
@@ -45,6 +46,7 @@ public class BacktestResult {
         this.initialCapital = initialCapital;
         this.trades = new ArrayList<>();
         this.snapshots = new ArrayList<>();
+        this.signalObservations = new ArrayList<>();
     }
     
     /**
@@ -60,6 +62,12 @@ public class BacktestResult {
     public void addSnapshot(LocalDateTime timestamp, double totalValue, double cash, 
                            double positionValue, int positionCount) {
         snapshots.add(new PortfolioSnapshot(timestamp, totalValue, cash, positionValue, positionCount));
+    }
+
+    public void addSignalObservation(SignalObservation observation) {
+        if (observation != null) {
+            signalObservations.add(observation);
+        }
     }
     
     /**
@@ -270,4 +278,27 @@ public class BacktestResult {
     public double getProfitFactor() { return profitFactor; }
     public List<Trade> getTrades() { return new ArrayList<>(trades); }
     public List<PortfolioSnapshot> getSnapshots() { return new ArrayList<>(snapshots); }
+    public List<SignalObservation> getSignalObservations() { return new ArrayList<>(signalObservations); }
+
+    public record SignalObservation(
+            String symbol,
+            LocalDateTime timestamp,
+            String action,
+            boolean blocked,
+            String reason,
+            double score,
+            String marketDecision,
+            String marketRegime,
+            String internalMarketState,
+            String industry,
+            Double watchlistRankPercent,
+            Double vwap,
+            Double vwapSlopePercent,
+            Boolean volumeSustain,
+            Double relativeToBenchmarkPercent,
+            Double relativeToIndustryPercent,
+            double maxFavorablePercent,
+            double maxAdversePercent,
+            double closeReturnPercent) {
+    }
 }

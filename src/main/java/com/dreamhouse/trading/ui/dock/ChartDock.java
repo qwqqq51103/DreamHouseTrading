@@ -509,6 +509,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
     
     @Override
     public void onTick(Tick tick) {
+        if (!isTickForCurrentSymbol(tick)) {
+            return;
+        }
         SwingUtilities.invokeLater(() -> {
             LocalDateTime now = tick.getTimestamp();
             LocalDateTime normalizedNow = now.withSecond(0).withNano(0);
@@ -563,6 +566,20 @@ public class ChartDock extends JPanel implements MarketDataListener {
             // ⭐ 更新觀察清單的即時數據
             updateWatchlist();
         });
+    }
+
+    private boolean isTickForCurrentSymbol(Tick tick) {
+        if (tick == null) {
+            return false;
+        }
+        String tickSymbol = tick.getSymbol();
+        if (tickSymbol == null || tickSymbol.isBlank()) {
+            return true;
+        }
+        if (currentSymbol == null || currentSymbol.isBlank()) {
+            return true;
+        }
+        return StockNameResolver.normalize(currentSymbol).equals(StockNameResolver.normalize(tickSymbol));
     }
     
     @Override

@@ -138,12 +138,21 @@ public class FinMindClient implements FinMindGateway {
     private JsonNode queryTaiwanStockTradingDailyReport(FinMindRequest request) {
         Map<String, String> params = new LinkedHashMap<>();
         String brokerId = request.getExtraParams().get("securities_trader_id");
+        String dataId = normalizeTaiwanStockId(request.getDataId());
         if (brokerId != null && !brokerId.isBlank()) {
             putIfPresent(params, "securities_trader_id", brokerId.trim());
-        } else {
-            putIfPresent(params, "data_id", normalizeTaiwanStockId(request.getDataId()));
+            putIfPresent(params, "date", formatDate(singleRequestDate(request)));
+            return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report", params);
         }
+        if (!dataId.isBlank()) {
+            putIfPresent(params, "data_id", dataId);
+            putIfPresent(params, "date", formatDate(singleRequestDate(request)));
+            return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report", params);
+        }
+
+        putIfPresent(params, "data_id", dataId);
         putIfPresent(params, "date", formatDate(singleRequestDate(request)));
+        putIfPresent(params, "use_async", request.getExtraParams().get("use_async"));
         return sendGet(API_BASE_URL + "/taiwan_stock_trading_daily_report", params);
     }
 

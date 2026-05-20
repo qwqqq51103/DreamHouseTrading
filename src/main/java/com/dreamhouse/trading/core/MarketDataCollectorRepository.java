@@ -340,6 +340,101 @@ public class MarketDataCollectorRepository implements AutoCloseable {
         return new FinMindSqlWriteResult(tableName, rawRows, cachedRows, marketRows);
     }
 
+    public List<JsonNode> readFinMindDatasetRows(FinMindDataset dataset, LocalDate date) throws SQLException {
+        if (connection == null || dataset == null || date == null) {
+            return List.of();
+        }
+        String tableName = finMindTableName(dataset);
+        if (!tableExists(tableName)) {
+            return List.of();
+        }
+        String sql = """
+                SELECT raw_json
+                FROM %s
+                WHERE row_date = ?
+                ORDER BY id ASC
+                """.formatted(tableName);
+        List<JsonNode> rows = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            setDate(statement, 1, date);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    try {
+                        rows.add(OBJECT_MAPPER.readTree(resultSet.getString("raw_json")));
+                    } catch (Exception e) {
+                        logger.debug("Failed to parse cached FinMind row from {}: {}", tableName, e.getMessage());
+                    }
+                }
+            }
+        }
+        return rows;
+    }
+
+    public List<JsonNode> readLatestFinMindDatasetRowsOnOrBefore(
+            FinMindDataset dataset,
+            LocalDate date,
+            int lookbackDays) throws SQLException {
+        return readLatestFinMindDatasetRowsOnOrBefore(dataset, date, lookbackDays, Set.of());
+    }
+
+    public List<JsonNode> readLatestFinMindDatasetRowsOnOrBefore(
+            FinMindDataset dataset,
+            LocalDate date,
+            int lookbackDays,
+            Collection<String> stockIds) throws SQLException {
+        if (connection == null || dataset == null || date == null) {
+            return List.of();
+        }
+        String tableName = finMindTableName(dataset);
+        if (!tableExists(tableName)) {
+            return List.of();
+        }
+        LocalDate startDate = date.minusDays(Math.max(1, lookbackDays));
+        List<String> normalizedStockIds = stockIds == null
+                ? List.of()
+                : stockIds.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(this::normalizeStockId)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+        String symbolFilter = normalizedStockIds.isEmpty()
+                ? ""
+                : " AND stock_id IN (" + "?,".repeat(normalizedStockIds.size()).replaceFirst(",$", "") + ")";
+        String sql = """
+                SELECT raw_json
+                FROM %s
+                WHERE row_date = (
+                    SELECT MAX(row_date)
+                    FROM %s
+                    WHERE row_date >= ? AND row_date <= ?%s
+                )%s
+                ORDER BY id ASC
+                """.formatted(tableName, tableName, symbolFilter, symbolFilter);
+        List<JsonNode> rows = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int parameterIndex = 1;
+            setDate(statement, parameterIndex++, startDate);
+            setDate(statement, parameterIndex++, date);
+            for (String stockId : normalizedStockIds) {
+                statement.setString(parameterIndex++, stockId);
+            }
+            for (String stockId : normalizedStockIds) {
+                statement.setString(parameterIndex++, stockId);
+            }
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    try {
+                        rows.add(OBJECT_MAPPER.readTree(resultSet.getString("raw_json")));
+                    } catch (Exception e) {
+                        logger.debug("Failed to parse cached FinMind row from {}: {}", tableName, e.getMessage());
+                    }
+                }
+            }
+        }
+        return rows;
+    }
+
     private int upsertFinMindRawRows(
             String tableName,
             FinMindDataset dataset,

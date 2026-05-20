@@ -108,6 +108,7 @@ public class PaperTradeAnalysisDock extends JPanel {
 
     private JScrollPane table(DefaultTableModel model, int... columnWeights) {
         JTable table = new JTable(model);
+        table.setAutoCreateRowSorter(true);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setFillsViewportHeight(true);
         table.setRowHeight(24);

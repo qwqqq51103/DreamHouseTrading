@@ -196,7 +196,32 @@ public class OpportunityRadarDock extends JPanel {
 
         @Override
         public String getColumnName(int column) {
-            return columns[column];
+            return switch (column) {
+                case 0 -> "排名";
+                case 1 -> "代碼";
+                case 2 -> "中文";
+                case 3 -> "模式";
+                case 4 -> "分數";
+                case 5 -> "動作";
+                case 6 -> "信心";
+                case 7 -> "RR";
+                case 8 -> "內部盤勢";
+                case 9 -> "比較基準";
+                case 10 -> "強於觀察清單%";
+                case 11 -> "分類來源";
+                case 12 -> "內部強度";
+                case 13 -> "強於內部平均%";
+                case 14 -> "VWAP";
+                case 15 -> "VWAP斜率%";
+                case 16 -> "量能延續";
+                case 17 -> "ATR停損";
+                case 18 -> "ATR停利";
+                case 19 -> "訊號摘要";
+                case 20 -> "阻擋原因";
+                case 21 -> "原因";
+                case 22 -> "掃描時間";
+                default -> columns[column];
+            };
         }
 
         @Override

@@ -110,7 +110,7 @@ class MarketDataCollectorFeedTest {
 
     @Test
     void closingAuctionTimeDoesNotCountAsCollectorFailureWindow() {
-        LocalDate today = LocalDate.now(TAIPEI_ZONE);
+        LocalDate today = LocalDate.of(2026, 5, 13);
 
         assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 24, 59))).isFalse();
         assertThat(MarketDataCollectorFeed.isClosingAuctionTime(today.atTime(13, 25))).isTrue();

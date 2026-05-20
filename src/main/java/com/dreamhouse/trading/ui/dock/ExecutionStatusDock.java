@@ -167,6 +167,7 @@ public class ExecutionStatusDock extends JPanel {
         });
 
         JTable tradeHistoryTable = new JTable(tableModel);
+        tradeHistoryTable.setAutoCreateRowSorter(true);
         tradeHistoryTable.setBackground(new Color(40, 40, 40));
         tradeHistoryTable.setForeground(Color.LIGHT_GRAY);
         tradeHistoryTable.setGridColor(new Color(60, 60, 60));

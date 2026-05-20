@@ -62,13 +62,10 @@ public class IndustryDistributionDock extends JPanel {
         industryTable.setFillsViewportHeight(true);
         industryTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         industryTable.setDefaultRenderer(Object.class, new IndustryRenderer());
-        industryTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                selectIndustryFromTable();
-            }
-        });
+        industryTable.setAutoCreateRowSorter(true);
 
         stockTable.setFillsViewportHeight(true);
+        stockTable.setAutoCreateRowSorter(true);
         stockTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         stockTable.setDefaultRenderer(Object.class, new StockRenderer());
 
@@ -87,6 +84,10 @@ public class IndustryDistributionDock extends JPanel {
         addIndustryButton.setToolTipText("將目前大類底下的股票加入觀察清單，並同步 MarketDataCollector symbols.properties");
         addIndustryButton.addActionListener(e -> addSelectedIndustry());
 
+        JButton addCheckedIndustriesButton = new JButton("加入勾選族群");
+        addCheckedIndustriesButton.setToolTipText("將上方勾選的多個產業大類全部加入觀察清單");
+        addCheckedIndustriesButton.addActionListener(e -> addCheckedIndustries());
+
         JButton removeIndustryButton = new JButton("刪除整個族群");
         removeIndustryButton.setToolTipText("從觀察清單與 MarketDataCollector symbols.properties 移除目前選取大類的股票");
         removeIndustryButton.addActionListener(e -> removeSelectedIndustry());
@@ -94,6 +95,7 @@ public class IndustryDistributionDock extends JPanel {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         buttonPanel.add(addSelectedButton);
         buttonPanel.add(addIndustryButton);
+        buttonPanel.add(addCheckedIndustriesButton);
         buttonPanel.add(removeIndustryButton);
         add(buttonPanel, BorderLayout.SOUTH);
 
@@ -263,14 +265,7 @@ public class IndustryDistributionDock extends JPanel {
     }
 
     private void selectIndustryFromTable() {
-        int selectedRow = industryTable.getSelectedRow();
-        if (selectedRow < 0) {
-            return;
-        }
-        IndustryStrength row = industryTableModel.getRow(industryTable.convertRowIndexToModel(selectedRow));
-        if (row != null && row.industry() != null && !row.industry().isBlank()) {
-            industryFilter.setSelectedItem(row.industry());
-        }
+        // Filtering is handled by the dropdown so users can freely multi-check industry rows.
     }
 
     private void addSelectedSymbols() {
@@ -299,6 +294,33 @@ public class IndustryDistributionDock extends JPanel {
         }
         if (onAddIndustrySymbols != null) {
             onAddIndustrySymbols.accept(industry);
+        }
+    }
+
+    private void addCheckedIndustries() {
+        Set<String> industries = industryTableModel.selectedIndustries();
+        if (industries.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "請先在上方產業大類表勾選一個或多個族群。", "產業選股", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        List<String> symbols = allStockRows.stream()
+                .filter(row -> industries.contains(row.industryGroup()))
+                .map(MarketDataCollectorRepository.IndustryStockInfo::symbol)
+                .filter(symbol -> symbol != null && !symbol.isBlank())
+                .distinct()
+                .toList();
+        if (symbols.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "勾選族群底下沒有可加入股票。", "產業選股", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "確定要加入 " + industries.size() + " 個族群，共 " + symbols.size() + " 檔股票？\n"
+                        + String.join(", ", industries),
+                "加入勾選族群",
+                JOptionPane.YES_NO_OPTION);
+        if (confirm == JOptionPane.YES_OPTION && onAddSymbols != null) {
+            onAddSymbols.accept(symbols);
         }
     }
 
@@ -333,6 +355,7 @@ public class IndustryDistributionDock extends JPanel {
 
     private static class IndustryTableModel extends AbstractTableModel {
         private final String[] columns = {
+                "選取",
                 "產業大類",
                 "平均漲跌%",
                 "相對大盤%",
@@ -344,15 +367,25 @@ public class IndustryDistributionDock extends JPanel {
                 "量能延續%",
                 "強度分數",
                 "來源"};
-        private List<IndustryStrength> rows = new ArrayList<>();
+        private final List<IndustryRow> rows = new ArrayList<>();
+        private final Set<String> selectedIndustryNames = new LinkedHashSet<>();
 
         void setRows(List<IndustryStrength> rows) {
-            this.rows = rows != null ? new ArrayList<>(rows) : new ArrayList<>();
+            this.rows.clear();
+            if (rows != null) {
+                for (IndustryStrength row : rows) {
+                    this.rows.add(new IndustryRow(row, selectedIndustryNames.contains(row.industry())));
+                }
+            }
             fireTableDataChanged();
         }
 
         IndustryStrength getRow(int row) {
-            return row >= 0 && row < rows.size() ? rows.get(row) : null;
+            return row >= 0 && row < rows.size() ? rows.get(row).strength : null;
+        }
+
+        Set<String> selectedIndustries() {
+            return new LinkedHashSet<>(selectedIndustryNames);
         }
 
         @Override
@@ -372,30 +405,64 @@ public class IndustryDistributionDock extends JPanel {
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            IndustryStrength row = rows.get(rowIndex);
+            IndustryRow item = rows.get(rowIndex);
+            IndustryStrength row = item.strength;
             return switch (columnIndex) {
-                case 0 -> row.industry();
-                case 1 -> row.averageReturnPercent();
-                case 2 -> row.relativeBenchmarkPercent();
-                case 3 -> row.averageVolume();
-                case 4 -> row.strongSymbolCount();
-                case 5 -> row.dataSymbolCount() + "/" + row.totalSymbolCount();
-                case 6 -> row.coveragePercent();
-                case 7 -> row.vwapPassPercent();
-                case 8 -> row.volumeSustainPercent();
-                case 9 -> row.score();
-                case 10 -> row.source();
+                case 0 -> item.selected;
+                case 1 -> row.industry();
+                case 2 -> row.averageReturnPercent();
+                case 3 -> row.relativeBenchmarkPercent();
+                case 4 -> row.averageVolume();
+                case 5 -> row.strongSymbolCount();
+                case 6 -> row.dataSymbolCount() + "/" + row.totalSymbolCount();
+                case 7 -> row.coveragePercent();
+                case 8 -> row.vwapPassPercent();
+                case 9 -> row.volumeSustainPercent();
+                case 10 -> row.score();
+                case 11 -> row.source();
                 default -> "";
             };
         }
 
         @Override
+        public void setValueAt(Object value, int rowIndex, int columnIndex) {
+            if (columnIndex == 0 && rowIndex >= 0 && rowIndex < rows.size()) {
+                IndustryRow row = rows.get(rowIndex);
+                row.selected = Boolean.TRUE.equals(value);
+                if (row.strength != null && row.strength.industry() != null && !row.strength.industry().isBlank()) {
+                    if (row.selected) {
+                        selectedIndustryNames.add(row.strength.industry());
+                    } else {
+                        selectedIndustryNames.remove(row.strength.industry());
+                    }
+                }
+                fireTableCellUpdated(rowIndex, columnIndex);
+            }
+        }
+
+        @Override
+        public boolean isCellEditable(int rowIndex, int columnIndex) {
+            return columnIndex == 0;
+        }
+
+        @Override
         public Class<?> getColumnClass(int columnIndex) {
             return switch (columnIndex) {
-                case 1, 2, 3, 6, 7, 8, 9 -> Double.class;
-                case 4 -> Integer.class;
+                case 0 -> Boolean.class;
+                case 2, 3, 4, 7, 8, 9, 10 -> Double.class;
+                case 5 -> Integer.class;
                 default -> Object.class;
             };
+        }
+    }
+
+    private static class IndustryRow {
+        private final IndustryStrength strength;
+        private boolean selected;
+
+        private IndustryRow(IndustryStrength strength, boolean selected) {
+            this.strength = strength;
+            this.selected = selected;
         }
     }
 
@@ -496,11 +563,11 @@ public class IndustryDistributionDock extends JPanel {
                 JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
             if (value instanceof Double number) {
-                if (column == 1 || column == 2 || column == 6 || column == 7 || column == 8) {
+                if (column == 2 || column == 3 || column == 7 || column == 8 || column == 9) {
                     setText(pctFmt.format(number) + "%");
-                } else if (column == 3) {
+                } else if (column == 4) {
                     setText(numberFmt.format(number));
-                } else if (column == 9) {
+                } else if (column == 10) {
                     setText(scoreFmt.format(number));
                 }
             }

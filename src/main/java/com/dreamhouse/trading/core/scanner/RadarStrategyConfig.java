@@ -38,17 +38,20 @@ public class RadarStrategyConfig {
     private double minimumEntryScore = 0.50;
     private boolean marketRegimeFilterEnabled = true;
     private boolean weakMarketStrictLongEnabled = true;
+    private WeakMarketLongPolicy weakMarketLongPolicy = WeakMarketLongPolicy.BLOCK_ALL;
     private double weakOutperformBenchmarkPercent = 0.30;
     private double weakOutperformIndustryPercent = 0.20;
     private boolean rangeMarketRequiresVwapAndVolume = true;
     private boolean volumeSustainEnabled = false;
     private boolean atrRiskEnabled = false;
+    private boolean atrChaseLimitEnabled = false;
     private int atrPeriod = 14;
     private double atrStopMultiplier = 1.00;
     private double atrTakeProfitMultiplier = 1.60;
     private double atrChaseLimitMultiplier = 2.00;
 
     private Timeframe dayTradeTimeframe = Timeframe.M1;
+    private Timeframe executionConfirmationTimeframe = Timeframe.M1;
     private Timeframe shortSwingTimeframe = Timeframe.M15;
     private Timeframe swingTradeTimeframe = Timeframe.H1;
     private int dayTradeBarCount = 160;
@@ -98,7 +101,7 @@ public class RadarStrategyConfig {
 
     public static RadarStrategyConfig createBConvergenceTemplate() {
         RadarStrategyConfig config = createDefault();
-        config.setDayTradeTimeframe(Timeframe.M1);
+        config.setDayTradeTimeframe(Timeframe.M5);
         config.setDayTradeBarCount(220);
         config.setRsiEnabled(true);
         config.setRsiPeriod(9);
@@ -117,19 +120,100 @@ public class RadarStrategyConfig {
         config.setRequireRsiEntryConfirmation(true);
         config.setBlockBreakoutOnRsiOverbought(true);
         config.setRequireBreakoutContinuation(true);
-        config.setRequirePriceAboveVwapForLong(false);
+        config.setRequirePriceAboveVwapForLong(true);
         config.setRequireBreakoutNextBarConfirmation(false);
         config.setMaxEntryRiseFromRecentLowPercent(0.03);
         config.setMinimumEntryScore(0.45);
         config.setMarketRegimeFilterEnabled(true);
         config.setWeakMarketStrictLongEnabled(true);
+        config.setWeakMarketLongPolicy(WeakMarketLongPolicy.ALLOW_EXTREME_STRENGTH_ONLY);
         config.setRangeMarketRequiresVwapAndVolume(true);
         config.setVolumeSustainEnabled(true);
         config.setAtrRiskEnabled(true);
+        config.setAtrChaseLimitEnabled(true);
         config.setAtrPeriod(14);
         config.setAtrStopMultiplier(1.00);
         config.setAtrTakeProfitMultiplier(1.60);
         config.setAtrChaseLimitMultiplier(2.00);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeDefensiveTemplate() {
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setDayTradeTimeframe(Timeframe.M5);
+        config.setDayTradeBarCount(180);
+        config.setRsiPeriod(9);
+        config.setRsiOversold(32.0);
+        config.setRsiOverbought(64.0);
+        config.setRsiWeight(0.65);
+        config.setFastMovingAveragePeriod(8);
+        config.setSlowMovingAveragePeriod(34);
+        config.setMovingAverageWeight(0.90);
+        config.setBreakoutLookbackBars(36);
+        config.setVolumeMultiplier(1.80);
+        config.setVolumeBreakoutWeight(0.90);
+        config.setRequireBreakoutContinuation(true);
+        config.setRequireBreakoutNextBarConfirmation(false);
+        config.setRequirePriceAboveVwapForLong(true);
+        config.setMaxEntryRiseFromRecentLowPercent(0.02);
+        config.setMinimumEntryScore(0.60);
+        config.setWeakMarketLongPolicy(WeakMarketLongPolicy.BLOCK_ALL);
+        config.setVolumeSustainEnabled(true);
+        config.setAtrRiskEnabled(true);
+        config.setAtrChaseLimitEnabled(true);
+        config.setAtrStopMultiplier(0.90);
+        config.setAtrTakeProfitMultiplier(1.40);
+        config.setAtrChaseLimitMultiplier(1.50);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeStandardTemplate() {
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setDayTradeTimeframe(Timeframe.M5);
+        config.setDayTradeBarCount(220);
+        config.setRsiPeriod(9);
+        config.setRsiOversold(35.0);
+        config.setRsiOverbought(68.0);
+        config.setRsiWeight(0.80);
+        config.setBreakoutLookbackBars(30);
+        config.setVolumeMultiplier(1.60);
+        config.setVolumeBreakoutWeight(0.85);
+        config.setMinimumEntryScore(0.50);
+        config.setWeakMarketLongPolicy(WeakMarketLongPolicy.ALLOW_EXTREME_STRENGTH_ONLY);
+        config.setAtrRiskEnabled(true);
+        config.setAtrChaseLimitEnabled(true);
+        config.setAtrStopMultiplier(1.00);
+        config.setAtrTakeProfitMultiplier(1.70);
+        config.setAtrChaseLimitMultiplier(1.80);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeMomentumTemplate() {
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setDayTradeTimeframe(Timeframe.M5);
+        config.setDayTradeBarCount(220);
+        config.setRsiPeriod(7);
+        config.setRsiOversold(38.0);
+        config.setRsiOverbought(72.0);
+        config.setRsiWeight(0.70);
+        config.setFastMovingAveragePeriod(5);
+        config.setSlowMovingAveragePeriod(20);
+        config.setMovingAverageWeight(0.85);
+        config.setBreakoutLookbackBars(20);
+        config.setVolumeMultiplier(2.00);
+        config.setVolumeBreakoutWeight(1.00);
+        config.setRequireBreakoutContinuation(true);
+        config.setRequireBreakoutNextBarConfirmation(true);
+        config.setRequirePriceAboveVwapForLong(true);
+        config.setMaxEntryRiseFromRecentLowPercent(0.025);
+        config.setMinimumEntryScore(0.55);
+        config.setWeakMarketLongPolicy(WeakMarketLongPolicy.BLOCK_ALL);
+        config.setVolumeSustainEnabled(true);
+        config.setAtrRiskEnabled(true);
+        config.setAtrChaseLimitEnabled(true);
+        config.setAtrStopMultiplier(1.00);
+        config.setAtrTakeProfitMultiplier(2.00);
+        config.setAtrChaseLimitMultiplier(1.80);
         return config;
     }
 
@@ -213,16 +297,19 @@ public class RadarStrategyConfig {
         copy.minimumEntryScore = minimumEntryScore;
         copy.marketRegimeFilterEnabled = marketRegimeFilterEnabled;
         copy.weakMarketStrictLongEnabled = weakMarketStrictLongEnabled;
+        copy.weakMarketLongPolicy = weakMarketLongPolicy;
         copy.weakOutperformBenchmarkPercent = weakOutperformBenchmarkPercent;
         copy.weakOutperformIndustryPercent = weakOutperformIndustryPercent;
         copy.rangeMarketRequiresVwapAndVolume = rangeMarketRequiresVwapAndVolume;
         copy.volumeSustainEnabled = volumeSustainEnabled;
         copy.atrRiskEnabled = atrRiskEnabled;
+        copy.atrChaseLimitEnabled = atrChaseLimitEnabled;
         copy.atrPeriod = atrPeriod;
         copy.atrStopMultiplier = atrStopMultiplier;
         copy.atrTakeProfitMultiplier = atrTakeProfitMultiplier;
         copy.atrChaseLimitMultiplier = atrChaseLimitMultiplier;
         copy.dayTradeTimeframe = dayTradeTimeframe;
+        copy.executionConfirmationTimeframe = executionConfirmationTimeframe;
         copy.shortSwingTimeframe = shortSwingTimeframe;
         copy.swingTradeTimeframe = swingTradeTimeframe;
         copy.dayTradeBarCount = dayTradeBarCount;
@@ -277,6 +364,8 @@ public class RadarStrategyConfig {
     public void setMarketRegimeFilterEnabled(boolean marketRegimeFilterEnabled) { this.marketRegimeFilterEnabled = marketRegimeFilterEnabled; }
     public boolean isWeakMarketStrictLongEnabled() { return weakMarketStrictLongEnabled; }
     public void setWeakMarketStrictLongEnabled(boolean weakMarketStrictLongEnabled) { this.weakMarketStrictLongEnabled = weakMarketStrictLongEnabled; }
+    public WeakMarketLongPolicy getWeakMarketLongPolicy() { return weakMarketLongPolicy; }
+    public void setWeakMarketLongPolicy(WeakMarketLongPolicy weakMarketLongPolicy) { this.weakMarketLongPolicy = weakMarketLongPolicy != null ? weakMarketLongPolicy : WeakMarketLongPolicy.BLOCK_ALL; }
     public double getWeakOutperformBenchmarkPercent() { return weakOutperformBenchmarkPercent; }
     public void setWeakOutperformBenchmarkPercent(double weakOutperformBenchmarkPercent) { this.weakOutperformBenchmarkPercent = clamp(weakOutperformBenchmarkPercent, 0.0, 10.0); }
     public double getWeakOutperformIndustryPercent() { return weakOutperformIndustryPercent; }
@@ -287,6 +376,8 @@ public class RadarStrategyConfig {
     public void setVolumeSustainEnabled(boolean volumeSustainEnabled) { this.volumeSustainEnabled = volumeSustainEnabled; }
     public boolean isAtrRiskEnabled() { return atrRiskEnabled; }
     public void setAtrRiskEnabled(boolean atrRiskEnabled) { this.atrRiskEnabled = atrRiskEnabled; }
+    public boolean isAtrChaseLimitEnabled() { return atrChaseLimitEnabled; }
+    public void setAtrChaseLimitEnabled(boolean atrChaseLimitEnabled) { this.atrChaseLimitEnabled = atrChaseLimitEnabled; }
     public int getAtrPeriod() { return atrPeriod; }
     public void setAtrPeriod(int atrPeriod) { this.atrPeriod = Math.max(3, atrPeriod); }
     public double getAtrStopMultiplier() { return atrStopMultiplier; }
@@ -297,6 +388,10 @@ public class RadarStrategyConfig {
     public void setAtrChaseLimitMultiplier(double atrChaseLimitMultiplier) { this.atrChaseLimitMultiplier = Math.max(0.1, atrChaseLimitMultiplier); }
     public Timeframe getDayTradeTimeframe() { return dayTradeTimeframe; }
     public void setDayTradeTimeframe(Timeframe dayTradeTimeframe) { this.dayTradeTimeframe = dayTradeTimeframe != null ? dayTradeTimeframe : Timeframe.M1; }
+    public Timeframe getExecutionConfirmationTimeframe() { return executionConfirmationTimeframe; }
+    public void setExecutionConfirmationTimeframe(Timeframe executionConfirmationTimeframe) {
+        this.executionConfirmationTimeframe = executionConfirmationTimeframe != null ? executionConfirmationTimeframe : Timeframe.M1;
+    }
     public Timeframe getShortSwingTimeframe() { return shortSwingTimeframe; }
     public void setShortSwingTimeframe(Timeframe shortSwingTimeframe) { this.shortSwingTimeframe = shortSwingTimeframe != null ? shortSwingTimeframe : Timeframe.M15; }
     public Timeframe getSwingTradeTimeframe() { return swingTradeTimeframe; }

@@ -14,13 +14,48 @@ public record SymbolMarketContext(
         double vwapSlopePercent,
         boolean volumeSustain,
         boolean weakMarketQualified,
-        String weakMarketReason) {
+        String weakMarketReason,
+        double watchlistReturnRankPercent,
+        double watchlistVolumeRankPercent) {
+
+    public SymbolMarketContext(
+            String symbol,
+            String benchmarkSymbol,
+            String industry,
+            double close,
+            double returnPercent,
+            double benchmarkReturnPercent,
+            double industryReturnPercent,
+            double relativeToBenchmarkPercent,
+            double relativeToIndustryPercent,
+            double vwap,
+            double vwapSlopePercent,
+            boolean volumeSustain,
+            boolean weakMarketQualified,
+            String weakMarketReason) {
+        this(symbol,
+                benchmarkSymbol,
+                industry,
+                close,
+                returnPercent,
+                benchmarkReturnPercent,
+                industryReturnPercent,
+                relativeToBenchmarkPercent,
+                relativeToIndustryPercent,
+                vwap,
+                vwapSlopePercent,
+                volumeSustain,
+                weakMarketQualified,
+                weakMarketReason,
+                0.0,
+                0.0);
+    }
 
     public static SymbolMarketContext missing(String symbol, String reason) {
         return new SymbolMarketContext(
                 symbol,
                 "",
-                "未分類",
+                "未知",
                 0.0,
                 0.0,
                 0.0,
@@ -31,6 +66,8 @@ public record SymbolMarketContext(
                 0.0,
                 false,
                 false,
-                reason != null ? reason : "市場脈絡資料不足");
+                reason != null ? reason : "市場資料不足",
+                0.0,
+                0.0);
     }
 }

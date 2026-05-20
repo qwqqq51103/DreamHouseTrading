@@ -14,6 +14,8 @@ public class Trade {
     private final int quantity;
     private final double price;
     private final double commission;
+    private final double taxRate;
+    private final double slippageCost;
     private final double totalAmount;
     
     // 停利停損資訊
@@ -35,12 +37,21 @@ public class Trade {
     public Trade(LocalDateTime timestamp, String symbol, TradeType type, 
                  int quantity, double price, double commission,
                  Double stopLoss, Double takeProfit, String exitReason) {
+        this(timestamp, symbol, type, quantity, price, commission, 0.0, 0.0, stopLoss, takeProfit, exitReason);
+    }
+
+    public Trade(LocalDateTime timestamp, String symbol, TradeType type,
+                 int quantity, double price, double commission,
+                 double taxRate, double slippageCost,
+                 Double stopLoss, Double takeProfit, String exitReason) {
         this.timestamp = timestamp;
         this.symbol = symbol;
         this.type = type;
         this.quantity = quantity;
         this.price = price;
         this.commission = commission;
+        this.taxRate = Math.max(0.0, taxRate);
+        this.slippageCost = Math.max(0.0, slippageCost);
         this.totalAmount = quantity * price;
         this.stopLoss = stopLoss;
         this.takeProfit = takeProfit;
@@ -51,14 +62,14 @@ public class Trade {
      * 計算交易成本（包含手續費）
      */
     public double getTotalCost() {
-        return totalAmount + (totalAmount * commission);
+        return totalAmount + getCommissionAmount() + slippageCost;
     }
     
     /**
      * 計算交易收入（扣除手續費）
      */
     public double getNetProceeds() {
-        return totalAmount - (totalAmount * commission);
+        return totalAmount - getCommissionAmount() - getTaxAmount() - slippageCost;
     }
     
     /**
@@ -66,6 +77,14 @@ public class Trade {
      */
     public double getCommissionAmount() {
         return totalAmount * commission;
+    }
+
+    public double getTaxAmount() {
+        return type == TradeType.SELL ? totalAmount * taxRate : 0.0;
+    }
+
+    public double getSlippageCost() {
+        return slippageCost;
     }
     
     // Getters
@@ -75,6 +94,7 @@ public class Trade {
     public int getQuantity() { return quantity; }
     public double getPrice() { return price; }
     public double getCommission() { return commission; }
+    public double getTaxRate() { return taxRate; }
     public double getTotalAmount() { return totalAmount; }
     public Double getStopLoss() { return stopLoss; }
     public Double getTakeProfit() { return takeProfit; }

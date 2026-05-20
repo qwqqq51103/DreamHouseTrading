@@ -22,10 +22,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.dreamhouse.trading.core.logging.PaperTradeRecorder;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.IndustryStrength;
+import com.dreamhouse.trading.core.scanner.InternalMarketContextService;
 import com.dreamhouse.trading.core.scanner.MarketContextService;
 import com.dreamhouse.trading.core.scanner.MarketContextSnapshot;
+import com.dreamhouse.trading.core.scanner.MarketRegime;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
+import com.dreamhouse.trading.core.scanner.WeakMarketLongPolicy;
+import com.dreamhouse.trading.core.stockpool.AfterHoursStockPoolService;
 import com.dreamhouse.trading.ui.chart.DrawingManager;
 import com.dreamhouse.trading.ui.dialog.CsvExportDialog;
 import com.dreamhouse.trading.ui.dialog.CsvImportDialog;
@@ -45,8 +49,15 @@ import io.github.andrewauclair.moderndocking.DockingRegion;
 import io.github.andrewauclair.moderndocking.Dockable;
 
 import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -58,12 +69,21 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 
 public class MainFrameWithDocking extends JFrame {
     static final int DAY_TRADE_LOT_SIZE = 1000;
     static final LocalTime DAY_TRADE_FORCE_CLOSE_TIME = LocalTime.of(13, 25);
     private static final ZoneId TAIPEI_ZONE = ZoneId.of("Asia/Taipei");
+    private static final Path MONITOR_TEMPLATE_STORE = Path.of("config", "monitor_templates.properties");
+    private record MonitorTemplate(
+            String name,
+            String description,
+            SignalMonitorConfig monitorConfig,
+            DecisionConfig decisionConfig,
+            boolean userDefined) {
+    }
 
     private final DataSourceManager dataSourceManager;
     private MarketDataFeed dataFeed;
@@ -100,14 +120,27 @@ public class MainFrameWithDocking extends JFrame {
     private final Map<String, Double> activeStopLosses = new HashMap<>();
     private final Map<String, Double> activeTakeProfits = new HashMap<>();
     private final Map<String, TradeMode> activeTradeModes = new HashMap<>();
+    private final Map<String, LocalDateTime> autoEntryTimes = new HashMap<>();
+    private final Map<String, Double> autoEntryPrices = new HashMap<>();
+    private final Map<String, Double> autoEntryRiskAmounts = new HashMap<>();
+    private final Set<String> autoRangeEntries = new java.util.HashSet<>();
     private final Map<String, List<Trade>> latestSqlRadarBacktestTrades = new HashMap<>();
     private final Set<String> autoManagedPositions = new java.util.HashSet<>();
     private final Map<String, LocalDateTime> stopLossCooldownUntil = new HashMap<>();
     private final Set<String> watchlistMarketSubscriptions = new java.util.HashSet<>();
     private final Set<String> pendingAutoEntries = new java.util.HashSet<>();
+    private LocalDate autoMonitorRiskDate = LocalDate.now(TAIPEI_ZONE);
+    private double autoMonitorDailyPnl = 0.0;
+    private int autoMonitorStopLossCount = 0;
+    private int autoMonitorConsecutiveLosses = 0;
+    private boolean autoMonitorTradingHalted = false;
+    private int autoMonitorEntryCount = 0;
+    private LocalDateTime autoMonitorLastEntryTime;
+    private final Set<String> autoMonitorEntryBuckets = new java.util.HashSet<>();
     private SignalMonitorService signalMonitor;
     private SignalMonitorConfig monitorConfig;
     private DecisionConfig monitorDecisionConfig;
+    private String monitorStrategyName = "當沖標準趨勢版";
     private Portfolio monitorPortfolio;
     private ExecutionEngine executionEngine;
     private final PaperTradeRecorder paperTradeRecorder = new PaperTradeRecorder();
@@ -429,6 +462,10 @@ public class MainFrameWithDocking extends JFrame {
         JMenuItem importIndustryItem = new JMenuItem("匯入 FinMind 產業到 SQL");
         importIndustryItem.addActionListener(e -> importFinMindIndustryToSql());
         toolsMenu.add(importIndustryItem);
+
+        JMenuItem nextDayStockPoolItem = new JMenuItem("產生隔日當沖股票池");
+        nextDayStockPoolItem.addActionListener(e -> generateAfterHoursStockPool());
+        toolsMenu.add(nextDayStockPoolItem);
 
         JMenuItem monitorSettingsItem = new JMenuItem("監控門檻設定");
         monitorSettingsItem.addActionListener(e -> showMonitorSettingsDialog());
@@ -771,14 +808,16 @@ public class MainFrameWithDocking extends JFrame {
         currentMarketDataListener = new MarketDataListener() {
             @Override
             public void onTick(Tick tick) {
-                lastPrice = tick.getPrice();
                 if (tick.getSymbol() == null
                         || !watchlistMarketSubscriptions.contains(tick.getSymbol().trim().toUpperCase(Locale.ROOT))) {
                     handleMarketPriceUpdate(tick);
                 }
-                statusBar.setLastPrice(lastPrice, 0);
-                frameCount++;
-                chartDock.onTick(tick);
+                if (isTickForCurrentChart(tick)) {
+                    lastPrice = tick.getPrice();
+                    statusBar.setLastPrice(lastPrice, 0);
+                    frameCount++;
+                    chartDock.onTick(tick);
+                }
             }
 
             @Override
@@ -914,6 +953,7 @@ public class MainFrameWithDocking extends JFrame {
             }
             closeAutoManagedPositionsAtCutoff();
             closeAutoPositionIfStopTriggered(symbol, price);
+            closeRangePositionIfFailureTriggered(symbol, price);
         });
     }
 
@@ -943,12 +983,8 @@ public class MainFrameWithDocking extends JFrame {
                     closePrice,
                     com.dreamhouse.trading.core.execution.OrderType.MARKET,
                     reason);
-            paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "day-trade-cutoff");
-            activeStopLosses.remove(symbol);
-            activeTakeProfits.remove(symbol);
-            activeTradeModes.remove(symbol);
-            autoManagedPositions.remove(symbol);
-            pendingAutoEntries.remove(symbol);
+            paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "day-trade-cutoff", monitorStrategyName, buildMonitorStrategyDetails());
+            clearAutoPositionState(symbol);
             if (executionStatusDock != null) {
                 executionStatusDock.setExecutionEngine(executionEngine);
                 executionStatusDock.updateMarketPrice(symbol, closePrice);
@@ -959,19 +995,34 @@ public class MainFrameWithDocking extends JFrame {
         }
     }
 
+    private boolean isTickForCurrentChart(Tick tick) {
+        if (tick == null) {
+            return false;
+        }
+        String tickSymbol = tick.getSymbol();
+        if (tickSymbol == null || tickSymbol.isBlank()) {
+            return true;
+        }
+        if (currentSymbol == null || currentSymbol.isBlank()) {
+            return false;
+        }
+        return StockNameResolver.normalize(currentSymbol).equals(StockNameResolver.normalize(tickSymbol));
+    }
+
     private void closeAutoPositionIfStopTriggered(String symbol, double price) {
         if (!autoTradingEnabled || executionEngine == null || monitorPortfolio == null) {
             return;
         }
         Position position = monitorPortfolio.getPosition(symbol);
         if (position == null || position.getQuantity() <= 0) {
-            activeStopLosses.remove(symbol);
-            activeTakeProfits.remove(symbol);
-            activeTradeModes.remove(symbol);
-            autoManagedPositions.remove(symbol);
-            pendingAutoEntries.remove(symbol);
+            clearAutoPositionState(symbol);
             return;
         }
+
+        if (closeAutoPositionIfReasonInvalidated(symbol, price, position)) {
+            return;
+        }
+        updateAutoTrailingStop(symbol, price);
 
         Double stopLoss = activeStopLosses.get(symbol);
         Double takeProfit = activeTakeProfits.get(symbol);
@@ -993,14 +1044,13 @@ public class MainFrameWithDocking extends JFrame {
                 price,
                 com.dreamhouse.trading.core.execution.OrderType.MARKET,
                 reason);
-        paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "auto-stop");
-        activeStopLosses.remove(symbol);
-        activeTakeProfits.remove(symbol);
-        activeTradeModes.remove(symbol);
-        autoManagedPositions.remove(symbol);
-        pendingAutoEntries.remove(symbol);
+        paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "auto-stop", monitorStrategyName, buildMonitorStrategyDetails());
+        clearAutoPositionState(symbol);
         if (result.isSuccess() && stopLossTriggered) {
             registerStopLossCooldown(symbol);
+        }
+        if (result.isSuccess()) {
+            registerPostExitCooldown(symbol);
         }
         if (executionStatusDock != null) {
             executionStatusDock.setExecutionEngine(executionEngine);
@@ -1011,6 +1061,158 @@ public class MainFrameWithDocking extends JFrame {
         } else {
             statusBar.setText("自動平倉失敗 " + symbol + "：" + result.getMessage());
         }
+    }
+
+    private void closeRangePositionIfFailureTriggered(String symbol, double price) {
+        if (!autoTradingEnabled || executionEngine == null || monitorPortfolio == null || monitorConfig == null
+                || !monitorConfig.isRangeFailureExitEnabled() || symbol == null || !autoRangeEntries.contains(symbol)) {
+            return;
+        }
+        Position position = monitorPortfolio.getPosition(symbol);
+        if (position == null || position.getQuantity() <= 0) {
+            clearAutoPositionState(symbol);
+            return;
+        }
+        LocalDateTime entryTime = autoEntryTimes.getOrDefault(symbol, position.getOpenTime());
+        long holdingMinutes = Duration.between(entryTime, LocalDateTime.now(TAIPEI_ZONE)).toMinutes();
+        MarketScanResult scanResult = latestScanResults.get(symbol);
+        String reason = null;
+
+        if (monitorConfig.isRangeFailureVolumeSustainExitEnabled()
+                && holdingMinutes >= 5
+                && scanResult != null
+                && Boolean.FALSE.equals(scanResult.getVolumeSustain())) {
+            reason = "RANGE 盤動能失效出場：Volume Sustain 轉弱";
+        }
+
+        Double entryPrice = autoEntryPrices.get(symbol);
+        Double riskAmount = autoEntryRiskAmounts.get(symbol);
+        if (reason == null
+                && holdingMinutes >= monitorConfig.getRangeFailureExitMinutes()
+                && entryPrice != null
+                && riskAmount != null
+                && riskAmount > 0.0) {
+            double targetPrice = entryPrice + riskAmount * monitorConfig.getRangeFailureMinR();
+            if (price < targetPrice) {
+                reason = String.format(Locale.US,
+                        "RANGE 盤時間失效出場：持倉 %d 分鐘仍未達 %.2fR（目標 %.2f，現價 %.2f）",
+                        holdingMinutes,
+                        monitorConfig.getRangeFailureMinR(),
+                        targetPrice,
+                        price);
+            }
+        }
+
+        if (reason == null) {
+            return;
+        }
+
+        ExecutionResult result = executionEngine.closePosition(
+                symbol,
+                position.getQuantity(),
+                price,
+                com.dreamhouse.trading.core.execution.OrderType.MARKET,
+                reason);
+        paperTradeRecorder.record(result, null, scanResult, "range-failure-exit", monitorStrategyName, buildMonitorStrategyDetails());
+        clearAutoPositionState(symbol);
+        if (result.isSuccess()) {
+            registerPostExitCooldown(symbol);
+            updateAutoMonitorRiskAfterClose(symbol, result, null);
+            statusBar.setText(reason + "，已自動平倉 " + symbol);
+        } else {
+            statusBar.setText("RANGE 盤失效平倉失敗 " + symbol + "：" + result.getMessage());
+        }
+        if (executionStatusDock != null) {
+            executionStatusDock.setExecutionEngine(executionEngine);
+            executionStatusDock.updateMarketPrice(symbol, price);
+        }
+    }
+
+    private void updateAutoTrailingStop(String symbol, double price) {
+        Double entryPrice = autoEntryPrices.get(symbol);
+        Double riskAmount = autoEntryRiskAmounts.get(symbol);
+        if (entryPrice == null || riskAmount == null || riskAmount <= 0.0 || price < entryPrice + riskAmount) {
+            return;
+        }
+        double breakEvenStop = entryPrice + riskAmount * 0.05;
+        Double currentStop = activeStopLosses.get(symbol);
+        if (currentStop == null || currentStop < breakEvenStop) {
+            activeStopLosses.put(symbol, breakEvenStop);
+            statusBar.setText(String.format(Locale.US,
+                    "三層風控移動停損：%s 已達 1R，停損上移至 %.2f",
+                    symbol,
+                    breakEvenStop));
+        }
+    }
+
+    private boolean closeAutoPositionIfReasonInvalidated(String symbol, double price, Position position) {
+        MarketScanResult scanResult = latestScanResults.get(symbol);
+        if (scanResult == null) {
+            return false;
+        }
+        LocalDateTime entryTime = autoEntryTimes.getOrDefault(symbol, position.getOpenTime());
+        long holdingMinutes = Duration.between(entryTime, LocalDateTime.now(TAIPEI_ZONE)).toMinutes();
+        Double entryPrice = autoEntryPrices.get(symbol);
+        Double riskAmount = autoEntryRiskAmounts.get(symbol);
+        String reason = null;
+
+        if (holdingMinutes >= 3
+                && scanResult.getVwap() != null
+                && scanResult.getVwap() > 0.0
+                && price < scanResult.getVwap()) {
+            reason = String.format(Locale.US,
+                    "EXIT_VWAP_BREAK：最新價 %.2f 跌破 VWAP %.2f",
+                    price,
+                    scanResult.getVwap());
+        }
+        if (reason == null
+                && holdingMinutes >= 5
+                && Boolean.FALSE.equals(scanResult.getVolumeSustain())) {
+            double requiredProgress = entryPrice != null && riskAmount != null && riskAmount > 0.0
+                    ? entryPrice + riskAmount * 0.50
+                    : Double.POSITIVE_INFINITY;
+            if (price < requiredProgress) {
+                reason = String.format(Locale.US,
+                        "EXIT_VOLUME_FAIL：量能延續失效，最新價 %.2f 未達 0.5R",
+                        price);
+            }
+        }
+        if (reason == null) {
+            return false;
+        }
+
+        ExecutionResult result = executionEngine.closePosition(
+                symbol,
+                position.getQuantity(),
+                price,
+                com.dreamhouse.trading.core.execution.OrderType.MARKET,
+                reason);
+        paperTradeRecorder.record(result, null, scanResult, "reason-invalidated-exit", monitorStrategyName, buildMonitorStrategyDetails());
+        clearAutoPositionState(symbol);
+        if (result.isSuccess()) {
+            registerPostExitCooldown(symbol);
+            updateAutoMonitorRiskAfterClose(symbol, result, null);
+            statusBar.setText(reason + "，已自動平倉 " + symbol);
+        } else {
+            statusBar.setText("理由失效平倉失敗 " + symbol + "：" + result.getMessage());
+        }
+        if (executionStatusDock != null) {
+            executionStatusDock.setExecutionEngine(executionEngine);
+            executionStatusDock.updateMarketPrice(symbol, price);
+        }
+        return result.isSuccess();
+    }
+
+    private void clearAutoPositionState(String symbol) {
+        activeStopLosses.remove(symbol);
+        activeTakeProfits.remove(symbol);
+        activeTradeModes.remove(symbol);
+        autoManagedPositions.remove(symbol);
+        pendingAutoEntries.remove(symbol);
+        autoEntryTimes.remove(symbol);
+        autoEntryPrices.remove(symbol);
+        autoEntryRiskAmounts.remove(symbol);
+        autoRangeEntries.remove(symbol);
     }
 
     private void changeSymbol(String symbol) {
@@ -1564,6 +1766,201 @@ public class MainFrameWithDocking extends JFrame {
             List<MarketDataCollectorRepository.IndustryStockInfo> stockRows) {
     }
 
+    private void generateAfterHoursStockPool() {
+        if (watchlistPanel == null) {
+            JOptionPane.showMessageDialog(this, "觀察清單尚未初始化。", "隔日當沖股票池", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        List<String> sourceSymbols = watchlistPanel.getSymbols();
+        if (sourceSymbols == null || sourceSymbols.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "請先放入候選股票到觀察清單，再產生隔日股票池。", "隔日當沖股票池", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        JTextField dateField = new JTextField(selectedQueryDate.toString(), 12);
+        JSpinner topNSpinner = new JSpinner(new SpinnerNumberModel(Math.min(30, Math.max(1, sourceSymbols.size())), 1, 100, 1));
+        JCheckBox includeBrokerChips = new JCheckBox("加入分點籌碼評分（Sponsor API）", true);
+        JCheckBox updateWatchlist = new JCheckBox("產生後更新觀察清單與 MarketDataCollector symbols.properties", true);
+        JCheckBox replaceWatchlist = new JCheckBox("用入選股票取代目前觀察清單", false);
+
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        panel.add(new JLabel("盤後資料日期"), gbc);
+        gbc.gridx = 1;
+        panel.add(dateField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy++;
+        panel.add(new JLabel("入選檔數"), gbc);
+        gbc.gridx = 1;
+        panel.add(topNSpinner, gbc);
+        gbc.gridx = 0;
+        gbc.gridy++;
+        gbc.gridwidth = 2;
+        panel.add(includeBrokerChips, gbc);
+        gbc.gridy++;
+        panel.add(updateWatchlist, gbc);
+        gbc.gridy++;
+        panel.add(replaceWatchlist, gbc);
+        gbc.gridy++;
+        panel.add(new JLabel("候選來源：目前觀察清單 " + sourceSymbols.size() + " 檔"), gbc);
+
+        int option = JOptionPane.showConfirmDialog(
+                this,
+                panel,
+                "產生隔日當沖股票池",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (option != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        LocalDate poolDate;
+        try {
+            poolDate = LocalDate.parse(dateField.getText().trim());
+        } catch (RuntimeException e) {
+            JOptionPane.showMessageDialog(this, "日期格式錯誤，請使用 yyyy-MM-dd。", "隔日當沖股票池", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        int topN = ((Number) topNSpinner.getValue()).intValue();
+        boolean brokerEnabled = includeBrokerChips.isSelected();
+        boolean shouldUpdateWatchlist = updateWatchlist.isSelected();
+        boolean shouldReplaceWatchlist = replaceWatchlist.isSelected();
+
+        statusBar.setText("隔日當沖股票池產生中：" + poolDate + "，候選 " + sourceSymbols.size() + " 檔");
+        SwingWorker<AfterHoursStockPoolService.StockPoolResult, Void> worker = new SwingWorker<>() {
+            @Override
+            protected AfterHoursStockPoolService.StockPoolResult doInBackground() throws Exception {
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    AfterHoursStockPoolService service = new AfterHoursStockPoolService(
+                            new FinMindClient(dataSourceManager.getFinMindApiToken()),
+                            repository);
+                    return service.buildPool(sourceSymbols, poolDate, topN, brokerEnabled);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    AfterHoursStockPoolService.StockPoolResult result = get();
+                    List<String> selectedSymbols = result.selectedCandidates().stream()
+                            .map(AfterHoursStockPoolService.StockPoolCandidate::symbol)
+                            .toList();
+                    if (shouldUpdateWatchlist && !selectedSymbols.isEmpty()) {
+                        if (shouldReplaceWatchlist) {
+                            Set<String> locked = watchlistPanel.getLockedSymbols();
+                            List<String> toRemove = watchlistPanel.getSymbols().stream()
+                                    .filter(symbol -> !selectedSymbols.contains(symbol))
+                                    .filter(symbol -> !locked.contains(StockNameResolver.normalize(symbol)))
+                                    .toList();
+                            removeSymbolsFromWatchlistInternal(toRemove);
+                        }
+                        addSymbolsToWatchlistInternal(selectedSymbols);
+                    }
+                    showAfterHoursStockPoolResult(result, shouldUpdateWatchlist, shouldReplaceWatchlist);
+                    statusBar.setText("隔日當沖股票池完成：" + result.selectedCandidates().size()
+                            + " / " + result.allCandidates().size() + " 檔入選");
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    statusBar.setText("隔日當沖股票池失敗：" + cause.getMessage());
+                    JOptionPane.showMessageDialog(
+                            MainFrameWithDocking.this,
+                            "隔日當沖股票池失敗：\n" + cause.getMessage(),
+                            "隔日當沖股票池",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void showAfterHoursStockPoolResult(
+            AfterHoursStockPoolService.StockPoolResult result,
+            boolean updatedWatchlist,
+            boolean replacedWatchlist) {
+        String[] columns = {
+                "排名", "代碼", "中文", "總分", "趨勢", "量能", "型態", "當沖", "分點", "風險扣分",
+                "分點買賣超(張)", "集中度", "風險旗標", "理由"
+        };
+        columns = new String[] {
+                "排名", "代碼", "中文", "總分", "趨勢", "量能", "型態", "當沖", "分點", "風險扣分",
+                "分點筆數", "分點家數", "最大買超分點", "最大買超(張)", "最大賣超分點", "最大賣超(張)",
+                "集中度", "風險旗標", "理由"
+        };
+        Object[][] rows = new Object[result.allCandidates().size()][columns.length];
+        for (int i = 0; i < result.allCandidates().size(); i++) {
+            AfterHoursStockPoolService.StockPoolCandidate candidate = result.allCandidates().get(i);
+            rows[i][0] = i + 1;
+            rows[i][1] = candidate.symbol();
+            rows[i][2] = candidate.chineseName();
+            rows[i][3] = candidate.totalScore();
+            rows[i][4] = candidate.trendScore();
+            rows[i][5] = candidate.volumeScore();
+            rows[i][6] = candidate.patternScore();
+            rows[i][7] = candidate.dayTradingScore();
+            rows[i][8] = candidate.brokerChipScore();
+            rows[i][9] = candidate.riskPenalty();
+            rows[i][10] = candidate.brokerRowCount();
+            rows[i][11] = candidate.brokerBranchCount();
+            rows[i][12] = candidate.brokerTopBuyer();
+            rows[i][13] = candidate.brokerNetBuyLots();
+            rows[i][14] = candidate.brokerTopSeller();
+            rows[i][15] = candidate.brokerTopSellerNetSellLots();
+            rows[i][16] = candidate.brokerConcentration();
+            rows[i][17] = candidate.brokerRiskFlag();
+            rows[i][18] = candidate.reason();
+        }
+        JTable table = new JTable(new DefaultTableModel(rows, columns) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                return switch (columnIndex) {
+                    case 0, 10, 11 -> Integer.class;
+                    case 3, 4, 5, 6, 7, 8, 9, 13, 15, 16 -> Double.class;
+                    default -> String.class;
+                };
+            }
+        });
+        table.setAutoCreateRowSorter(true);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        table.getColumnModel().getColumn(12).setPreferredWidth(160);
+        table.getColumnModel().getColumn(14).setPreferredWidth(160);
+        table.getColumnModel().getColumn(18).setPreferredWidth(760);
+
+        StringBuilder summary = new StringBuilder();
+        summary.append(result.brokerDataSummary()).append('\n');
+        summary.append("資料日期：").append(result.date()).append('\n');
+        summary.append("候選成功：").append(result.allCandidates().size()).append(" 檔\n");
+        summary.append("入選：").append(result.selectedCandidates().size()).append(" 檔\n");
+        summary.append("觀察清單：").append(updatedWatchlist ? (replacedWatchlist ? "已取代" : "已加入入選股票") : "未更新").append('\n');
+        if (!result.skipped().isEmpty()) {
+            summary.append("略過：").append(result.skipped().size()).append(" 檔\n");
+        }
+
+        JTextArea summaryArea = new JTextArea(summary.toString());
+        summaryArea.setEditable(false);
+        JPanel panel = new JPanel(new BorderLayout(8, 8));
+        panel.add(summaryArea, BorderLayout.NORTH);
+        panel.add(new JScrollPane(table), BorderLayout.CENTER);
+        panel.setPreferredSize(new Dimension(1180, 620));
+
+        JOptionPane.showMessageDialog(
+                this,
+                panel,
+                "隔日當沖股票池結果",
+                JOptionPane.INFORMATION_MESSAGE);
+    }
+
     private void loadImportedCurrentSymbolBars(FinMindKBarSqlImporter.ImportResult result) {
         if (currentSymbol == null || currentSymbol.isBlank()
                 || result.symbolResults().stream().noneMatch(item -> currentSymbol.equals(item.symbol()) && item.success())) {
@@ -1690,7 +2087,7 @@ public class MainFrameWithDocking extends JFrame {
             @Override
             protected List<MarketScanResult> doInBackground() {
                 MarketScannerService scannerService = new MarketScannerService(dataFeed);
-                marketContext = buildMarketContextWithIndustryUniverse(symbols, TradeMode.DAY_TRADE);
+                marketContext = buildInternalMarketContext(symbols, TradeMode.DAY_TRADE);
                 List<MarketScanResult> results = new ArrayList<>();
                 for (String symbol : symbols) {
                     MarketScanResult bestResult = findBestRadarCandidate(scannerService, symbol, marketContext);
@@ -1813,6 +2210,16 @@ public class MainFrameWithDocking extends JFrame {
             }
             return info != null ? info.displayIndustry() : "未分類";
         });
+        return contextService.build(symbols, timeframe, barCount, selectedQueryDate);
+    }
+
+    private MarketContextSnapshot buildInternalMarketContext(List<String> symbols, TradeMode mode) {
+        if (symbols == null || symbols.isEmpty()) {
+            return MarketContextSnapshot.empty("觀察清單沒有股票");
+        }
+        Timeframe timeframe = resolveRadarTimeframe(mode);
+        int barCount = resolveRadarBarCount(mode);
+        InternalMarketContextService contextService = new InternalMarketContextService(dataFeed);
         return contextService.build(symbols, timeframe, barCount, selectedQueryDate);
     }
 
@@ -2174,7 +2581,7 @@ public class MainFrameWithDocking extends JFrame {
         }
         List<String> removed = watchlistPanel.removeSymbolsProgrammatically(symbols, false);
         int synced = 0;
-        for (String symbol : symbols.stream().filter(s -> s != null && !s.isBlank()).distinct().toList()) {
+        for (String symbol : removed) {
             if (MarketDataCollectorSymbolSync.removeSymbol(symbol)) {
                 synced++;
             }
@@ -2265,7 +2672,7 @@ public class MainFrameWithDocking extends JFrame {
                                 : LocalTime.of(0, 0),
                         monitorConfig != null
                                 ? monitorConfig.getLatestAutoEntryTime()
-                                : LocalTime.of(13, 10),
+                                : LocalTime.of(13, 5),
                         monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()
                                 ? monitorConfig.getStopLossCooldownMinutes()
                                 : 0);
@@ -2313,47 +2720,61 @@ public class MainFrameWithDocking extends JFrame {
             JOptionPane.showMessageDialog(this, "觀察清單沒有股票可回測。", "SQL 雷達批次回測", JOptionPane.WARNING_MESSAGE);
             return;
         }
+        LocalDate[] range = promptSqlRadarBacktestDateRange();
+        if (range == null) {
+            return;
+        }
+        LocalDate startDate = range[0];
+        LocalDate endDate = range[1];
+        String dateLabel = startDate.equals(endDate)
+                ? startDate.toString()
+                : startDate + " ~ " + endDate;
 
         Timeframe timeframe = resolveRadarTimeframe(TradeMode.DAY_TRADE);
         MarketScannerService.ScanRequest request = createRadarScanRequest(TradeMode.DAY_TRADE)
                 .initialCapital(1_000_000.0);
-        statusBar.setText("SQL 雷達批次回測執行中：" + selectedQueryDate + "，" + symbols.size() + " 檔");
+        statusBar.setText("SQL 雷達批次回測執行中：" + dateLabel + "，" + symbols.size() + " 檔");
 
         SwingWorker<BacktestResult, Void> worker = new SwingWorker<>() {
             private final Map<String, List<Trade>> tradesBySymbol = new HashMap<>();
             private final List<String> skipped = new ArrayList<>();
+            private int testedSymbolDays = 0;
 
             @Override
             protected BacktestResult doInBackground() throws Exception {
                 RadarReplayBacktestService service = createRadarReplayService();
-                List<BacktestResult> symbolResults = new ArrayList<>();
+                List<BacktestResult> daySymbolResults = new ArrayList<>();
                 try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
                         dataSourceManager.getMarketCollectorJdbcUrl(),
                         dataSourceManager.getMarketCollectorUser(),
                         dataSourceManager.getMarketCollectorPassword())) {
                     MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
-                    for (String symbol : symbols) {
-                        if (symbol == null || symbol.isBlank()) {
-                            continue;
-                        }
-                        try {
-                            List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, selectedQueryDate);
-                            if (bars == null || bars.size() < 2) {
-                                skipped.add(symbol + "：SQL K 線不足");
+                    for (LocalDate date = startDate; !date.isAfter(endDate); date = date.plusDays(1)) {
+                        for (String symbol : symbols) {
+                            if (symbol == null || symbol.isBlank()) {
                                 continue;
                             }
-                            BacktestResult result = service.replay(symbol, bars, request);
-                            symbolResults.add(result);
-                            tradesBySymbol.put(symbol, result.getTrades());
-                        } catch (Exception e) {
-                            skipped.add(symbol + "：" + e.getMessage());
+                            try {
+                                List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, date);
+                                if (bars == null || bars.size() < 2) {
+                                    skipped.add(date + " " + symbol + "：SQL K 線不足");
+                                    continue;
+                                }
+                                BacktestResult result = service.replay(symbol, bars, request);
+                                daySymbolResults.add(result);
+                                testedSymbolDays++;
+                                tradesBySymbol.computeIfAbsent(symbol, ignored -> new ArrayList<>())
+                                        .addAll(result.getTrades());
+                            } catch (Exception e) {
+                                skipped.add(date + " " + symbol + "：" + e.getMessage());
+                            }
                         }
                     }
                 }
-                if (symbolResults.isEmpty()) {
-                    throw new IllegalStateException("觀察清單沒有可回測的 SQL K 線資料：" + selectedQueryDate);
+                if (daySymbolResults.isEmpty()) {
+                    throw new IllegalStateException("觀察清單沒有可回測的 SQL K 線資料：" + dateLabel);
                 }
-                return combineBacktestResults(symbolResults);
+                return combineBacktestResults(daySymbolResults);
             }
 
             @Override
@@ -2367,19 +2788,20 @@ public class MainFrameWithDocking extends JFrame {
                     BacktestResultDialog dialog = new BacktestResultDialog(
                             MainFrameWithDocking.this,
                             combined,
-                            "SQL 雷達批次回測-" + selectedQueryDate,
-                            buildDayTradeBacktestConfigSummary("觀察清單批次", tradesBySymbol.size(), timeframe));
+                            "SQL 雷達批次回測-" + dateLabel,
+                            buildDayTradeBacktestConfigSummary("觀察清單批次", testedSymbolDays, timeframe, dateLabel));
                     dialog.setVisible(true);
-                    String skipText = skipped.isEmpty() ? "" : "，略過 " + skipped.size() + " 檔";
+                    String skipText = skipped.isEmpty() ? "" : "，略過 " + skipped.size() + " 筆股票日";
                     statusBar.setText(String.format(
-                            "SQL 雷達批次回測完成：%d 檔有結果，總交易 %d 筆%s",
-                            tradesBySymbol.size(),
+                            "SQL 雷達批次回測完成：%s，%d 筆股票日有結果，總交易 %d 筆%s",
+                            dateLabel,
+                            testedSymbolDays,
                             combined.getTrades().size(),
                             skipText));
                     if (!skipped.isEmpty()) {
                         JOptionPane.showMessageDialog(
                                 MainFrameWithDocking.this,
-                                "以下股票略過：\n" + String.join("\n", skipped),
+                                "以下股票日略過：\n" + String.join("\n", skipped),
                                 "SQL 雷達批次回測",
                                 JOptionPane.INFORMATION_MESSAGE);
                     }
@@ -2397,10 +2819,58 @@ public class MainFrameWithDocking extends JFrame {
         worker.execute();
     }
 
+    private LocalDate[] promptSqlRadarBacktestDateRange() {
+        JTextField startField = new JTextField(selectedQueryDate.toString(), 12);
+        JTextField endField = new JTextField(selectedQueryDate.toString(), 12);
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        panel.add(new JLabel("開始日期"), gbc);
+        gbc.gridx = 1;
+        panel.add(startField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        panel.add(new JLabel("結束日期"), gbc);
+        gbc.gridx = 1;
+        panel.add(endField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.gridwidth = 2;
+        panel.add(new JLabel("格式：yyyy-MM-dd；同一天請輸入相同起訖日期。"), gbc);
+
+        while (true) {
+            int option = JOptionPane.showConfirmDialog(
+                    this,
+                    panel,
+                    "SQL 雷達批次回測日期範圍",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.PLAIN_MESSAGE);
+            if (option != JOptionPane.OK_OPTION) {
+                return null;
+            }
+            try {
+                LocalDate start = LocalDate.parse(startField.getText().trim());
+                LocalDate end = LocalDate.parse(endField.getText().trim());
+                if (end.isBefore(start)) {
+                    JOptionPane.showMessageDialog(this, "結束日期不可早於開始日期。", "SQL 雷達批次回測", JOptionPane.WARNING_MESSAGE);
+                    continue;
+                }
+                return new LocalDate[]{start, end};
+            } catch (RuntimeException e) {
+                JOptionPane.showMessageDialog(this, "日期格式錯誤，請使用 yyyy-MM-dd。", "SQL 雷達批次回測", JOptionPane.WARNING_MESSAGE);
+            }
+        }
+    }
+
     private RadarReplayBacktestService createRadarReplayService() {
         return new RadarReplayBacktestService(
                 1_000_000.0,
                 0.001425,
+                0.0015,
+                0.0005,
                 monitorConfig != null && monitorConfig.isEarlyEntryBlockEnabled()
                         ? monitorConfig.getEarlyEntryBlockStart()
                         : LocalTime.of(0, 0),
@@ -2409,13 +2879,21 @@ public class MainFrameWithDocking extends JFrame {
                         : LocalTime.of(0, 0),
                 monitorConfig != null
                         ? monitorConfig.getLatestAutoEntryTime()
-                        : LocalTime.of(13, 10),
+                        : LocalTime.of(13, 5),
                 monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()
                         ? monitorConfig.getStopLossCooldownMinutes()
-                        : 0);
+                        : 0,
+                monitorConfig != null ? monitorConfig.getDailyMaxLoss() : -3_000.0,
+                monitorConfig != null ? monitorConfig.getDailyMaxStopLossCount() : 3,
+                monitorConfig != null ? monitorConfig.getConsecutiveLossLimit() : 3,
+                monitorConfig == null || monitorConfig.isDisableTradingAfterLossLimit());
     }
 
     private String buildDayTradeBacktestConfigSummary(String scope, int symbolCount, Timeframe timeframe) {
+        return buildDayTradeBacktestConfigSummary(scope, symbolCount, timeframe, selectedQueryDate.toString());
+    }
+
+    private String buildDayTradeBacktestConfigSummary(String scope, int symbolCount, Timeframe timeframe, String dateLabel) {
         SignalMonitorConfig activeMonitorConfig = monitorConfig != null
                 ? monitorConfig
                 : SignalMonitorConfig.createDefault();
@@ -2424,7 +2902,7 @@ public class MainFrameWithDocking extends JFrame {
                 : RadarStrategyConfig.createDefault();
         StringBuilder sb = new StringBuilder();
         sb.append("回測範圍: ").append(scope).append('\n');
-        sb.append("資料日期: ").append(selectedQueryDate).append('\n');
+        sb.append("資料日期: ").append(dateLabel).append('\n');
         sb.append("回測檔數: ").append(Math.max(1, symbolCount)).append('\n');
         sb.append("資料源: MarketDataCollector SQL\n");
         sb.append("回測週期: ").append(timeframe != null ? timeframe.getLabel() : radar.getDayTradeTimeframe().getLabel()).append('\n');
@@ -2432,6 +2910,9 @@ public class MainFrameWithDocking extends JFrame {
         sb.append("每筆下單: ").append(DAY_TRADE_LOT_SIZE).append(" 股（1 張）\n");
         sb.append("每檔初始資金: 1000000.00\n");
         sb.append("手續費率: 0.001425\n");
+        sb.append("當沖證交稅率: 0.0015\n");
+        sb.append("滑價: 買進 +0.05% / 賣出 -0.05%（報告拆分為滑價成本）\n");
+        sb.append("成交模型: 第 N 根 K 收完產生訊號，第 N+1 根 open 成交\n");
         sb.append("13:25 強制平倉: 啟用\n");
         sb.append("13:25 後禁止開倉: 啟用\n");
         sb.append("早盤禁開倉: ")
@@ -2446,6 +2927,12 @@ public class MainFrameWithDocking extends JFrame {
         sb.append('\n');
         sb.append("停損後冷卻: ")
                 .append(activeMonitorConfig.isStopLossCooldownEnabled() ? "啟用 " + activeMonitorConfig.getStopLossCooldownMinutes() + " 分鐘" : "停用")
+                .append('\n');
+        sb.append("日損熔斷: ")
+                .append(activeMonitorConfig.isDisableTradingAfterLossLimit() ? "啟用" : "停用")
+                .append("，單日最大虧損=").append(String.format(Locale.US, "%.2f", activeMonitorConfig.getDailyMaxLoss()))
+                .append("，單日停損上限=").append(activeMonitorConfig.getDailyMaxStopLossCount())
+                .append("，連續虧損上限=").append(activeMonitorConfig.getConsecutiveLossLimit())
                 .append('\n');
         sb.append("雷達掃描間隔: ").append(activeMonitorConfig.getScanIntervalSeconds()).append(" 秒\n");
         sb.append("同股訊號間隔: ").append(activeMonitorConfig.getMinSignalIntervalMinutes()).append(" 分鐘\n");
@@ -2484,6 +2971,12 @@ public class MainFrameWithDocking extends JFrame {
         sb.append("做多需站上 VWAP: ")
                 .append(radar.isRequirePriceAboveVwapForLong() ? "啟用" : "停用")
                 .append('\n');
+        sb.append("弱勢盤策略: ").append(radar.getWeakMarketLongPolicy().getDisplayName()).append('\n');
+        sb.append("弱勢盤強勢股門檻: 強於大盤 ")
+                .append(String.format(Locale.US, "%.2f%%", radar.getWeakOutperformBenchmarkPercent()))
+                .append("，強於族群 ")
+                .append(String.format(Locale.US, "%.2f%%", radar.getWeakOutperformIndustryPercent()))
+                .append('\n');
         sb.append("突破後一根確認: ")
                 .append(radar.isRequireBreakoutNextBarConfirmation() ? "啟用" : "停用")
                 .append('\n');
@@ -2511,6 +3004,9 @@ public class MainFrameWithDocking extends JFrame {
             finalValue += result.getFinalValue();
             for (Trade trade : result.getTrades()) {
                 combined.addTrade(trade);
+            }
+            for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+                combined.addSignalObservation(observation);
             }
         }
         combined.addSnapshot(end, finalValue, finalValue, 0.0, 0);
@@ -2556,7 +3052,7 @@ public class MainFrameWithDocking extends JFrame {
 
     private DecisionConfig resolveRadarDecisionConfig(TradeMode mode) {
         return switch (mode) {
-            case DAY_TRADE -> monitorDecisionConfig != null ? monitorDecisionConfig : createAggressiveMonitorConfig();
+            case DAY_TRADE -> monitorDecisionConfig != null ? monitorDecisionConfig : createDayTradeStandardMonitorConfig();
             case SHORT_SWING -> createAggressiveMonitorConfig();
             case SWING_TRADE -> createBalancedMonitorConfig();
             default -> DecisionConfig.createDefault();
@@ -2566,18 +3062,18 @@ public class MainFrameWithDocking extends JFrame {
     private void initializeSignalMonitor() {
         monitorConfig = monitorConfig != null
                 ? monitorConfig
-                : SignalMonitorConfig.createBalancedTemplate();
+                : SignalMonitorConfig.createDayTradeStandardTemplate();
         monitorDecisionConfig = monitorDecisionConfig != null
                 ? monitorDecisionConfig
-                : createBalancedMonitorConfig();
+                : createDayTradeStandardMonitorConfig();
         monitorPortfolio = monitorPortfolio != null ? monitorPortfolio : new Portfolio(1_000_000.0);
-        executionEngine = new ExecutionEngine(ExecutionMode.PAPER_TRADING, monitorPortfolio, 0.001425);
+        executionEngine = new ExecutionEngine(ExecutionMode.PAPER_TRADING, monitorPortfolio, 0.001425, 0.0015);
         if (executionStatusDock != null) {
             executionStatusDock.setExecutionEngine(executionEngine);
         }
 
         signalMonitor = new SignalMonitorService(dataFeed, monitorConfig, monitorDecisionConfig);
-        signalMonitor.setMarketContextProvider(symbols -> buildMarketContextWithIndustryUniverse(new ArrayList<>(symbols), TradeMode.DAY_TRADE));
+        signalMonitor.setMarketContextProvider(symbols -> buildInternalMarketContext(new ArrayList<>(symbols), TradeMode.DAY_TRADE));
         signalMonitor.setOnMarketContextUpdate(this::updateMarketContextDocks);
         signalMonitor.setOnScanResults(this::updateScanResultsOnUi);
         signalMonitor.setOnSignalDetected(this::handleTradingSignal);
@@ -2720,11 +3216,483 @@ public class MainFrameWithDocking extends JFrame {
         config.getVotingConfig().setExitThreshold(0.35);
         config.getVotingConfig().setMinVotingStrategies(1);
         config.getRiskConfig().setMinRiskRewardRatio(1.5);
-        config.getRiskConfig().setMaxConcurrentPositions(10);
+        config.getRiskConfig().setMaxConcurrentPositions(3);
         config.getRiskConfig().setMaxPositionSizePercent(0.25);
         config.getRiskConfig().setMinCashReservePercent(0.10);
         config.getRiskConfig().setAllowShortSelling(false);
         return config;
+    }
+
+    private DecisionConfig createDayTradeDefensiveMonitorConfig() {
+        DecisionConfig config = DecisionConfig.createDefault();
+        config.setRegimeDetectionEnabled(false);
+        config.setTrendAnalysisEnabled(false);
+        config.setRiskManagementEnabled(true);
+        config.getVotingConfig().setLongEntryThreshold(0.50);
+        config.getVotingConfig().setShortEntryThreshold(0.95);
+        config.getVotingConfig().setExitThreshold(0.35);
+        config.getVotingConfig().setMinVotingStrategies(1);
+        config.getRiskConfig().setMinRiskRewardRatio(1.6);
+        config.getRiskConfig().setMaxConcurrentPositions(2);
+        config.getRiskConfig().setMaxPositionSizePercent(0.20);
+        config.getRiskConfig().setMinCashReservePercent(0.20);
+        config.getRiskConfig().setAllowShortSelling(false);
+        return config;
+    }
+
+    private DecisionConfig createDayTradeStandardMonitorConfig() {
+        DecisionConfig config = DecisionConfig.createDefault();
+        config.setRegimeDetectionEnabled(false);
+        config.setTrendAnalysisEnabled(false);
+        config.setRiskManagementEnabled(true);
+        config.getVotingConfig().setLongEntryThreshold(0.40);
+        config.getVotingConfig().setShortEntryThreshold(0.95);
+        config.getVotingConfig().setExitThreshold(0.35);
+        config.getVotingConfig().setMinVotingStrategies(1);
+        config.getRiskConfig().setMinRiskRewardRatio(1.5);
+        config.getRiskConfig().setMaxConcurrentPositions(3);
+        config.getRiskConfig().setMaxPositionSizePercent(0.25);
+        config.getRiskConfig().setMinCashReservePercent(0.10);
+        config.getRiskConfig().setAllowShortSelling(false);
+        return config;
+    }
+
+    private DecisionConfig createDayTradeMomentumMonitorConfig() {
+        DecisionConfig config = DecisionConfig.createDefault();
+        config.setRegimeDetectionEnabled(false);
+        config.setTrendAnalysisEnabled(false);
+        config.setRiskManagementEnabled(true);
+        config.getVotingConfig().setLongEntryThreshold(0.45);
+        config.getVotingConfig().setShortEntryThreshold(0.95);
+        config.getVotingConfig().setExitThreshold(0.30);
+        config.getVotingConfig().setMinVotingStrategies(1);
+        config.getRiskConfig().setMinRiskRewardRatio(1.8);
+        config.getRiskConfig().setMaxConcurrentPositions(3);
+        config.getRiskConfig().setMaxPositionSizePercent(0.25);
+        config.getRiskConfig().setMinCashReservePercent(0.10);
+        config.getRiskConfig().setAllowShortSelling(false);
+        return config;
+    }
+
+    private String getMonitorTemplateDescription(int index) {
+        return switch (index) {
+            case 1 -> "B組收斂版：目前主力測試模板，M5、VWAP、Volume Sustain、ATR、弱勢盤只放行極強股。";
+            case 2 -> "當沖防守控損版：最保守，09:20 後才開倉，每日最多 3 筆，弱勢盤全擋，適合大盤不明或新規則驗證。";
+            case 3 -> "當沖標準趨勢版：預設實測模板，M5 趨勢 + VWAP + 量能延續，每日最多 5 筆，適合一般盤。";
+            case 4 -> "當沖強勢突破版：只追有效放量突破，要求下一根確認與較高量能，弱勢盤全擋，適合明顯強勢盤。";
+            default -> "保留目前畫面設定，不套用任何模板。";
+        };
+    }
+
+    private String getMonitorTemplateName(int index) {
+        return switch (index) {
+            case 1 -> "B組收斂版";
+            case 2 -> "當沖防守控損版";
+            case 3 -> "當沖標準趨勢版";
+            case 4 -> "當沖強勢突破版";
+            default -> "目前設定";
+        };
+    }
+
+    private List<MonitorTemplate> loadMonitorTemplatesForDialog() {
+        List<MonitorTemplate> templates = new ArrayList<>();
+        templates.add(new MonitorTemplate(
+                "目前設定",
+                "保留目前畫面設定，不套用任何模板。",
+                copyMonitorConfig(monitorConfig != null ? monitorConfig : SignalMonitorConfig.createDefault()),
+                copyDecisionConfig(monitorDecisionConfig != null ? monitorDecisionConfig : createDayTradeStandardMonitorConfig()),
+                false));
+        templates.add(new MonitorTemplate("B組收斂版", getMonitorTemplateDescription(1),
+                SignalMonitorConfig.createBConvergenceTemplate(), createBConvergenceMonitorConfig(), false));
+        templates.add(new MonitorTemplate("當沖防守控損版", getMonitorTemplateDescription(2),
+                SignalMonitorConfig.createDayTradeDefensiveTemplate(), createDayTradeDefensiveMonitorConfig(), false));
+        templates.add(new MonitorTemplate("當沖標準趨勢版", getMonitorTemplateDescription(3),
+                SignalMonitorConfig.createDayTradeStandardTemplate(), createDayTradeStandardMonitorConfig(), false));
+        templates.add(new MonitorTemplate("當沖強勢突破版", getMonitorTemplateDescription(4),
+                SignalMonitorConfig.createDayTradeMomentumTemplate(), createDayTradeMomentumMonitorConfig(), false));
+        templates.addAll(loadUserMonitorTemplates());
+        return templates;
+    }
+
+    private SignalMonitorConfig copyMonitorConfig(SignalMonitorConfig source) {
+        SignalMonitorConfig copy = new SignalMonitorConfig();
+        if (source == null) {
+            return copy;
+        }
+        copy.setScanIntervalSeconds(source.getScanIntervalSeconds());
+        copy.setTimeframe(source.getTimeframe());
+        copy.setMinSignalIntervalMinutes(source.getMinSignalIntervalMinutes());
+        copy.setBarCount(source.getBarCount());
+        copy.setTradeMode(source.getTradeMode());
+        copy.setBatchScanMode(source.isBatchScanMode());
+        copy.setRadarStrategyConfig(source.getRadarStrategyConfig() != null
+                ? source.getRadarStrategyConfig().copy()
+                : RadarStrategyConfig.createDefault());
+        copy.setEarlyEntryBlockEnabled(source.isEarlyEntryBlockEnabled());
+        copy.setEarlyEntryBlockStart(source.getEarlyEntryBlockStart());
+        copy.setEarlyEntryBlockEnd(source.getEarlyEntryBlockEnd());
+        copy.setStopLossCooldownEnabled(source.isStopLossCooldownEnabled());
+        copy.setStopLossCooldownMinutes(source.getStopLossCooldownMinutes());
+        copy.setLatestAutoEntryTime(source.getLatestAutoEntryTime());
+        copy.setDailyMaxLoss(source.getDailyMaxLoss());
+        copy.setDailyMaxStopLossCount(source.getDailyMaxStopLossCount());
+        copy.setConsecutiveLossLimit(source.getConsecutiveLossLimit());
+        copy.setDisableTradingAfterLossLimit(source.isDisableTradingAfterLossLimit());
+        copy.setDailyMaxAutoTrades(source.getDailyMaxAutoTrades());
+        copy.setEntryPacingMinutes(source.getEntryPacingMinutes());
+        copy.setPostExitCooldownMinutes(source.getPostExitCooldownMinutes());
+        copy.setOneEntryPerFiveMinuteBar(source.isOneEntryPerFiveMinuteBar());
+        copy.setRangeFailureExitEnabled(source.isRangeFailureExitEnabled());
+        copy.setRangeFailureExitMinutes(source.getRangeFailureExitMinutes());
+        copy.setRangeFailureMinR(source.getRangeFailureMinR());
+        copy.setRangeFailureVolumeSustainExitEnabled(source.isRangeFailureVolumeSustainExitEnabled());
+        copy.setRsiPeriod(source.getRsiPeriod());
+        copy.setRsiOversold(source.getRsiOversold());
+        copy.setRsiOverbought(source.getRsiOverbought());
+        return copy;
+    }
+
+    private List<MonitorTemplate> loadUserMonitorTemplates() {
+        if (!Files.exists(MONITOR_TEMPLATE_STORE)) {
+            return List.of();
+        }
+        Properties props = new Properties();
+        try (InputStream input = Files.newInputStream(MONITOR_TEMPLATE_STORE)) {
+            props.load(input);
+        } catch (IOException e) {
+            System.err.println("[MonitorTemplates] load failed: " + e.getMessage());
+            return List.of();
+        }
+        int count = parseInt(props.getProperty("count"), 0);
+        List<MonitorTemplate> templates = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String prefix = "template." + i + ".";
+            String name = props.getProperty(prefix + "name", "").trim();
+            if (name.isEmpty()) {
+                continue;
+            }
+            SignalMonitorConfig monitor = readMonitorConfig(props, prefix);
+            DecisionConfig decision = readDecisionConfig(props, prefix);
+            templates.add(new MonitorTemplate(
+                    name,
+                    props.getProperty(prefix + "description", "使用者自訂模板：" + name),
+                    monitor,
+                    decision,
+                    true));
+        }
+        return templates;
+    }
+
+    private void saveUserMonitorTemplate(MonitorTemplate newTemplate) {
+        LinkedHashMap<String, MonitorTemplate> templates = new LinkedHashMap<>();
+        for (MonitorTemplate template : loadUserMonitorTemplates()) {
+            templates.put(template.name(), template);
+        }
+        templates.put(newTemplate.name(), newTemplate);
+
+        Properties props = new Properties();
+        props.setProperty("count", String.valueOf(templates.size()));
+        int index = 0;
+        for (MonitorTemplate template : templates.values()) {
+            String prefix = "template." + index++ + ".";
+            props.setProperty(prefix + "name", template.name());
+            props.setProperty(prefix + "description", template.description());
+            writeMonitorConfig(props, prefix, template.monitorConfig());
+            writeDecisionConfig(props, prefix, template.decisionConfig());
+        }
+        try {
+            Files.createDirectories(MONITOR_TEMPLATE_STORE.getParent());
+            try (OutputStream output = Files.newOutputStream(MONITOR_TEMPLATE_STORE)) {
+                props.store(output, "DreamHouseTrading user monitor templates");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("儲存監控模板失敗：" + e.getMessage(), e);
+        }
+    }
+
+    private void writeMonitorConfig(Properties props, String prefix, SignalMonitorConfig monitor) {
+        RadarStrategyConfig radar = monitor.getRadarStrategyConfig() != null
+                ? monitor.getRadarStrategyConfig()
+                : RadarStrategyConfig.createDefault();
+        props.setProperty(prefix + "scanIntervalSeconds", String.valueOf(monitor.getScanIntervalSeconds()));
+        props.setProperty(prefix + "timeframe", monitor.getTimeframe().name());
+        props.setProperty(prefix + "minSignalIntervalMinutes", String.valueOf(monitor.getMinSignalIntervalMinutes()));
+        props.setProperty(prefix + "barCount", String.valueOf(monitor.getBarCount()));
+        props.setProperty(prefix + "earlyEntryBlockEnabled", String.valueOf(monitor.isEarlyEntryBlockEnabled()));
+        props.setProperty(prefix + "earlyEntryBlockStart", monitor.getEarlyEntryBlockStart().toString());
+        props.setProperty(prefix + "earlyEntryBlockEnd", monitor.getEarlyEntryBlockEnd().toString());
+        props.setProperty(prefix + "stopLossCooldownEnabled", String.valueOf(monitor.isStopLossCooldownEnabled()));
+        props.setProperty(prefix + "stopLossCooldownMinutes", String.valueOf(monitor.getStopLossCooldownMinutes()));
+        props.setProperty(prefix + "latestAutoEntryTime", monitor.getLatestAutoEntryTime().toString());
+        props.setProperty(prefix + "dailyMaxLoss", String.valueOf(monitor.getDailyMaxLoss()));
+        props.setProperty(prefix + "dailyMaxStopLossCount", String.valueOf(monitor.getDailyMaxStopLossCount()));
+        props.setProperty(prefix + "consecutiveLossLimit", String.valueOf(monitor.getConsecutiveLossLimit()));
+        props.setProperty(prefix + "disableTradingAfterLossLimit", String.valueOf(monitor.isDisableTradingAfterLossLimit()));
+        props.setProperty(prefix + "dailyMaxAutoTrades", String.valueOf(monitor.getDailyMaxAutoTrades()));
+        props.setProperty(prefix + "entryPacingMinutes", String.valueOf(monitor.getEntryPacingMinutes()));
+        props.setProperty(prefix + "postExitCooldownMinutes", String.valueOf(monitor.getPostExitCooldownMinutes()));
+        props.setProperty(prefix + "oneEntryPerFiveMinuteBar", String.valueOf(monitor.isOneEntryPerFiveMinuteBar()));
+        props.setProperty(prefix + "rangeFailureExitEnabled", String.valueOf(monitor.isRangeFailureExitEnabled()));
+        props.setProperty(prefix + "rangeFailureExitMinutes", String.valueOf(monitor.getRangeFailureExitMinutes()));
+        props.setProperty(prefix + "rangeFailureMinR", String.valueOf(monitor.getRangeFailureMinR()));
+        props.setProperty(prefix + "rangeFailureVolumeSustainExitEnabled", String.valueOf(monitor.isRangeFailureVolumeSustainExitEnabled()));
+
+        props.setProperty(prefix + "radar.dayTradeTimeframe", radar.getDayTradeTimeframe().name());
+        props.setProperty(prefix + "radar.executionConfirmationTimeframe", radar.getExecutionConfirmationTimeframe().name());
+        props.setProperty(prefix + "radar.dayTradeBarCount", String.valueOf(radar.getDayTradeBarCount()));
+        props.setProperty(prefix + "radar.rsiEnabled", String.valueOf(radar.isRsiEnabled()));
+        props.setProperty(prefix + "radar.rsiPeriod", String.valueOf(radar.getRsiPeriod()));
+        props.setProperty(prefix + "radar.rsiOversold", String.valueOf(radar.getRsiOversold()));
+        props.setProperty(prefix + "radar.rsiOverbought", String.valueOf(radar.getRsiOverbought()));
+        props.setProperty(prefix + "radar.rsiWeight", String.valueOf(radar.getRsiWeight()));
+        props.setProperty(prefix + "radar.requireRsiEntryConfirmation", String.valueOf(radar.isRequireRsiEntryConfirmation()));
+        props.setProperty(prefix + "radar.movingAverageEnabled", String.valueOf(radar.isMovingAverageEnabled()));
+        props.setProperty(prefix + "radar.movingAverageType", radar.getMovingAverageType().name());
+        props.setProperty(prefix + "radar.fastMovingAveragePeriod", String.valueOf(radar.getFastMovingAveragePeriod()));
+        props.setProperty(prefix + "radar.slowMovingAveragePeriod", String.valueOf(radar.getSlowMovingAveragePeriod()));
+        props.setProperty(prefix + "radar.movingAverageWeight", String.valueOf(radar.getMovingAverageWeight()));
+        props.setProperty(prefix + "radar.volumeBreakoutEnabled", String.valueOf(radar.isVolumeBreakoutEnabled()));
+        props.setProperty(prefix + "radar.breakoutLookbackBars", String.valueOf(radar.getBreakoutLookbackBars()));
+        props.setProperty(prefix + "radar.volumeMultiplier", String.valueOf(radar.getVolumeMultiplier()));
+        props.setProperty(prefix + "radar.volumeBreakoutWeight", String.valueOf(radar.getVolumeBreakoutWeight()));
+        props.setProperty(prefix + "radar.minimumEntryScore", String.valueOf(radar.getMinimumEntryScore()));
+        props.setProperty(prefix + "radar.blockBreakoutOnRsiOverbought", String.valueOf(radar.isBlockBreakoutOnRsiOverbought()));
+        props.setProperty(prefix + "radar.requireBreakoutContinuation", String.valueOf(radar.isRequireBreakoutContinuation()));
+        props.setProperty(prefix + "radar.requirePriceAboveVwapForLong", String.valueOf(radar.isRequirePriceAboveVwapForLong()));
+        props.setProperty(prefix + "radar.requireBreakoutNextBarConfirmation", String.valueOf(radar.isRequireBreakoutNextBarConfirmation()));
+        props.setProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent", String.valueOf(radar.getMaxEntryRiseFromRecentLowPercent()));
+        props.setProperty(prefix + "radar.marketRegimeFilterEnabled", String.valueOf(radar.isMarketRegimeFilterEnabled()));
+        props.setProperty(prefix + "radar.weakMarketStrictLongEnabled", String.valueOf(radar.isWeakMarketStrictLongEnabled()));
+        props.setProperty(prefix + "radar.weakMarketLongPolicy", radar.getWeakMarketLongPolicy().name());
+        props.setProperty(prefix + "radar.weakOutperformBenchmarkPercent", String.valueOf(radar.getWeakOutperformBenchmarkPercent()));
+        props.setProperty(prefix + "radar.weakOutperformIndustryPercent", String.valueOf(radar.getWeakOutperformIndustryPercent()));
+        props.setProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume", String.valueOf(radar.isRangeMarketRequiresVwapAndVolume()));
+        props.setProperty(prefix + "radar.volumeSustainEnabled", String.valueOf(radar.isVolumeSustainEnabled()));
+        props.setProperty(prefix + "radar.atrRiskEnabled", String.valueOf(radar.isAtrRiskEnabled()));
+        props.setProperty(prefix + "radar.atrChaseLimitEnabled", String.valueOf(radar.isAtrChaseLimitEnabled()));
+        props.setProperty(prefix + "radar.atrPeriod", String.valueOf(radar.getAtrPeriod()));
+        props.setProperty(prefix + "radar.atrStopMultiplier", String.valueOf(radar.getAtrStopMultiplier()));
+        props.setProperty(prefix + "radar.atrTakeProfitMultiplier", String.valueOf(radar.getAtrTakeProfitMultiplier()));
+        props.setProperty(prefix + "radar.atrChaseLimitMultiplier", String.valueOf(radar.getAtrChaseLimitMultiplier()));
+    }
+
+    private SignalMonitorConfig readMonitorConfig(Properties props, String prefix) {
+        SignalMonitorConfig monitor = SignalMonitorConfig.createDayTradeStandardTemplate();
+        RadarStrategyConfig radar = monitor.getRadarStrategyConfig().copy();
+        monitor.setScanIntervalSeconds(parseInt(props.getProperty(prefix + "scanIntervalSeconds"), monitor.getScanIntervalSeconds()));
+        monitor.setTimeframe(parseEnum(props.getProperty(prefix + "timeframe"), Timeframe.class, monitor.getTimeframe()));
+        monitor.setMinSignalIntervalMinutes(parseInt(props.getProperty(prefix + "minSignalIntervalMinutes"), monitor.getMinSignalIntervalMinutes()));
+        monitor.setBarCount(parseInt(props.getProperty(prefix + "barCount"), monitor.getBarCount()));
+        monitor.setEarlyEntryBlockEnabled(parseBoolean(props.getProperty(prefix + "earlyEntryBlockEnabled"), monitor.isEarlyEntryBlockEnabled()));
+        monitor.setEarlyEntryBlockStart(parseTime(props.getProperty(prefix + "earlyEntryBlockStart"), monitor.getEarlyEntryBlockStart()));
+        monitor.setEarlyEntryBlockEnd(parseTime(props.getProperty(prefix + "earlyEntryBlockEnd"), monitor.getEarlyEntryBlockEnd()));
+        monitor.setStopLossCooldownEnabled(parseBoolean(props.getProperty(prefix + "stopLossCooldownEnabled"), monitor.isStopLossCooldownEnabled()));
+        monitor.setStopLossCooldownMinutes(parseInt(props.getProperty(prefix + "stopLossCooldownMinutes"), monitor.getStopLossCooldownMinutes()));
+        monitor.setLatestAutoEntryTime(parseTime(props.getProperty(prefix + "latestAutoEntryTime"), monitor.getLatestAutoEntryTime()));
+        monitor.setDailyMaxLoss(parseDouble(props.getProperty(prefix + "dailyMaxLoss"), monitor.getDailyMaxLoss()));
+        monitor.setDailyMaxStopLossCount(parseInt(props.getProperty(prefix + "dailyMaxStopLossCount"), monitor.getDailyMaxStopLossCount()));
+        monitor.setConsecutiveLossLimit(parseInt(props.getProperty(prefix + "consecutiveLossLimit"), monitor.getConsecutiveLossLimit()));
+        monitor.setDisableTradingAfterLossLimit(parseBoolean(props.getProperty(prefix + "disableTradingAfterLossLimit"), monitor.isDisableTradingAfterLossLimit()));
+        monitor.setDailyMaxAutoTrades(parseInt(props.getProperty(prefix + "dailyMaxAutoTrades"), monitor.getDailyMaxAutoTrades()));
+        monitor.setEntryPacingMinutes(parseInt(props.getProperty(prefix + "entryPacingMinutes"), monitor.getEntryPacingMinutes()));
+        monitor.setPostExitCooldownMinutes(parseInt(props.getProperty(prefix + "postExitCooldownMinutes"), monitor.getPostExitCooldownMinutes()));
+        monitor.setOneEntryPerFiveMinuteBar(parseBoolean(props.getProperty(prefix + "oneEntryPerFiveMinuteBar"), monitor.isOneEntryPerFiveMinuteBar()));
+        monitor.setRangeFailureExitEnabled(parseBoolean(props.getProperty(prefix + "rangeFailureExitEnabled"), monitor.isRangeFailureExitEnabled()));
+        monitor.setRangeFailureExitMinutes(parseInt(props.getProperty(prefix + "rangeFailureExitMinutes"), monitor.getRangeFailureExitMinutes()));
+        monitor.setRangeFailureMinR(parseDouble(props.getProperty(prefix + "rangeFailureMinR"), monitor.getRangeFailureMinR()));
+        monitor.setRangeFailureVolumeSustainExitEnabled(parseBoolean(props.getProperty(prefix + "rangeFailureVolumeSustainExitEnabled"), monitor.isRangeFailureVolumeSustainExitEnabled()));
+
+        radar.setDayTradeTimeframe(parseEnum(props.getProperty(prefix + "radar.dayTradeTimeframe"), Timeframe.class, radar.getDayTradeTimeframe()));
+        radar.setExecutionConfirmationTimeframe(parseEnum(props.getProperty(prefix + "radar.executionConfirmationTimeframe"), Timeframe.class, radar.getExecutionConfirmationTimeframe()));
+        radar.setDayTradeBarCount(parseInt(props.getProperty(prefix + "radar.dayTradeBarCount"), radar.getDayTradeBarCount()));
+        radar.setRsiEnabled(parseBoolean(props.getProperty(prefix + "radar.rsiEnabled"), radar.isRsiEnabled()));
+        radar.setRsiPeriod(parseInt(props.getProperty(prefix + "radar.rsiPeriod"), radar.getRsiPeriod()));
+        radar.setRsiOversold(parseDouble(props.getProperty(prefix + "radar.rsiOversold"), radar.getRsiOversold()));
+        radar.setRsiOverbought(parseDouble(props.getProperty(prefix + "radar.rsiOverbought"), radar.getRsiOverbought()));
+        radar.setRsiWeight(parseDouble(props.getProperty(prefix + "radar.rsiWeight"), radar.getRsiWeight()));
+        radar.setRequireRsiEntryConfirmation(parseBoolean(props.getProperty(prefix + "radar.requireRsiEntryConfirmation"), radar.isRequireRsiEntryConfirmation()));
+        radar.setMovingAverageEnabled(parseBoolean(props.getProperty(prefix + "radar.movingAverageEnabled"), radar.isMovingAverageEnabled()));
+        radar.setMovingAverageType(parseEnum(props.getProperty(prefix + "radar.movingAverageType"), RadarStrategyConfig.MovingAverageType.class, radar.getMovingAverageType()));
+        radar.setFastMovingAveragePeriod(parseInt(props.getProperty(prefix + "radar.fastMovingAveragePeriod"), radar.getFastMovingAveragePeriod()));
+        radar.setSlowMovingAveragePeriod(parseInt(props.getProperty(prefix + "radar.slowMovingAveragePeriod"), radar.getSlowMovingAveragePeriod()));
+        radar.setMovingAverageWeight(parseDouble(props.getProperty(prefix + "radar.movingAverageWeight"), radar.getMovingAverageWeight()));
+        radar.setVolumeBreakoutEnabled(parseBoolean(props.getProperty(prefix + "radar.volumeBreakoutEnabled"), radar.isVolumeBreakoutEnabled()));
+        radar.setBreakoutLookbackBars(parseInt(props.getProperty(prefix + "radar.breakoutLookbackBars"), radar.getBreakoutLookbackBars()));
+        radar.setVolumeMultiplier(parseDouble(props.getProperty(prefix + "radar.volumeMultiplier"), radar.getVolumeMultiplier()));
+        radar.setVolumeBreakoutWeight(parseDouble(props.getProperty(prefix + "radar.volumeBreakoutWeight"), radar.getVolumeBreakoutWeight()));
+        radar.setMinimumEntryScore(parseDouble(props.getProperty(prefix + "radar.minimumEntryScore"), radar.getMinimumEntryScore()));
+        radar.setBlockBreakoutOnRsiOverbought(parseBoolean(props.getProperty(prefix + "radar.blockBreakoutOnRsiOverbought"), radar.isBlockBreakoutOnRsiOverbought()));
+        radar.setRequireBreakoutContinuation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutContinuation"), radar.isRequireBreakoutContinuation()));
+        radar.setRequirePriceAboveVwapForLong(parseBoolean(props.getProperty(prefix + "radar.requirePriceAboveVwapForLong"), radar.isRequirePriceAboveVwapForLong()));
+        radar.setRequireBreakoutNextBarConfirmation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutNextBarConfirmation"), radar.isRequireBreakoutNextBarConfirmation()));
+        radar.setMaxEntryRiseFromRecentLowPercent(parseDouble(props.getProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent"), radar.getMaxEntryRiseFromRecentLowPercent()));
+        radar.setMarketRegimeFilterEnabled(parseBoolean(props.getProperty(prefix + "radar.marketRegimeFilterEnabled"), radar.isMarketRegimeFilterEnabled()));
+        radar.setWeakMarketStrictLongEnabled(parseBoolean(props.getProperty(prefix + "radar.weakMarketStrictLongEnabled"), radar.isWeakMarketStrictLongEnabled()));
+        radar.setWeakMarketLongPolicy(parseEnum(props.getProperty(prefix + "radar.weakMarketLongPolicy"), WeakMarketLongPolicy.class, radar.getWeakMarketLongPolicy()));
+        radar.setWeakOutperformBenchmarkPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformBenchmarkPercent"), radar.getWeakOutperformBenchmarkPercent()));
+        radar.setWeakOutperformIndustryPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformIndustryPercent"), radar.getWeakOutperformIndustryPercent()));
+        radar.setRangeMarketRequiresVwapAndVolume(parseBoolean(props.getProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume"), radar.isRangeMarketRequiresVwapAndVolume()));
+        radar.setVolumeSustainEnabled(parseBoolean(props.getProperty(prefix + "radar.volumeSustainEnabled"), radar.isVolumeSustainEnabled()));
+        radar.setAtrRiskEnabled(parseBoolean(props.getProperty(prefix + "radar.atrRiskEnabled"), radar.isAtrRiskEnabled()));
+        radar.setAtrChaseLimitEnabled(parseBoolean(props.getProperty(prefix + "radar.atrChaseLimitEnabled"), radar.isAtrChaseLimitEnabled()));
+        radar.setAtrPeriod(parseInt(props.getProperty(prefix + "radar.atrPeriod"), radar.getAtrPeriod()));
+        radar.setAtrStopMultiplier(parseDouble(props.getProperty(prefix + "radar.atrStopMultiplier"), radar.getAtrStopMultiplier()));
+        radar.setAtrTakeProfitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrTakeProfitMultiplier"), radar.getAtrTakeProfitMultiplier()));
+        radar.setAtrChaseLimitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrChaseLimitMultiplier"), radar.getAtrChaseLimitMultiplier()));
+        monitor.setRadarStrategyConfig(radar);
+        return monitor;
+    }
+
+    private void writeDecisionConfig(Properties props, String prefix, DecisionConfig decision) {
+        props.setProperty(prefix + "decision.longEntryThreshold", String.valueOf(decision.getVotingConfig().getLongEntryThreshold()));
+        props.setProperty(prefix + "decision.exitThreshold", String.valueOf(decision.getVotingConfig().getExitThreshold()));
+        props.setProperty(prefix + "decision.minVotingStrategies", String.valueOf(decision.getVotingConfig().getMinVotingStrategies()));
+        props.setProperty(prefix + "decision.riskManagementEnabled", String.valueOf(decision.isRiskManagementEnabled()));
+        props.setProperty(prefix + "decision.maxConcurrentPositions", String.valueOf(decision.getRiskConfig().getMaxConcurrentPositions()));
+        props.setProperty(prefix + "decision.minRiskRewardRatio", String.valueOf(decision.getRiskConfig().getMinRiskRewardRatio()));
+        props.setProperty(prefix + "decision.minVolatilityPercent", String.valueOf(decision.getRiskConfig().getMinVolatilityPercent()));
+        props.setProperty(prefix + "decision.maxVolatilityPercent", String.valueOf(decision.getRiskConfig().getMaxVolatilityPercent()));
+    }
+
+    private DecisionConfig readDecisionConfig(Properties props, String prefix) {
+        DecisionConfig decision = createDayTradeStandardMonitorConfig();
+        decision.getVotingConfig().setLongEntryThreshold(parseDouble(props.getProperty(prefix + "decision.longEntryThreshold"), decision.getVotingConfig().getLongEntryThreshold()));
+        decision.getVotingConfig().setExitThreshold(parseDouble(props.getProperty(prefix + "decision.exitThreshold"), decision.getVotingConfig().getExitThreshold()));
+        decision.getVotingConfig().setMinVotingStrategies(parseInt(props.getProperty(prefix + "decision.minVotingStrategies"), decision.getVotingConfig().getMinVotingStrategies()));
+        decision.setRiskManagementEnabled(parseBoolean(props.getProperty(prefix + "decision.riskManagementEnabled"), decision.isRiskManagementEnabled()));
+        decision.getRiskConfig().setMaxConcurrentPositions(parseInt(props.getProperty(prefix + "decision.maxConcurrentPositions"), decision.getRiskConfig().getMaxConcurrentPositions()));
+        decision.getRiskConfig().setMinRiskRewardRatio(parseDouble(props.getProperty(prefix + "decision.minRiskRewardRatio"), decision.getRiskConfig().getMinRiskRewardRatio()));
+        decision.getRiskConfig().setMinVolatilityPercent(parseDouble(props.getProperty(prefix + "decision.minVolatilityPercent"), decision.getRiskConfig().getMinVolatilityPercent()));
+        decision.getRiskConfig().setMaxVolatilityPercent(parseDouble(props.getProperty(prefix + "decision.maxVolatilityPercent"), decision.getRiskConfig().getMaxVolatilityPercent()));
+        decision.getRiskConfig().setAllowShortSelling(false);
+        return decision;
+    }
+
+    private int parseInt(String value, int fallback) {
+        try {
+            return value == null ? fallback : Integer.parseInt(value.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private double parseDouble(String value, double fallback) {
+        try {
+            return value == null ? fallback : Double.parseDouble(value.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private boolean parseBoolean(String value, boolean fallback) {
+        return value == null ? fallback : Boolean.parseBoolean(value.trim());
+    }
+
+    private LocalTime parseTime(String value, LocalTime fallback) {
+        try {
+            return value == null ? fallback : LocalTime.parse(value.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private <E extends Enum<E>> E parseEnum(String value, Class<E> type, E fallback) {
+        try {
+            return value == null ? fallback : Enum.valueOf(type, value.trim());
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    private String buildMonitorStrategyDetails() {
+        SignalMonitorConfig activeMonitorConfig = monitorConfig != null
+                ? monitorConfig
+                : SignalMonitorConfig.createDayTradeStandardTemplate();
+        RadarStrategyConfig radar = activeMonitorConfig.getRadarStrategyConfig() != null
+                ? activeMonitorConfig.getRadarStrategyConfig()
+                : RadarStrategyConfig.createDefault();
+        DecisionConfig activeDecisionConfig = monitorDecisionConfig != null
+                ? monitorDecisionConfig
+                : createDayTradeStandardMonitorConfig();
+
+        return String.format(Locale.US,
+                "strategy=%s;scanIntervalSec=%d;mainTimeframe=%s;dayTradeTimeframe=%s;executionConfirmTimeframe=%s;barCount=%d;dayTradeBars=%d;minSignalIntervalMin=%d;"
+                        + "earlyBlock=%s %s-%s;latestEntry=%s;stopLossCooldown=%s %dmin;postExitCooldownMin=%d;"
+                        + "maxPositions=%d;dailyMaxLoss=%.2f;dailyMaxStopLossCount=%d;consecutiveLossLimit=%d;disableAfterLossLimit=%s;dailyMaxAutoTrades=%d;entryPacingMin=%d;oneEntryPerM5=%s;"
+                        + "longThreshold=%.3f;exitThreshold=%.3f;minStrategies=%d;minRR=%.3f;minVolatility=%.3f;maxVolatility=%.3f;"
+                        + "rsiEnabled=%s;rsiPeriod=%d;rsiOversold=%.2f;rsiOverbought=%.2f;rsiWeight=%.2f;requireRsiConfirm=%s;blockRsiOverbought=%s;"
+                        + "maEnabled=%s;maType=%s;maFast=%d;maSlow=%d;maWeight=%.2f;"
+                        + "volumeBreakout=%s;breakoutLookback=%d;volumeMultiplier=%.2f;volumeWeight=%.2f;volumeSustain=%s;breakoutContinuation=%s;nextBarConfirm=%s;"
+                        + "requireAboveVwap=%s;rangeRequiresVwapVolume=%s;rangeFailureExit=%s;rangeFailureMinutes=%d;rangeFailureMinR=%.2f;rangeVolumeFailExit=%s;"
+                        + "marketRegimeFilter=%s;weakStrictLong=%s;weakPolicy=%s;weakOutperformBenchmark=%.2f;weakOutperformIndustry=%.2f;"
+                        + "atrRisk=%s;atrChaseLimitEnabled=%s;atrPeriod=%d;atrStop=%.2f;atrTakeProfit=%.2f;atrChaseLimit=%.2f;maxEntryRiseFromRecentLow=%.3f;minimumEntryScore=%.3f",
+                monitorStrategyName,
+                activeMonitorConfig.getScanIntervalSeconds(),
+                activeMonitorConfig.getTimeframe(),
+                radar.getDayTradeTimeframe(),
+                radar.getExecutionConfirmationTimeframe(),
+                activeMonitorConfig.getBarCount(),
+                radar.getDayTradeBarCount(),
+                activeMonitorConfig.getMinSignalIntervalMinutes(),
+                activeMonitorConfig.isEarlyEntryBlockEnabled(),
+                activeMonitorConfig.getEarlyEntryBlockStart(),
+                activeMonitorConfig.getEarlyEntryBlockEnd(),
+                activeMonitorConfig.getLatestAutoEntryTime(),
+                activeMonitorConfig.isStopLossCooldownEnabled(),
+                activeMonitorConfig.getStopLossCooldownMinutes(),
+                activeMonitorConfig.getPostExitCooldownMinutes(),
+                activeDecisionConfig.getRiskConfig().getMaxConcurrentPositions(),
+                activeMonitorConfig.getDailyMaxLoss(),
+                activeMonitorConfig.getDailyMaxStopLossCount(),
+                activeMonitorConfig.getConsecutiveLossLimit(),
+                activeMonitorConfig.isDisableTradingAfterLossLimit(),
+                activeMonitorConfig.getDailyMaxAutoTrades(),
+                activeMonitorConfig.getEntryPacingMinutes(),
+                activeMonitorConfig.isOneEntryPerFiveMinuteBar(),
+                activeDecisionConfig.getVotingConfig().getLongEntryThreshold(),
+                activeDecisionConfig.getVotingConfig().getExitThreshold(),
+                activeDecisionConfig.getVotingConfig().getMinVotingStrategies(),
+                activeDecisionConfig.getRiskConfig().getMinRiskRewardRatio(),
+                activeDecisionConfig.getRiskConfig().getMinVolatilityPercent(),
+                activeDecisionConfig.getRiskConfig().getMaxVolatilityPercent(),
+                radar.isRsiEnabled(),
+                radar.getRsiPeriod(),
+                radar.getRsiOversold(),
+                radar.getRsiOverbought(),
+                radar.getRsiWeight(),
+                radar.isRequireRsiEntryConfirmation(),
+                radar.isBlockBreakoutOnRsiOverbought(),
+                radar.isMovingAverageEnabled(),
+                radar.getMovingAverageType(),
+                radar.getFastMovingAveragePeriod(),
+                radar.getSlowMovingAveragePeriod(),
+                radar.getMovingAverageWeight(),
+                radar.isVolumeBreakoutEnabled(),
+                radar.getBreakoutLookbackBars(),
+                radar.getVolumeMultiplier(),
+                radar.getVolumeBreakoutWeight(),
+                radar.isVolumeSustainEnabled(),
+                radar.isRequireBreakoutContinuation(),
+                radar.isRequireBreakoutNextBarConfirmation(),
+                radar.isRequirePriceAboveVwapForLong(),
+                radar.isRangeMarketRequiresVwapAndVolume(),
+                activeMonitorConfig.isRangeFailureExitEnabled(),
+                activeMonitorConfig.getRangeFailureExitMinutes(),
+                activeMonitorConfig.getRangeFailureMinR(),
+                activeMonitorConfig.isRangeFailureVolumeSustainExitEnabled(),
+                radar.isMarketRegimeFilterEnabled(),
+                radar.isWeakMarketStrictLongEnabled(),
+                radar.getWeakMarketLongPolicy(),
+                radar.getWeakOutperformBenchmarkPercent(),
+                radar.getWeakOutperformIndustryPercent(),
+                radar.isAtrRiskEnabled(),
+                radar.isAtrChaseLimitEnabled(),
+                radar.getAtrPeriod(),
+                radar.getAtrStopMultiplier(),
+                radar.getAtrTakeProfitMultiplier(),
+                radar.getAtrChaseLimitMultiplier(),
+                radar.getMaxEntryRiseFromRecentLowPercent(),
+                radar.getMinimumEntryScore());
     }
 
     private DecisionConfig copyDecisionConfig(DecisionConfig source) {
@@ -2783,11 +3751,23 @@ public class MainFrameWithDocking extends JFrame {
         gbc.anchor = GridBagConstraints.WEST;
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
-        JComboBox<String> templateBox = new JComboBox<>(new String[]{"目前設定", "模擬測試模板", "積極模板", "平衡模板", "B組收斂版模板"});
+        List<MonitorTemplate> monitorTemplates = new ArrayList<>(loadMonitorTemplatesForDialog());
+        JComboBox<String> templateBox = new JComboBox<>(monitorTemplates.stream()
+                .map(MonitorTemplate::name)
+                .toArray(String[]::new));
+        JLabel templateDescription = new JLabel(monitorTemplates.get(0).description());
+        templateDescription.setForeground(UIManager.getColor("Label.disabledForeground"));
+        JPanel templatePanel = new JPanel(new BorderLayout(4, 4));
+        templatePanel.add(templateBox, BorderLayout.NORTH);
+        templatePanel.add(templateDescription, BorderLayout.CENTER);
         JSpinner scanInterval = new JSpinner(new SpinnerNumberModel(monitorConfig.getScanIntervalSeconds(), 3, 60, 1));
         JComboBox<Timeframe> timeframeBox = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5, Timeframe.M15, Timeframe.H1});
         timeframeBox.setSelectedItem(monitorConfig.getTimeframe());
+        timeframeBox.setEnabled(false);
+        timeframeBox.setToolTipText("目前自動監控僅支援當沖，實際週期請使用「當沖週期」。");
         JSpinner barCountSpinner = new JSpinner(new SpinnerNumberModel(monitorConfig.getBarCount(), 60, 500, 20));
+        barCountSpinner.setEnabled(false);
+        barCountSpinner.setToolTipText("目前自動監控僅支援當沖，實際 K 線數量請使用「當沖 K 線數量」。");
         JSpinner signalInterval = new JSpinner(new SpinnerNumberModel(monitorConfig.getMinSignalIntervalMinutes(), 1, 60, 1));
         JSpinner longThreshold = percentSpinner(monitorDecisionConfig.getVotingConfig().getLongEntryThreshold());
         JSpinner exitThreshold = percentSpinner(monitorDecisionConfig.getVotingConfig().getExitThreshold());
@@ -2811,6 +3791,18 @@ public class MainFrameWithDocking extends JFrame {
                 monitorConfig.getLatestAutoEntryTime().getHour(), 0, 23, 1));
         JSpinner latestEntryMinute = new JSpinner(new SpinnerNumberModel(
                 monitorConfig.getLatestAutoEntryTime().getMinute(), 0, 59, 1));
+        JSpinner dailyMaxLoss = decimalSpinner(monitorConfig.getDailyMaxLoss(), -100_000.0, 0.0, 500.0);
+        JSpinner dailyMaxStopLossCount = new JSpinner(new SpinnerNumberModel(monitorConfig.getDailyMaxStopLossCount(), 0, 20, 1));
+        JSpinner consecutiveLossLimit = new JSpinner(new SpinnerNumberModel(monitorConfig.getConsecutiveLossLimit(), 0, 20, 1));
+        JCheckBox disableTradingAfterLossLimit = new JCheckBox("觸發日損/連敗後停止今日自動開倉", monitorConfig.isDisableTradingAfterLossLimit());
+        JSpinner dailyMaxAutoTrades = new JSpinner(new SpinnerNumberModel(monitorConfig.getDailyMaxAutoTrades(), 1, 50, 1));
+        JSpinner entryPacingMinutes = new JSpinner(new SpinnerNumberModel(monitorConfig.getEntryPacingMinutes(), 0, 60, 1));
+        JSpinner postExitCooldownMinutes = new JSpinner(new SpinnerNumberModel(monitorConfig.getPostExitCooldownMinutes(), 0, 240, 5));
+        JCheckBox oneEntryPerFiveMinuteBar = new JCheckBox("同一根 5 分 K 只允許 1 筆新倉", monitorConfig.isOneEntryPerFiveMinuteBar());
+        JCheckBox rangeFailureExitEnabled = new JCheckBox("RANGE 盤啟用時間/動能失效出場", monitorConfig.isRangeFailureExitEnabled());
+        JSpinner rangeFailureExitMinutes = new JSpinner(new SpinnerNumberModel(monitorConfig.getRangeFailureExitMinutes(), 5, 120, 5));
+        JSpinner rangeFailureMinR = decimalSpinner(monitorConfig.getRangeFailureMinR(), 0.0, 3.0, 0.1);
+        JCheckBox rangeFailureVolumeSustainExitEnabled = new JCheckBox("RANGE 盤 Volume Sustain 失效出場", monitorConfig.isRangeFailureVolumeSustainExitEnabled());
         JPanel earlyBlockPanel = createTimeRangePanel(
                 earlyBlockEnabled, earlyStartHour, earlyStartMinute, earlyEndHour, earlyEndMinute);
         JPanel stopLossCooldownPanel = createCheckboxSpinnerPanel(
@@ -2818,13 +3810,19 @@ public class MainFrameWithDocking extends JFrame {
         JPanel latestEntryPanel = createTimePanel(latestEntryHour, latestEntryMinute);
         JComboBox<Timeframe> dayTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5, Timeframe.M15});
         dayTimeframe.setSelectedItem(radarConfig.getDayTradeTimeframe());
+        JComboBox<Timeframe> executionConfirmationTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5});
+        executionConfirmationTimeframe.setSelectedItem(radarConfig.getExecutionConfirmationTimeframe());
         JComboBox<Timeframe> shortTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1});
         shortTimeframe.setSelectedItem(radarConfig.getShortSwingTimeframe());
+        shortTimeframe.setEnabled(false);
         JComboBox<Timeframe> swingTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M15, Timeframe.H1, Timeframe.D1});
         swingTimeframe.setSelectedItem(radarConfig.getSwingTradeTimeframe());
+        swingTimeframe.setEnabled(false);
         JSpinner dayBars = new JSpinner(new SpinnerNumberModel(radarConfig.getDayTradeBarCount(), 60, 600, 20));
         JSpinner shortBars = new JSpinner(new SpinnerNumberModel(radarConfig.getShortSwingBarCount(), 80, 800, 20));
+        shortBars.setEnabled(false);
         JSpinner swingBars = new JSpinner(new SpinnerNumberModel(radarConfig.getSwingTradeBarCount(), 100, 1000, 20));
+        swingBars.setEnabled(false);
 
         JCheckBox rsiEnabled = new JCheckBox("啟用 RSI", radarConfig.isRsiEnabled());
         JSpinner rsiPeriod = new JSpinner(new SpinnerNumberModel(radarConfig.getRsiPeriod(), 2, 60, 1));
@@ -2852,32 +3850,33 @@ public class MainFrameWithDocking extends JFrame {
         JSpinner maxEntryRiseFromRecentLow = percentSpinner(radarConfig.getMaxEntryRiseFromRecentLowPercent());
         JCheckBox marketRegimeFilterEnabled = new JCheckBox("啟用大盤狀態過濾", radarConfig.isMarketRegimeFilterEnabled());
         JCheckBox weakMarketStrictLongEnabled = new JCheckBox("弱勢盤只允許強勢股開多", radarConfig.isWeakMarketStrictLongEnabled());
+        JComboBox<WeakMarketLongPolicy> weakMarketLongPolicy = new JComboBox<>(WeakMarketLongPolicy.values());
+        weakMarketLongPolicy.setSelectedItem(radarConfig.getWeakMarketLongPolicy());
         JSpinner weakOutperformBenchmark = decimalSpinner(radarConfig.getWeakOutperformBenchmarkPercent(), 0.0, 5.0, 0.05);
         JSpinner weakOutperformIndustry = decimalSpinner(radarConfig.getWeakOutperformIndustryPercent(), 0.0, 5.0, 0.05);
         JCheckBox rangeRequiresVwapVolume = new JCheckBox("震盪盤要求 VWAP 與量能延續", radarConfig.isRangeMarketRequiresVwapAndVolume());
         JCheckBox volumeSustainEnabled = new JCheckBox("啟用 Volume Sustain Filter", radarConfig.isVolumeSustainEnabled());
         JCheckBox atrRiskEnabled = new JCheckBox("啟用 ATR 動態停損停利", radarConfig.isAtrRiskEnabled());
+        JCheckBox atrChaseLimitEnabled = new JCheckBox("啟用 ATR 追高限制", radarConfig.isAtrChaseLimitEnabled());
+        atrRiskEnabled.setText("啟用 ATR 停損/停利");
         JSpinner atrPeriod = new JSpinner(new SpinnerNumberModel(radarConfig.getAtrPeriod(), 3, 60, 1));
         JSpinner atrStopMultiplier = decimalSpinner(radarConfig.getAtrStopMultiplier(), 0.1, 5.0, 0.1);
         JSpinner atrTakeProfitMultiplier = decimalSpinner(radarConfig.getAtrTakeProfitMultiplier(), 0.1, 8.0, 0.1);
         JSpinner atrChaseLimitMultiplier = decimalSpinner(radarConfig.getAtrChaseLimitMultiplier(), 0.1, 8.0, 0.1);
 
         templateBox.addActionListener(e -> {
-            if (templateBox.getSelectedIndex() == 0) {
+            int selectedIndex = templateBox.getSelectedIndex();
+            if (selectedIndex < 0 || selectedIndex >= monitorTemplates.size()) {
                 return;
             }
-            SignalMonitorConfig configTemplate = switch (templateBox.getSelectedIndex()) {
-                case 1 -> SignalMonitorConfig.createSimulationTestTemplate();
-                case 2 -> SignalMonitorConfig.createAggressiveTemplate();
-                case 4 -> SignalMonitorConfig.createBConvergenceTemplate();
-                default -> SignalMonitorConfig.createBalancedTemplate();
-            };
-            DecisionConfig decisionTemplate = switch (templateBox.getSelectedIndex()) {
-                case 1 -> createSimulationTestDecisionConfig();
-                case 2 -> createAggressiveMonitorConfig();
-                case 4 -> createBConvergenceMonitorConfig();
-                default -> createBalancedMonitorConfig();
-            };
+            MonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
+            templateDescription.setText(selectedTemplate.description());
+            if (selectedIndex == 0) {
+                return;
+            }
+            monitorStrategyName = selectedTemplate.name();
+            SignalMonitorConfig configTemplate = copyMonitorConfig(selectedTemplate.monitorConfig());
+            DecisionConfig decisionTemplate = copyDecisionConfig(selectedTemplate.decisionConfig());
             scanInterval.setValue(configTemplate.getScanIntervalSeconds());
             timeframeBox.setSelectedItem(configTemplate.getTimeframe());
             barCountSpinner.setValue(configTemplate.getBarCount());
@@ -2891,8 +3890,21 @@ public class MainFrameWithDocking extends JFrame {
             stopLossCooldownMinutes.setValue(configTemplate.getStopLossCooldownMinutes());
             latestEntryHour.setValue(configTemplate.getLatestAutoEntryTime().getHour());
             latestEntryMinute.setValue(configTemplate.getLatestAutoEntryTime().getMinute());
+            dailyMaxLoss.setValue(configTemplate.getDailyMaxLoss());
+            dailyMaxStopLossCount.setValue(configTemplate.getDailyMaxStopLossCount());
+            consecutiveLossLimit.setValue(configTemplate.getConsecutiveLossLimit());
+            disableTradingAfterLossLimit.setSelected(configTemplate.isDisableTradingAfterLossLimit());
+            dailyMaxAutoTrades.setValue(configTemplate.getDailyMaxAutoTrades());
+            entryPacingMinutes.setValue(configTemplate.getEntryPacingMinutes());
+            postExitCooldownMinutes.setValue(configTemplate.getPostExitCooldownMinutes());
+            oneEntryPerFiveMinuteBar.setSelected(configTemplate.isOneEntryPerFiveMinuteBar());
+            rangeFailureExitEnabled.setSelected(configTemplate.isRangeFailureExitEnabled());
+            rangeFailureExitMinutes.setValue(configTemplate.getRangeFailureExitMinutes());
+            rangeFailureMinR.setValue(configTemplate.getRangeFailureMinR());
+            rangeFailureVolumeSustainExitEnabled.setSelected(configTemplate.isRangeFailureVolumeSustainExitEnabled());
             RadarStrategyConfig radarTemplate = configTemplate.getRadarStrategyConfig();
             dayTimeframe.setSelectedItem(radarTemplate.getDayTradeTimeframe());
+            executionConfirmationTimeframe.setSelectedItem(radarTemplate.getExecutionConfirmationTimeframe());
             shortTimeframe.setSelectedItem(radarTemplate.getShortSwingTimeframe());
             swingTimeframe.setSelectedItem(radarTemplate.getSwingTradeTimeframe());
             dayBars.setValue(radarTemplate.getDayTradeBarCount());
@@ -2921,11 +3933,13 @@ public class MainFrameWithDocking extends JFrame {
             maxEntryRiseFromRecentLow.setValue(radarTemplate.getMaxEntryRiseFromRecentLowPercent());
             marketRegimeFilterEnabled.setSelected(radarTemplate.isMarketRegimeFilterEnabled());
             weakMarketStrictLongEnabled.setSelected(radarTemplate.isWeakMarketStrictLongEnabled());
+            weakMarketLongPolicy.setSelectedItem(radarTemplate.getWeakMarketLongPolicy());
             weakOutperformBenchmark.setValue(radarTemplate.getWeakOutperformBenchmarkPercent());
             weakOutperformIndustry.setValue(radarTemplate.getWeakOutperformIndustryPercent());
             rangeRequiresVwapVolume.setSelected(radarTemplate.isRangeMarketRequiresVwapAndVolume());
             volumeSustainEnabled.setSelected(radarTemplate.isVolumeSustainEnabled());
             atrRiskEnabled.setSelected(radarTemplate.isAtrRiskEnabled());
+            atrChaseLimitEnabled.setSelected(radarTemplate.isAtrChaseLimitEnabled());
             atrPeriod.setValue(radarTemplate.getAtrPeriod());
             atrStopMultiplier.setValue(radarTemplate.getAtrStopMultiplier());
             atrTakeProfitMultiplier.setValue(radarTemplate.getAtrTakeProfitMultiplier());
@@ -2940,81 +3954,230 @@ public class MainFrameWithDocking extends JFrame {
             riskEnabled.setSelected(decisionTemplate.isRiskManagementEnabled());
         });
 
-        addSettingsRow(panel, gbc, 0, "預設模板", templateBox);
-        addSettingsRow(panel, gbc, 1, "掃描間隔（秒）", scanInterval);
-        addSettingsRow(panel, gbc, 2, "主掃描週期", timeframeBox);
-        addSettingsRow(panel, gbc, 3, "K 線數量", barCountSpinner);
-        addSettingsRow(panel, gbc, 4, "同股訊號冷卻（分）", signalInterval);
-        addSettingsRow(panel, gbc, 5, "做多門檻", longThreshold);
-        addSettingsRow(panel, gbc, 6, "出場門檻", exitThreshold);
-        addSettingsRow(panel, gbc, 7, "最低風報比", minRiskReward);
-        addSettingsRow(panel, gbc, 8, "最低波動", minVolatility);
-        addSettingsRow(panel, gbc, 9, "最高波動", maxVolatility);
-        addSettingsRow(panel, gbc, 10, "最少策略數", minStrategies);
-        addSettingsRow(panel, gbc, 11, "最大同時持倉", maxPositions);
-        addSettingsRow(panel, gbc, 12, "", riskEnabled);
-        addSettingsRow(panel, gbc, 13, "早盤禁開倉", earlyBlockPanel);
-        addSettingsRow(panel, gbc, 14, "停損冷卻", stopLossCooldownPanel);
-        addSettingsRow(panel, gbc, 15, "當沖週期", dayTimeframe);
-        addSettingsRow(panel, gbc, 16, "短線週期", shortTimeframe);
-        addSettingsRow(panel, gbc, 17, "波段週期", swingTimeframe);
-        addSettingsRow(panel, gbc, 18, "當沖 K 線數量", dayBars);
-        addSettingsRow(panel, gbc, 19, "短線 K 線數量", shortBars);
-        addSettingsRow(panel, gbc, 20, "波段 K 線數量", swingBars);
-        addSettingsRow(panel, gbc, 21, "", rsiEnabled);
-        addSettingsRow(panel, gbc, 22, "RSI 週期", rsiPeriod);
-        addSettingsRow(panel, gbc, 23, "RSI 超賣", rsiOversold);
-        addSettingsRow(panel, gbc, 24, "RSI 超買", rsiOverbought);
-        addSettingsRow(panel, gbc, 25, "RSI 權重", rsiWeight);
-        addSettingsRow(panel, gbc, 26, "", maEnabled);
-        addSettingsRow(panel, gbc, 27, "均線類型", maType);
-        addSettingsRow(panel, gbc, 28, "均線快線", fastMa);
-        addSettingsRow(panel, gbc, 29, "均線慢線", slowMa);
-        addSettingsRow(panel, gbc, 30, "均線權重", maWeight);
-        addSettingsRow(panel, gbc, 31, "", volumeEnabled);
-        addSettingsRow(panel, gbc, 32, "突破回看 K 數", breakoutLookback);
-        addSettingsRow(panel, gbc, 33, "成交量倍率", volumeMultiplier);
-        addSettingsRow(panel, gbc, 34, "放量權重", volumeWeight);
+        int row = 0;
+        addSettingsRow(panel, gbc, row++, "預設模板", templatePanel);
+        addSettingsRow(panel, gbc, row++, "掃描間隔（秒）", scanInterval);
+        addSettingsRow(panel, gbc, row++, "主掃描週期", createDisabledFieldPanel(timeframeBox, "目前自動監控僅支援當沖，實際週期請使用「當沖週期」。"));
+        addSettingsRow(panel, gbc, row++, "K 線數量", createDisabledFieldPanel(barCountSpinner, "目前自動監控僅支援當沖，實際 K 線數量請使用「當沖 K 線數量」。"));
+        addSettingsRow(panel, gbc, row++, "同股訊號冷卻（分）", signalInterval);
+        addSettingsRow(panel, gbc, row++, "做多門檻", longThreshold);
+        addSettingsRow(panel, gbc, row++, "出場門檻", exitThreshold);
+        addSettingsRow(panel, gbc, row++, "最低風報比", minRiskReward);
+        addSettingsRow(panel, gbc, row++, "最低波動", minVolatility);
+        addSettingsRow(panel, gbc, row++, "最高波動", maxVolatility);
+        addSettingsRow(panel, gbc, row++, "最少策略數", minStrategies);
+        addSettingsRow(panel, gbc, row++, "最大同時持倉", maxPositions);
+        addSettingsRow(panel, gbc, row++, "", riskEnabled);
+        addSettingsRow(panel, gbc, row++, "早盤禁開倉", earlyBlockPanel);
+        addSettingsRow(panel, gbc, row++, "停損冷卻", stopLossCooldownPanel);
+        addSettingsRow(panel, gbc, row++, "當沖週期", dayTimeframe);
+        addSettingsRow(panel, gbc, row++, "執行確認週期", executionConfirmationTimeframe);
+        addSettingsRow(panel, gbc, row++, "短線週期", createDisabledFieldPanel(shortTimeframe, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "波段週期", createDisabledFieldPanel(swingTimeframe, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "當沖 K 線數量", dayBars);
+        addSettingsRow(panel, gbc, row++, "短線 K 線數量", createDisabledFieldPanel(shortBars, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "波段 K 線數量", createDisabledFieldPanel(swingBars, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "", rsiEnabled);
+        addSettingsRow(panel, gbc, row++, "RSI 週期", rsiPeriod);
+        addSettingsRow(panel, gbc, row++, "RSI 超賣", rsiOversold);
+        addSettingsRow(panel, gbc, row++, "RSI 超買", rsiOverbought);
+        addSettingsRow(panel, gbc, row++, "RSI 權重", rsiWeight);
+        addSettingsRow(panel, gbc, row++, "", maEnabled);
+        addSettingsRow(panel, gbc, row++, "均線類型", maType);
+        addSettingsRow(panel, gbc, row++, "均線快線", fastMa);
+        addSettingsRow(panel, gbc, row++, "均線慢線", slowMa);
+        addSettingsRow(panel, gbc, row++, "均線權重", maWeight);
+        addSettingsRow(panel, gbc, row++, "", volumeEnabled);
+        addSettingsRow(panel, gbc, row++, "突破回看 K 數", breakoutLookback);
+        addSettingsRow(panel, gbc, row++, "成交量倍率", volumeMultiplier);
+        addSettingsRow(panel, gbc, row++, "放量權重", volumeWeight);
 
-        addSettingsRow(panel, gbc, 35, "尾盤禁止新倉時間", latestEntryPanel);
-        addSettingsRow(panel, gbc, 36, "雷達最低進場分數", minimumRadarEntryScore);
-        addSettingsRow(panel, gbc, 37, "", blockBreakoutOnRsiOverbought);
-        addSettingsRow(panel, gbc, 38, "", requireBreakoutContinuation);
-        addSettingsRow(panel, gbc, 39, "", requirePriceAboveVwap);
-        addSettingsRow(panel, gbc, 40, "", requireBreakoutNextBarConfirmation);
-        addSettingsRow(panel, gbc, 41, "追價限制（近低漲幅）", maxEntryRiseFromRecentLow);
+        addSettingsRow(panel, gbc, row++, "尾盤禁止新倉時間", latestEntryPanel);
+        addSettingsRow(panel, gbc, row++, "雷達最低進場分數", minimumRadarEntryScore);
+        addSettingsRow(panel, gbc, row++, "", blockBreakoutOnRsiOverbought);
+        addSettingsRow(panel, gbc, row++, "", requireBreakoutContinuation);
+        addSettingsRow(panel, gbc, row++, "", requirePriceAboveVwap);
+        addSettingsRow(panel, gbc, row++, "", requireBreakoutNextBarConfirmation);
+        addSettingsRow(panel, gbc, row++, "追價限制（近低漲幅）", maxEntryRiseFromRecentLow);
 
-        addSettingsRow(panel, gbc, 42, "", requireRsiEntryConfirmation);
-        addSettingsRow(panel, gbc, 43, "", marketRegimeFilterEnabled);
-        addSettingsRow(panel, gbc, 44, "", weakMarketStrictLongEnabled);
-        addSettingsRow(panel, gbc, 45, "弱勢盤強於大盤%", weakOutperformBenchmark);
-        addSettingsRow(panel, gbc, 46, "弱勢盤強於族群%", weakOutperformIndustry);
-        addSettingsRow(panel, gbc, 47, "", rangeRequiresVwapVolume);
-        addSettingsRow(panel, gbc, 48, "", volumeSustainEnabled);
-        addSettingsRow(panel, gbc, 49, "", atrRiskEnabled);
-        addSettingsRow(panel, gbc, 50, "ATR 週期", atrPeriod);
-        addSettingsRow(panel, gbc, 51, "ATR 停損倍數", atrStopMultiplier);
-        addSettingsRow(panel, gbc, 52, "ATR 停利倍數", atrTakeProfitMultiplier);
-        addSettingsRow(panel, gbc, 53, "ATR 追高限制倍數", atrChaseLimitMultiplier);
+        addSettingsRow(panel, gbc, row++, "", requireRsiEntryConfirmation);
+        addSettingsRow(panel, gbc, row++, "", marketRegimeFilterEnabled);
+        addSettingsRow(panel, gbc, row++, "", weakMarketStrictLongEnabled);
+        addSettingsRow(panel, gbc, row++, "弱勢盤策略", weakMarketLongPolicy);
+        addSettingsRow(panel, gbc, row++, "弱勢盤強於大盤%", weakOutperformBenchmark);
+        addSettingsRow(panel, gbc, row++, "弱勢盤強於族群%", weakOutperformIndustry);
+        addSettingsRow(panel, gbc, row++, "", rangeRequiresVwapVolume);
+        addSettingsRow(panel, gbc, row++, "", volumeSustainEnabled);
+        addSettingsRow(panel, gbc, row++, "", atrRiskEnabled);
+        addSettingsRow(panel, gbc, row++, "", atrChaseLimitEnabled);
+        addSettingsRow(panel, gbc, row++, "ATR 週期", atrPeriod);
+        addSettingsRow(panel, gbc, row++, "ATR 停損倍數", atrStopMultiplier);
+        addSettingsRow(panel, gbc, row++, "ATR 停利倍數", atrTakeProfitMultiplier);
+        addSettingsRow(panel, gbc, row++, "ATR 追高限制倍數", atrChaseLimitMultiplier);
+        addSettingsRow(panel, gbc, row++, "單日最大虧損", dailyMaxLoss);
+        addSettingsRow(panel, gbc, row++, "單日停損次數上限", dailyMaxStopLossCount);
+        addSettingsRow(panel, gbc, row++, "連續虧損上限", consecutiveLossLimit);
+        addSettingsRow(panel, gbc, row++, "", disableTradingAfterLossLimit);
+        addSettingsRow(panel, gbc, row++, "每日最多交易", dailyMaxAutoTrades);
+        addSettingsRow(panel, gbc, row++, "開單間隔分鐘", entryPacingMinutes);
+        addSettingsRow(panel, gbc, row++, "平倉後冷卻分鐘", postExitCooldownMinutes);
+        addSettingsRow(panel, gbc, row++, "", oneEntryPerFiveMinuteBar);
+        addSettingsRow(panel, gbc, row++, "", rangeFailureExitEnabled);
+        addSettingsRow(panel, gbc, row++, "RANGE 失效等待分鐘", rangeFailureExitMinutes);
+        addSettingsRow(panel, gbc, row++, "RANGE 最低達成 R", rangeFailureMinR);
+        addSettingsRow(panel, gbc, row, "", rangeFailureVolumeSustainExitEnabled);
+
+        java.util.function.BiFunction<String, String, MonitorTemplate> buildTemplateFromForm = (name, description) -> {
+            SignalMonitorConfig savedMonitor = copyMonitorConfig(monitorConfig);
+            savedMonitor.setScanIntervalSeconds(((Number) scanInterval.getValue()).intValue());
+            savedMonitor.setTimeframe((Timeframe) timeframeBox.getSelectedItem());
+            savedMonitor.setBarCount(((Number) barCountSpinner.getValue()).intValue());
+            savedMonitor.setMinSignalIntervalMinutes(((Number) signalInterval.getValue()).intValue());
+            savedMonitor.setBatchScanMode(true);
+            savedMonitor.setEarlyEntryBlockEnabled(earlyBlockEnabled.isSelected());
+            savedMonitor.setEarlyEntryBlockStart(readTime(earlyStartHour, earlyStartMinute));
+            savedMonitor.setEarlyEntryBlockEnd(readTime(earlyEndHour, earlyEndMinute));
+            savedMonitor.setStopLossCooldownEnabled(stopLossCooldownEnabled.isSelected());
+            savedMonitor.setStopLossCooldownMinutes(((Number) stopLossCooldownMinutes.getValue()).intValue());
+            savedMonitor.setLatestAutoEntryTime(readTime(latestEntryHour, latestEntryMinute));
+            savedMonitor.setDailyMaxLoss(((Number) dailyMaxLoss.getValue()).doubleValue());
+            savedMonitor.setDailyMaxStopLossCount(((Number) dailyMaxStopLossCount.getValue()).intValue());
+            savedMonitor.setConsecutiveLossLimit(((Number) consecutiveLossLimit.getValue()).intValue());
+            savedMonitor.setDisableTradingAfterLossLimit(disableTradingAfterLossLimit.isSelected());
+            savedMonitor.setDailyMaxAutoTrades(((Number) dailyMaxAutoTrades.getValue()).intValue());
+            savedMonitor.setEntryPacingMinutes(((Number) entryPacingMinutes.getValue()).intValue());
+            savedMonitor.setPostExitCooldownMinutes(((Number) postExitCooldownMinutes.getValue()).intValue());
+            savedMonitor.setOneEntryPerFiveMinuteBar(oneEntryPerFiveMinuteBar.isSelected());
+            savedMonitor.setRangeFailureExitEnabled(rangeFailureExitEnabled.isSelected());
+            savedMonitor.setRangeFailureExitMinutes(((Number) rangeFailureExitMinutes.getValue()).intValue());
+            savedMonitor.setRangeFailureMinR(((Number) rangeFailureMinR.getValue()).doubleValue());
+            savedMonitor.setRangeFailureVolumeSustainExitEnabled(rangeFailureVolumeSustainExitEnabled.isSelected());
+
+            RadarStrategyConfig savedRadar = radarConfig.copy();
+            savedRadar.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
+            savedRadar.setExecutionConfirmationTimeframe((Timeframe) executionConfirmationTimeframe.getSelectedItem());
+            savedRadar.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
+            savedRadar.setSwingTradeTimeframe((Timeframe) swingTimeframe.getSelectedItem());
+            savedRadar.setDayTradeBarCount(((Number) dayBars.getValue()).intValue());
+            savedRadar.setShortSwingBarCount(((Number) shortBars.getValue()).intValue());
+            savedRadar.setSwingTradeBarCount(((Number) swingBars.getValue()).intValue());
+            savedRadar.setRsiEnabled(rsiEnabled.isSelected());
+            savedRadar.setRsiPeriod(((Number) rsiPeriod.getValue()).intValue());
+            savedRadar.setRsiOversold(((Number) rsiOversold.getValue()).doubleValue());
+            savedRadar.setRsiOverbought(((Number) rsiOverbought.getValue()).doubleValue());
+            savedRadar.setRsiWeight(((Number) rsiWeight.getValue()).doubleValue());
+            savedRadar.setRequireRsiEntryConfirmation(requireRsiEntryConfirmation.isSelected());
+            savedRadar.setMovingAverageEnabled(maEnabled.isSelected());
+            savedRadar.setMovingAverageType((RadarStrategyConfig.MovingAverageType) maType.getSelectedItem());
+            savedRadar.setFastMovingAveragePeriod(((Number) fastMa.getValue()).intValue());
+            savedRadar.setSlowMovingAveragePeriod(((Number) slowMa.getValue()).intValue());
+            savedRadar.setMovingAverageWeight(((Number) maWeight.getValue()).doubleValue());
+            savedRadar.setVolumeBreakoutEnabled(volumeEnabled.isSelected());
+            savedRadar.setBreakoutLookbackBars(((Number) breakoutLookback.getValue()).intValue());
+            savedRadar.setVolumeMultiplier(((Number) volumeMultiplier.getValue()).doubleValue());
+            savedRadar.setVolumeBreakoutWeight(((Number) volumeWeight.getValue()).doubleValue());
+            savedRadar.setMinimumEntryScore(((Number) minimumRadarEntryScore.getValue()).doubleValue());
+            savedRadar.setBlockBreakoutOnRsiOverbought(blockBreakoutOnRsiOverbought.isSelected());
+            savedRadar.setRequireBreakoutContinuation(requireBreakoutContinuation.isSelected());
+            savedRadar.setRequirePriceAboveVwapForLong(requirePriceAboveVwap.isSelected());
+            savedRadar.setRequireBreakoutNextBarConfirmation(requireBreakoutNextBarConfirmation.isSelected());
+            savedRadar.setMaxEntryRiseFromRecentLowPercent(((Number) maxEntryRiseFromRecentLow.getValue()).doubleValue());
+            savedRadar.setMarketRegimeFilterEnabled(marketRegimeFilterEnabled.isSelected());
+            savedRadar.setWeakMarketStrictLongEnabled(weakMarketStrictLongEnabled.isSelected());
+            savedRadar.setWeakMarketLongPolicy((WeakMarketLongPolicy) weakMarketLongPolicy.getSelectedItem());
+            savedRadar.setWeakOutperformBenchmarkPercent(((Number) weakOutperformBenchmark.getValue()).doubleValue());
+            savedRadar.setWeakOutperformIndustryPercent(((Number) weakOutperformIndustry.getValue()).doubleValue());
+            savedRadar.setRangeMarketRequiresVwapAndVolume(rangeRequiresVwapVolume.isSelected());
+            savedRadar.setVolumeSustainEnabled(volumeSustainEnabled.isSelected());
+            savedRadar.setAtrRiskEnabled(atrRiskEnabled.isSelected());
+            savedRadar.setAtrChaseLimitEnabled(atrChaseLimitEnabled.isSelected());
+            savedRadar.setAtrPeriod(((Number) atrPeriod.getValue()).intValue());
+            savedRadar.setAtrStopMultiplier(((Number) atrStopMultiplier.getValue()).doubleValue());
+            savedRadar.setAtrTakeProfitMultiplier(((Number) atrTakeProfitMultiplier.getValue()).doubleValue());
+            savedRadar.setAtrChaseLimitMultiplier(((Number) atrChaseLimitMultiplier.getValue()).doubleValue());
+            savedMonitor.setRadarStrategyConfig(savedRadar);
+
+            DecisionConfig savedDecision = copyDecisionConfig(monitorDecisionConfig);
+            savedDecision.getVotingConfig().setLongEntryThreshold(((Number) longThreshold.getValue()).doubleValue());
+            savedDecision.getVotingConfig().setExitThreshold(((Number) exitThreshold.getValue()).doubleValue());
+            savedDecision.getVotingConfig().setMinVotingStrategies(((Number) minStrategies.getValue()).intValue());
+            savedDecision.setRiskManagementEnabled(riskEnabled.isSelected());
+            savedDecision.getRiskConfig().setMaxConcurrentPositions(((Number) maxPositions.getValue()).intValue());
+            savedDecision.getRiskConfig().setMinRiskRewardRatio(((Number) minRiskReward.getValue()).doubleValue());
+            savedDecision.getRiskConfig().setMinVolatilityPercent(((Number) minVolatility.getValue()).doubleValue());
+            savedDecision.getRiskConfig().setMaxVolatilityPercent(((Number) maxVolatility.getValue()).doubleValue());
+            savedDecision.getRiskConfig().setAllowShortSelling(false);
+            return new MonitorTemplate(name, description, savedMonitor, savedDecision, true);
+        };
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancelButton = new JButton("取消");
+        JButton saveTemplateButton = new JButton("儲存為模板");
         JButton applyButton = new JButton("套用");
         cancelButton.addActionListener(e -> dialog.dispose());
+        saveTemplateButton.addActionListener(e -> {
+            String name = JOptionPane.showInputDialog(dialog, "請輸入新模板名稱：", "儲存監控模板", JOptionPane.PLAIN_MESSAGE);
+            if (name == null || name.trim().isEmpty()) {
+                return;
+            }
+            String trimmedName = name.trim();
+            boolean builtInName = monitorTemplates.stream()
+                    .anyMatch(template -> !template.userDefined() && template.name().equals(trimmedName));
+            if (builtInName) {
+                JOptionPane.showMessageDialog(dialog, "內建模板名稱不可覆蓋，請換一個名稱。", "儲存監控模板", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            try {
+                MonitorTemplate savedTemplate = buildTemplateFromForm.apply(
+                        trimmedName,
+                        "使用者自訂模板：" + trimmedName);
+                saveUserMonitorTemplate(savedTemplate);
+                monitorTemplates.removeIf(template -> template.userDefined() && template.name().equals(trimmedName));
+                monitorTemplates.add(savedTemplate);
+                for (int i = templateBox.getItemCount() - 1; i >= 0; i--) {
+                    if (trimmedName.equals(templateBox.getItemAt(i))) {
+                        templateBox.removeItemAt(i);
+                    }
+                }
+                templateBox.addItem(trimmedName);
+                templateBox.setSelectedItem(trimmedName);
+                templateDescription.setText(savedTemplate.description());
+                statusBar.setText("已儲存監控模板：" + trimmedName);
+            } catch (RuntimeException ex) {
+                JOptionPane.showMessageDialog(dialog, ex.getMessage(), "儲存監控模板", JOptionPane.ERROR_MESSAGE);
+            }
+        });
         applyButton.addActionListener(e -> {
             monitorConfig.setScanIntervalSeconds(((Number) scanInterval.getValue()).intValue());
             monitorConfig.setTimeframe((Timeframe) timeframeBox.getSelectedItem());
             monitorConfig.setBarCount(((Number) barCountSpinner.getValue()).intValue());
             monitorConfig.setMinSignalIntervalMinutes(((Number) signalInterval.getValue()).intValue());
             monitorConfig.setBatchScanMode(true);
+            int selectedTemplateIndex = templateBox.getSelectedIndex();
+            monitorStrategyName = selectedTemplateIndex >= 0 && selectedTemplateIndex < monitorTemplates.size()
+                    ? monitorTemplates.get(selectedTemplateIndex).name()
+                    : "目前設定";
             monitorConfig.setEarlyEntryBlockEnabled(earlyBlockEnabled.isSelected());
             monitorConfig.setEarlyEntryBlockStart(readTime(earlyStartHour, earlyStartMinute));
             monitorConfig.setEarlyEntryBlockEnd(readTime(earlyEndHour, earlyEndMinute));
             monitorConfig.setStopLossCooldownEnabled(stopLossCooldownEnabled.isSelected());
             monitorConfig.setStopLossCooldownMinutes(((Number) stopLossCooldownMinutes.getValue()).intValue());
             monitorConfig.setLatestAutoEntryTime(readTime(latestEntryHour, latestEntryMinute));
+            monitorConfig.setDailyMaxLoss(((Number) dailyMaxLoss.getValue()).doubleValue());
+            monitorConfig.setDailyMaxStopLossCount(((Number) dailyMaxStopLossCount.getValue()).intValue());
+            monitorConfig.setConsecutiveLossLimit(((Number) consecutiveLossLimit.getValue()).intValue());
+            monitorConfig.setDisableTradingAfterLossLimit(disableTradingAfterLossLimit.isSelected());
+            monitorConfig.setDailyMaxAutoTrades(((Number) dailyMaxAutoTrades.getValue()).intValue());
+            monitorConfig.setEntryPacingMinutes(((Number) entryPacingMinutes.getValue()).intValue());
+            monitorConfig.setPostExitCooldownMinutes(((Number) postExitCooldownMinutes.getValue()).intValue());
+            monitorConfig.setOneEntryPerFiveMinuteBar(oneEntryPerFiveMinuteBar.isSelected());
+            monitorConfig.setRangeFailureExitEnabled(rangeFailureExitEnabled.isSelected());
+            monitorConfig.setRangeFailureExitMinutes(((Number) rangeFailureExitMinutes.getValue()).intValue());
+            monitorConfig.setRangeFailureMinR(((Number) rangeFailureMinR.getValue()).doubleValue());
+            monitorConfig.setRangeFailureVolumeSustainExitEnabled(rangeFailureVolumeSustainExitEnabled.isSelected());
             RadarStrategyConfig updatedRadarConfig = radarConfig.copy();
             updatedRadarConfig.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
+            updatedRadarConfig.setExecutionConfirmationTimeframe((Timeframe) executionConfirmationTimeframe.getSelectedItem());
             updatedRadarConfig.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
             updatedRadarConfig.setSwingTradeTimeframe((Timeframe) swingTimeframe.getSelectedItem());
             updatedRadarConfig.setDayTradeBarCount(((Number) dayBars.getValue()).intValue());
@@ -3043,11 +4206,13 @@ public class MainFrameWithDocking extends JFrame {
             updatedRadarConfig.setMaxEntryRiseFromRecentLowPercent(((Number) maxEntryRiseFromRecentLow.getValue()).doubleValue());
             updatedRadarConfig.setMarketRegimeFilterEnabled(marketRegimeFilterEnabled.isSelected());
             updatedRadarConfig.setWeakMarketStrictLongEnabled(weakMarketStrictLongEnabled.isSelected());
+            updatedRadarConfig.setWeakMarketLongPolicy((WeakMarketLongPolicy) weakMarketLongPolicy.getSelectedItem());
             updatedRadarConfig.setWeakOutperformBenchmarkPercent(((Number) weakOutperformBenchmark.getValue()).doubleValue());
             updatedRadarConfig.setWeakOutperformIndustryPercent(((Number) weakOutperformIndustry.getValue()).doubleValue());
             updatedRadarConfig.setRangeMarketRequiresVwapAndVolume(rangeRequiresVwapVolume.isSelected());
             updatedRadarConfig.setVolumeSustainEnabled(volumeSustainEnabled.isSelected());
             updatedRadarConfig.setAtrRiskEnabled(atrRiskEnabled.isSelected());
+            updatedRadarConfig.setAtrChaseLimitEnabled(atrChaseLimitEnabled.isSelected());
             updatedRadarConfig.setAtrPeriod(((Number) atrPeriod.getValue()).intValue());
             updatedRadarConfig.setAtrStopMultiplier(((Number) atrStopMultiplier.getValue()).doubleValue());
             updatedRadarConfig.setAtrTakeProfitMultiplier(((Number) atrTakeProfitMultiplier.getValue()).doubleValue());
@@ -3080,6 +4245,7 @@ public class MainFrameWithDocking extends JFrame {
             dialog.dispose();
         });
         buttons.add(cancelButton);
+        buttons.add(saveTemplateButton);
         buttons.add(applyButton);
 
         JScrollPane settingsScrollPane = new JScrollPane(panel);
@@ -3115,6 +4281,17 @@ public class MainFrameWithDocking extends JFrame {
         panel.add(enabled);
         panel.add(spinner);
         panel.add(new JLabel(suffix));
+        return panel;
+    }
+
+    private JPanel createDisabledFieldPanel(JComponent field, String note) {
+        JPanel panel = new JPanel(new BorderLayout(6, 0));
+        field.setEnabled(false);
+        field.setToolTipText(note);
+        JLabel noteLabel = new JLabel(note);
+        noteLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+        panel.add(field, BorderLayout.CENTER);
+        panel.add(noteLabel, BorderLayout.EAST);
         return panel;
     }
 
@@ -3250,11 +4427,7 @@ public class MainFrameWithDocking extends JFrame {
                                 price,
                                 autoSignal.getOrderType(),
                                 autoSignal.getReason());
-                        pendingAutoEntries.remove(symbol);
-                        activeStopLosses.remove(symbol);
-                        activeTakeProfits.remove(symbol);
-                        activeTradeModes.remove(symbol);
-                        autoManagedPositions.remove(symbol);
+                        clearAutoPositionState(symbol);
                     }
                     case OPEN_SHORT, HOLD, NO_ACTION -> {
                         return;
@@ -3262,18 +4435,29 @@ public class MainFrameWithDocking extends JFrame {
                 }
 
                 if (result != null) {
-                    paperTradeRecorder.record(result, autoSignal, latestScanResults.get(symbol), "auto-monitor");
+                    paperTradeRecorder.record(result, autoSignal, latestScanResults.get(symbol), "auto-monitor", monitorStrategyName, buildMonitorStrategyDetails());
                     if (!result.isSuccess()) {
                         pendingAutoEntries.remove(symbol);
                     } else if (autoSignal.getAction() == DecisionResult.Action.OPEN_LONG) {
+                        registerAutoMonitorEntry();
                         activeTradeModes.put(symbol, TradeMode.DAY_TRADE);
                         autoManagedPositions.add(symbol);
+                        autoEntryTimes.put(symbol, result.getExecutionTime());
+                        autoEntryPrices.put(symbol, result.getExecutedPrice());
                         if (result.getStopLoss() != null && result.getStopLoss() > 0.0) {
                             activeStopLosses.put(symbol, result.getStopLoss());
+                            autoEntryRiskAmounts.put(symbol, Math.max(0.0, result.getExecutedPrice() - result.getStopLoss()));
                         }
                         if (result.getTakeProfit() != null && result.getTakeProfit() > 0.0) {
                             activeTakeProfits.put(symbol, result.getTakeProfit());
                         }
+                        MarketScanResult scanResult = latestScanResults.get(symbol);
+                        if (scanResult != null && scanResult.getMarketRegime() == MarketRegime.RANGE) {
+                            autoRangeEntries.add(symbol);
+                        }
+                    } else if (autoSignal.getAction() == DecisionResult.Action.CLOSE_POSITION) {
+                        updateAutoMonitorRiskAfterClose(symbol, result, autoSignal);
+                        registerPostExitCooldown(symbol);
                     }
                     if (executionStatusDock != null) {
                         executionStatusDock.setExecutionEngine(executionEngine);
@@ -3318,7 +4502,16 @@ public class MainFrameWithDocking extends JFrame {
     }
 
     private String resolveAutoEntryBlockReason(String symbol) {
-        LocalTime now = LocalTime.now(TAIPEI_ZONE);
+        resetAutoMonitorRiskIfNewDay();
+        if (autoMonitorTradingHalted) {
+            return String.format(Locale.US,
+                    "自動監控熔斷中，今日停止新開倉：日損 %.2f，停損 %d 次，連虧 %d 次",
+                    autoMonitorDailyPnl,
+                    autoMonitorStopLossCount,
+                    autoMonitorConsecutiveLosses);
+        }
+        LocalDateTime nowDateTime = LocalDateTime.now(TAIPEI_ZONE);
+        LocalTime now = nowDateTime.toLocalTime();
         if (isDayTradeForceCloseTime(now)) {
             closeAutoManagedPositionsAtCutoff();
             return "13:25 後自動監控不再新開倉：" + symbol;
@@ -3331,10 +4524,24 @@ public class MainFrameWithDocking extends JFrame {
         }
         LocalDateTime cooldownUntil = stopLossCooldownUntil.get(symbol);
         if (cooldownUntil != null) {
-            if (LocalDateTime.now(TAIPEI_ZONE).isBefore(cooldownUntil)) {
+            if (nowDateTime.isBefore(cooldownUntil)) {
                 return "停損冷卻中，略過自動開倉：" + symbol + "，冷卻至 " + cooldownUntil.toLocalTime();
             }
             stopLossCooldownUntil.remove(symbol);
+        }
+        if (monitorConfig != null && autoMonitorEntryCount >= monitorConfig.getDailyMaxAutoTrades()) {
+            return "每日最多自動交易已達上限：" + monitorConfig.getDailyMaxAutoTrades() + " 筆，阻擋 " + symbol;
+        }
+        if (monitorConfig != null && monitorConfig.getEntryPacingMinutes() > 0 && autoMonitorLastEntryTime != null
+                && nowDateTime.isBefore(autoMonitorLastEntryTime.plusMinutes(monitorConfig.getEntryPacingMinutes()))) {
+            return "開單節奏限制：距離上一筆未滿 "
+                    + monitorConfig.getEntryPacingMinutes() + " 分鐘，阻擋 " + symbol;
+        }
+        if (monitorConfig != null && monitorConfig.isOneEntryPerFiveMinuteBar()) {
+            String bucket = currentFiveMinuteEntryBucket(nowDateTime);
+            if (autoMonitorEntryBuckets.contains(bucket)) {
+                return "同一根 5 分 K 已有自動開倉，阻擋 " + symbol;
+            }
         }
         int maxPositions = monitorDecisionConfig != null
                 ? monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions()
@@ -3343,6 +4550,50 @@ public class MainFrameWithDocking extends JFrame {
             return "自動監控持倉已達上限 " + maxPositions + " 檔，略過：" + symbol;
         }
         return null;
+    }
+
+    private void updateAutoMonitorRiskAfterClose(String symbol, ExecutionResult result, DecisionResult signal) {
+        resetAutoMonitorRiskIfNewDay();
+        double realized = result != null ? result.getRealizedPnL() : 0.0;
+        autoMonitorDailyPnl += realized;
+        if (realized < 0.0) {
+            autoMonitorConsecutiveLosses++;
+        } else if (realized > 0.0) {
+            autoMonitorConsecutiveLosses = 0;
+        }
+        String reason = signal != null && signal.getReason() != null ? signal.getReason() : "";
+        if (reason.contains("停損") || reason.toUpperCase(Locale.ROOT).contains("STOP")) {
+            autoMonitorStopLossCount++;
+            registerStopLossCooldown(symbol);
+        }
+        if (monitorConfig != null && monitorConfig.isDisableTradingAfterLossLimit()
+                && (autoMonitorDailyPnl <= monitorConfig.getDailyMaxLoss()
+                || (monitorConfig.getDailyMaxStopLossCount() > 0
+                && autoMonitorStopLossCount >= monitorConfig.getDailyMaxStopLossCount())
+                || (monitorConfig.getConsecutiveLossLimit() > 0
+                && autoMonitorConsecutiveLosses >= monitorConfig.getConsecutiveLossLimit()))) {
+            autoMonitorTradingHalted = true;
+            statusBar.setText(String.format(Locale.US,
+                    "自動監控熔斷：%s 平倉後日損 %.2f，停損 %d 次，連虧 %d 次",
+                    symbol,
+                    autoMonitorDailyPnl,
+                    autoMonitorStopLossCount,
+                    autoMonitorConsecutiveLosses));
+        }
+    }
+
+    private void resetAutoMonitorRiskIfNewDay() {
+        LocalDate today = LocalDate.now(TAIPEI_ZONE);
+        if (!today.equals(autoMonitorRiskDate)) {
+            autoMonitorRiskDate = today;
+            autoMonitorDailyPnl = 0.0;
+            autoMonitorStopLossCount = 0;
+            autoMonitorConsecutiveLosses = 0;
+            autoMonitorTradingHalted = false;
+            autoMonitorEntryCount = 0;
+            autoMonitorLastEntryTime = null;
+            autoMonitorEntryBuckets.clear();
+        }
     }
 
     private boolean isEarlyEntryBlocked(LocalTime time) {
@@ -3363,7 +4614,7 @@ public class MainFrameWithDocking extends JFrame {
         }
         LocalTime latestEntryTime = monitorConfig != null
                 ? monitorConfig.getLatestAutoEntryTime()
-                : LocalTime.of(13, 10);
+                : LocalTime.of(13, 5);
         return latestEntryTime != null && !time.isBefore(latestEntryTime);
     }
 
@@ -3373,9 +4624,42 @@ public class MainFrameWithDocking extends JFrame {
                 || !monitorConfig.isStopLossCooldownEnabled()) {
             return;
         }
-        stopLossCooldownUntil.put(
-                symbol,
-                LocalDateTime.now(TAIPEI_ZONE).plusMinutes(monitorConfig.getStopLossCooldownMinutes()));
+        registerSymbolCooldown(symbol, monitorConfig.getStopLossCooldownMinutes());
+    }
+
+    private void registerPostExitCooldown(String symbol) {
+        if (symbol == null || symbol.isBlank() || monitorConfig == null
+                || monitorConfig.getPostExitCooldownMinutes() <= 0) {
+            return;
+        }
+        registerSymbolCooldown(symbol, monitorConfig.getPostExitCooldownMinutes());
+    }
+
+    private void registerSymbolCooldown(String symbol, int minutes) {
+        if (symbol == null || symbol.isBlank() || minutes <= 0) {
+            return;
+        }
+        LocalDateTime until = LocalDateTime.now(TAIPEI_ZONE).plusMinutes(minutes);
+        LocalDateTime existing = stopLossCooldownUntil.get(symbol);
+        if (existing == null || until.isAfter(existing)) {
+            stopLossCooldownUntil.put(symbol, until);
+        }
+    }
+
+    private void registerAutoMonitorEntry() {
+        resetAutoMonitorRiskIfNewDay();
+        LocalDateTime now = LocalDateTime.now(TAIPEI_ZONE);
+        autoMonitorEntryCount++;
+        autoMonitorLastEntryTime = now;
+        autoMonitorEntryBuckets.add(currentFiveMinuteEntryBucket(now));
+    }
+
+    private String currentFiveMinuteEntryBucket(LocalDateTime dateTime) {
+        LocalDateTime normalized = dateTime != null ? dateTime : LocalDateTime.now(TAIPEI_ZONE);
+        int minute = normalized.getMinute() - normalized.getMinute() % 5;
+        return normalized.toLocalDate() + "T"
+                + normalized.getHour() + ":"
+                + String.format(Locale.US, "%02d", minute);
     }
 
     private int determineOrderQuantity(double price, DecisionResult signal) {

@@ -40,6 +40,7 @@ public class ExecutionResult {
     private final Double takeProfit;
     private final double realizedPnL;
     private final double commission;
+    private final double tax;
     private final LocalDateTime executionTime;
     private final String positionId;
     private final String message;
@@ -61,6 +62,7 @@ public class ExecutionResult {
         this.takeProfit = builder.takeProfit;
         this.realizedPnL = builder.realizedPnL;
         this.commission = builder.commission;
+        this.tax = builder.tax;
         this.executionTime = builder.executionTime;
         this.positionId = builder.positionId;
         this.message = builder.message;
@@ -122,6 +124,10 @@ public class ExecutionResult {
 
     public double getCommission() {
         return commission;
+    }
+
+    public double getTax() {
+        return tax;
     }
 
     public LocalDateTime getExecutionTime() {
@@ -200,6 +206,7 @@ public class ExecutionResult {
         private Double takeProfit;
         private double realizedPnL;
         private double commission;
+        private double tax;
         private LocalDateTime executionTime = LocalDateTime.now();
         private String positionId = "";
         private String message = "";
@@ -273,6 +280,11 @@ public class ExecutionResult {
 
         public Builder commission(double commission) {
             this.commission = commission;
+            return this;
+        }
+
+        public Builder tax(double tax) {
+            this.tax = tax;
             return this;
         }
 

@@ -17,6 +17,7 @@ public class ExecutionEngine {
     private final ExecutionMode mode;
     private final Portfolio portfolio;
     private final double commissionRate;
+    private final double sellTaxRate;
     private final AtomicLong orderIdCounter;
     private final Map<String, ExecutionResult> executionHistory;
     private final Map<String, String> activePositionIds;
@@ -24,9 +25,14 @@ public class ExecutionEngine {
     private final Map<String, Double> activeTakeProfits;
 
     public ExecutionEngine(ExecutionMode mode, Portfolio portfolio, double commissionRate) {
+        this(mode, portfolio, commissionRate, 0.0);
+    }
+
+    public ExecutionEngine(ExecutionMode mode, Portfolio portfolio, double commissionRate, double sellTaxRate) {
         this.mode = mode;
         this.portfolio = portfolio;
         this.commissionRate = commissionRate;
+        this.sellTaxRate = Math.max(0.0, sellTaxRate);
         this.orderIdCounter = new AtomicLong(1);
         this.executionHistory = new HashMap<>();
         this.activePositionIds = new HashMap<>();
@@ -160,6 +166,7 @@ public class ExecutionEngine {
 
         try {
             double realizedPnL = 0.0;
+            double tax = 0.0;
             String positionId = activePositionIds.getOrDefault(order.getSymbol(), "");
             Double stopLoss = order.getStopLoss();
             Double takeProfit = order.getTakeProfit();
@@ -196,8 +203,9 @@ public class ExecutionEngine {
                 if (mode == ExecutionMode.LIVE_TRADING) {
                     throw new UnsupportedOperationException("Live trading is not supported");
                 }
-                realizedPnL = position.calculateProfit(order.getQuantity(), order.getRequestedPrice(), commissionRate);
-                portfolio.reducePosition(order.getSymbol(), order.getQuantity(), order.getRequestedPrice(), commissionRate);
+                tax = order.getQuantity() * order.getRequestedPrice() * sellTaxRate;
+                realizedPnL = position.calculateProfit(order.getQuantity(), order.getRequestedPrice(), commissionRate, sellTaxRate);
+                portfolio.reducePosition(order.getSymbol(), order.getQuantity(), order.getRequestedPrice(), commissionRate, sellTaxRate);
                 if (portfolio.getPosition(order.getSymbol()) == null) {
                     activePositionIds.remove(order.getSymbol());
                     activeStopLosses.remove(order.getSymbol());
@@ -220,6 +228,7 @@ public class ExecutionEngine {
                     .takeProfit(takeProfit)
                     .realizedPnL(realizedPnL)
                     .commission(order.getQuantity() * order.getRequestedPrice() * commissionRate)
+                    .tax(tax)
                     .executionTime(LocalDateTime.now())
                     .positionId(positionId)
                     .decisionReason(order.getReason())
@@ -312,6 +321,10 @@ public class ExecutionEngine {
 
     public double getCommissionRate() {
         return commissionRate;
+    }
+
+    public double getSellTaxRate() {
+        return sellTaxRate;
     }
 
     public String getStatistics() {

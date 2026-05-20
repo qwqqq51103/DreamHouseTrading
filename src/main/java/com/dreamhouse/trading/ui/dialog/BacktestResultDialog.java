@@ -389,6 +389,7 @@ public class BacktestResultDialog extends JDialog {
         }
 
         JTable table = new JTable(data, columnNames);
+        table.setAutoCreateRowSorter(true);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setRowHeight(25);
         table.setDefaultRenderer(Object.class, new javax.swing.table.DefaultTableCellRenderer() {
@@ -611,6 +612,7 @@ public class BacktestResultDialog extends JDialog {
         }
         
         JTable table = new JTable(data, columnNames);
+        table.setAutoCreateRowSorter(true);
         table.setRowHeight(25);
         table.setFont(new Font("微軟正黑體", Font.PLAIN, 12));
         
@@ -973,6 +975,7 @@ public class BacktestResultDialog extends JDialog {
 
         Object[][] data = dataList.toArray(new Object[0][]);
         JTable table = new JTable(data, columnNames);
+        table.setAutoCreateRowSorter(true);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setRowHeight(25);
         table.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));

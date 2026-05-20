@@ -205,7 +205,7 @@ class MarketScannerServiceTest {
 
         assertThat(config.isRequireBreakoutNextBarConfirmation()).isFalse();
         assertThat(config.getMaxEntryRiseFromRecentLowPercent()).isEqualTo(0.03);
-        assertThat(config.isRequirePriceAboveVwapForLong()).isFalse();
+        assertThat(config.isRequirePriceAboveVwapForLong()).isTrue();
         assertThat(config.isRequireBreakoutContinuation()).isTrue();
     }
 
@@ -273,6 +273,7 @@ class MarketScannerServiceTest {
         radarConfig.setRequireBreakoutContinuation(false);
         radarConfig.setMarketRegimeFilterEnabled(true);
         radarConfig.setWeakMarketStrictLongEnabled(true);
+        radarConfig.setWeakMarketLongPolicy(WeakMarketLongPolicy.ALLOW_EXTREME_STRENGTH_ONLY);
 
         MarketContextSnapshot context = weakContext(
                 feed.fetchHistoricalBars("TEST", Timeframe.M1, 80),

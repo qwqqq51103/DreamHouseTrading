@@ -119,4 +119,15 @@ class ExecutionEngineTest {
         assertThat(close.getMessage()).contains("平倉成功");
         assertThat(portfolio.hasPosition("2330.TW")).isFalse();
     }
+
+    @Test
+    void closePositionDeductsDayTradeSellTax() {
+        ExecutionEngine dayTradeEngine = new ExecutionEngine(ExecutionMode.BACKTEST, new Portfolio(1_000_000.0), 0.001425, 0.0015);
+        dayTradeEngine.openPosition("2330.TW", 1000, 100.0);
+
+        ExecutionResult close = dayTradeEngine.closePosition("2330.TW", 1000, 101.0);
+
+        assertThat(close.getTax()).isEqualTo(151.5);
+        assertThat(close.getRealizedPnL()).isLessThan(1000.0 - 100.0 * 1000 * 0.001425 - 101.0 * 1000 * 0.001425);
+    }
 }

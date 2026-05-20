@@ -133,6 +133,26 @@ class FinMindClientTest {
     }
 
     @Test
+    void tradingDailyReportWithoutStockUsesDedicatedEndpointAndAsyncFlag() {
+        CapturingSender sender = new CapturingSender("{\"status\":200,\"data\":[]}");
+        FinMindClient client = new FinMindClient("token", sender, new ObjectMapper());
+
+        client.queryData(FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_TRADING_DAILY_REPORT)
+                .startDate(LocalDate.of(2024, 7, 1))
+                .endDate(LocalDate.of(2024, 7, 1))
+                .param("use_async", "True")
+                .build());
+
+        String uri = sender.lastUri.toString();
+        assertTrue(uri.contains("/taiwan_stock_trading_daily_report"));
+        assertTrue(uri.contains("date=2024-07-01"));
+        assertTrue(uri.contains("use_async=True"));
+        assertFalse(uri.contains("data_id="));
+        assertFalse(uri.contains("dataset="));
+        assertFalse(uri.contains("start_date="));
+    }
+
+    @Test
     void tradingDailyReportSecIdAggDatasetUsesDedicatedEndpoint() {
         CapturingSender sender = new CapturingSender("{\"status\":200,\"data\":[]}");
         FinMindClient client = new FinMindClient("token", sender, new ObjectMapper());

@@ -160,6 +160,9 @@ public final class UIAutoScaler {
 
     private static void tuneComponent(Component component, double scale) {
         if (component instanceof JTable table) {
+            if (table.getRowSorter() == null) {
+                table.setAutoCreateRowSorter(true);
+            }
             Object autoResizeMode = table.getClientProperty(AUTO_RESIZE_MODE_PROPERTY);
             table.setAutoResizeMode(autoResizeMode instanceof Integer mode
                     ? mode

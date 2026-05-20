@@ -23,20 +23,28 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.FlowLayout;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 import java.util.function.Consumer;
 
 public class WatchlistPanel extends JPanel {
     private static final DateTimeFormatter SCAN_TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final Path LOCKED_SYMBOLS_FILE = Path.of("config", "locked_watchlist.properties");
 
     private final EventList<WatchlistItem> items = new BasicEventList<>();
     private final EventTableModel<WatchlistItem> tableModel;
     private final JTable table;
+    private final Set<String> lockedSymbols = new LinkedHashSet<>();
 
     private Consumer<String> onSymbolDoubleClick;
     private Consumer<String> onSymbolAdded;
@@ -49,6 +57,7 @@ public class WatchlistPanel extends JPanel {
 
         try {
             cache = new MarketDataCache();
+            loadLockedSymbols();
             loadWatchlistFromCache();
         } catch (Exception e) {
             System.err.println("Failed to initialize cache: " + e.getMessage());
@@ -81,14 +90,17 @@ public class WatchlistPanel extends JPanel {
         JButton batchAddBtn = new JButton("批量新增");
         JButton removeBtn = new JButton(I18n.get("watchlist.remove"));
         JButton batchRemoveBtn = new JButton("批量刪除");
+        JButton toggleLockBtn = new JButton("鎖定/解除");
         addBtn.addActionListener(e -> addSymbol());
         batchAddBtn.addActionListener(e -> addSymbolsBatch());
         removeBtn.addActionListener(e -> removeSelectedSymbols(false));
         batchRemoveBtn.addActionListener(e -> removeSelectedSymbols(true));
+        toggleLockBtn.addActionListener(e -> toggleSelectedLocks());
         buttonPanel.add(addBtn);
         buttonPanel.add(batchAddBtn);
         buttonPanel.add(removeBtn);
         buttonPanel.add(batchRemoveBtn);
+        buttonPanel.add(toggleLockBtn);
         add(buttonPanel, BorderLayout.SOUTH);
     }
 
@@ -98,9 +110,45 @@ public class WatchlistPanel extends JPanel {
         }
         List<String> symbols = cache.getWatchlist();
         for (String symbol : symbols) {
-            items.add(new WatchlistItem(symbol, 0, 0, 0));
+            WatchlistItem item = new WatchlistItem(symbol, 0, 0, 0);
+            item.locked = lockedSymbols.contains(StockNameResolver.normalize(symbol));
+            items.add(item);
         }
         System.out.println("Loaded " + symbols.size() + " symbols from watchlist cache");
+    }
+
+    private void loadLockedSymbols() {
+        lockedSymbols.clear();
+        if (!Files.exists(LOCKED_SYMBOLS_FILE)) {
+            return;
+        }
+        Properties properties = new Properties();
+        try (InputStream input = Files.newInputStream(LOCKED_SYMBOLS_FILE)) {
+            properties.load(input);
+        } catch (IOException e) {
+            System.err.println("Failed to load locked watchlist symbols: " + e.getMessage());
+            return;
+        }
+        String symbols = properties.getProperty("symbols", "");
+        for (String token : symbols.split(",")) {
+            String normalized = StockNameResolver.normalize(token);
+            if (!normalized.isBlank()) {
+                lockedSymbols.add(normalized);
+            }
+        }
+    }
+
+    private void saveLockedSymbols() {
+        Properties properties = new Properties();
+        properties.setProperty("symbols", String.join(",", lockedSymbols));
+        try {
+            Files.createDirectories(LOCKED_SYMBOLS_FILE.getParent());
+            try (OutputStream output = Files.newOutputStream(LOCKED_SYMBOLS_FILE)) {
+                properties.store(output, "DreamHouseTrading locked watchlist symbols");
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to save locked watchlist symbols: " + e.getMessage());
+        }
     }
 
     private void addSymbol() {
@@ -210,6 +258,10 @@ public class WatchlistPanel extends JPanel {
         return items.stream().map(item -> item.symbol).toList();
     }
 
+    public Set<String> getLockedSymbols() {
+        return Set.copyOf(lockedSymbols);
+    }
+
     public boolean addSymbolProgrammatically(String symbol) {
         return addSymbolInternal(symbol, false);
     }
@@ -226,7 +278,9 @@ public class WatchlistPanel extends JPanel {
             }
         }
 
-        items.add(new WatchlistItem(symbol, 0, 0, 0));
+        WatchlistItem item = new WatchlistItem(symbol, 0, 0, 0);
+        item.locked = lockedSymbols.contains(StockNameResolver.normalize(symbol));
+        items.add(item);
         tableModel.fireTableDataChanged();
         if (cache != null) {
             cache.addToWatchlist(symbol);
@@ -253,6 +307,9 @@ public class WatchlistPanel extends JPanel {
         for (int index = items.size() - 1; index >= 0; index--) {
             WatchlistItem item = items.get(index);
             if (normalizedTargets.contains(StockNameResolver.normalize(item.symbol))) {
+                if (item.locked) {
+                    continue;
+                }
                 removed.add(0, item.symbol);
                 items.remove(index);
                 if (cache != null) {
@@ -269,6 +326,40 @@ public class WatchlistPanel extends JPanel {
             }
         }
         return removed;
+    }
+
+    private void toggleSelectedLocks() {
+        int[] selectedRows = table.getSelectedRows();
+        if (selectedRows.length == 0) {
+            JOptionPane.showMessageDialog(this, "請先選取要鎖定或解除鎖定的股票。", "觀察清單鎖定", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        int lockedCount = 0;
+        int unlockedCount = 0;
+        for (int selectedRow : selectedRows) {
+            int modelRow = table.convertRowIndexToModel(selectedRow);
+            if (modelRow < 0 || modelRow >= items.size()) {
+                continue;
+            }
+            WatchlistItem item = items.get(modelRow);
+            item.locked = !item.locked;
+            String normalized = StockNameResolver.normalize(item.symbol);
+            if (item.locked) {
+                lockedSymbols.add(normalized);
+                lockedCount++;
+            } else {
+                lockedSymbols.remove(normalized);
+                unlockedCount++;
+            }
+        }
+        saveLockedSymbols();
+        tableModel.fireTableDataChanged();
+        JOptionPane.showMessageDialog(
+                this,
+                "鎖定 " + lockedCount + " 檔，解除 " + unlockedCount + " 檔。\n"
+                        + "鎖定股票不會被「產生隔日當沖股票池」取代清單時移除。",
+                "觀察清單鎖定",
+                JOptionPane.INFORMATION_MESSAGE);
     }
 
     private List<String> parseSymbols(String text) {
@@ -341,6 +432,7 @@ public class WatchlistPanel extends JPanel {
         double confidence;
         double riskRewardRatio;
         String lastScanTime;
+        boolean locked;
 
         public WatchlistItem(String symbol, double last, double changePct, long volume) {
             this.symbol = symbol;
@@ -354,6 +446,7 @@ public class WatchlistPanel extends JPanel {
             this.confidence = 0.0;
             this.riskRewardRatio = 0.0;
             this.lastScanTime = "";
+            this.locked = false;
         }
 
         void refreshChineseName() {
@@ -364,23 +457,24 @@ public class WatchlistPanel extends JPanel {
     private static class WatchlistTableFormat implements TableFormat<WatchlistItem> {
         @Override
         public int getColumnCount() {
-            return 11;
+            return 12;
         }
 
         @Override
         public String getColumnName(int column) {
             return switch (column) {
                 case 0 -> I18n.get("watchlist.symbol");
-                case 1 -> "中文名稱";
-                case 2 -> I18n.get("watchlist.last");
-                case 3 -> I18n.get("watchlist.change");
-                case 4 -> I18n.get("watchlist.volume");
-                case 5 -> "交易模式";
-                case 6 -> "訊號";
-                case 7 -> "分數";
-                case 8 -> "信心";
-                case 9 -> "風報比";
-                case 10 -> "掃描時間";
+                case 1 -> "鎖定";
+                case 2 -> "中文名稱";
+                case 3 -> I18n.get("watchlist.last");
+                case 4 -> I18n.get("watchlist.change");
+                case 5 -> I18n.get("watchlist.volume");
+                case 6 -> "交易模式";
+                case 7 -> "訊號";
+                case 8 -> "分數";
+                case 9 -> "信心";
+                case 10 -> "風報比";
+                case 11 -> "掃描時間";
                 default -> "";
             };
         }
@@ -389,16 +483,17 @@ public class WatchlistPanel extends JPanel {
         public Object getColumnValue(WatchlistItem item, int column) {
             return switch (column) {
                 case 0 -> item.symbol;
-                case 1 -> item.chineseName;
-                case 2 -> item.last;
-                case 3 -> item.changePct;
-                case 4 -> item.volume;
-                case 5 -> item.tradeMode;
-                case 6 -> item.signal;
-                case 7 -> item.scanScore;
-                case 8 -> item.confidence;
-                case 9 -> item.riskRewardRatio;
-                case 10 -> item.lastScanTime;
+                case 1 -> item.locked ? "鎖定" : "";
+                case 2 -> item.chineseName;
+                case 3 -> item.last;
+                case 4 -> item.changePct;
+                case 5 -> item.volume;
+                case 6 -> item.tradeMode;
+                case 7 -> item.signal;
+                case 8 -> item.scanScore;
+                case 9 -> item.confidence;
+                case 10 -> item.riskRewardRatio;
+                case 11 -> item.lastScanTime;
                 default -> null;
             };
         }
@@ -419,22 +514,27 @@ public class WatchlistPanel extends JPanel {
                 setForeground(table.getForeground());
             }
 
-            if (column == 2 && value instanceof Double last) {
+            if (column == 1 && value != null && !value.toString().isBlank()) {
+                setText("鎖定");
+                if (!isSelected) {
+                    setForeground(new Color(255, 193, 7));
+                }
+            } else if (column == 3 && value instanceof Double last) {
                 setText(priceFmt.format(last));
-            } else if (column == 3 && value instanceof Double chg) {
+            } else if (column == 4 && value instanceof Double chg) {
                 setText(pctFmt.format(chg / 100.0));
                 if (!isSelected) {
                     setForeground(chg >= 0 ? new Color(34, 177, 76) : new Color(237, 28, 36));
                 }
-            } else if ((column == 7 || column == 8) && value instanceof Double score) {
+            } else if ((column == 8 || column == 9) && value instanceof Double score) {
                 setText(scoreFmt.format(score));
-            } else if (column == 9 && value instanceof Double ratio) {
+            } else if (column == 10 && value instanceof Double ratio) {
                 setText(ratio > 0 ? ratioFmt.format(ratio) : "--");
             } else if (value == null || value.toString().isBlank()) {
                 setText("--");
             }
 
-            if (!isSelected && column == 6 && value != null) {
+            if (!isSelected && column == 7 && value != null) {
                 String text = value.toString().toUpperCase();
                 if (text.contains("LONG") || text.contains("買")) {
                     setForeground(new Color(0, 150, 70));

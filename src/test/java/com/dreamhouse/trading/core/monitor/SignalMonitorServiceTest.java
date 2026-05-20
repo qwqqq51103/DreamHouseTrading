@@ -29,9 +29,11 @@ class SignalMonitorServiceTest {
 
         assertTrue(config.isEarlyEntryBlockEnabled());
         assertEquals(LocalTime.of(9, 0), config.getEarlyEntryBlockStart());
-        assertEquals(LocalTime.of(9, 10), config.getEarlyEntryBlockEnd());
+        assertEquals(LocalTime.of(9, 15), config.getEarlyEntryBlockEnd());
         assertTrue(config.isStopLossCooldownEnabled());
         assertEquals(60, config.getStopLossCooldownMinutes());
+        assertEquals(LocalTime.of(13, 5), config.getLatestAutoEntryTime());
+        assertEquals(5, config.getDailyMaxAutoTrades());
     }
 
     @Test

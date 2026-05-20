@@ -63,6 +63,10 @@ public class Portfolio {
     }
 
     public void reducePosition(String symbol, int quantity, double price, double costRate) {
+        reducePosition(symbol, quantity, price, costRate, 0.0);
+    }
+
+    public void reducePosition(String symbol, int quantity, double price, double commissionRate, double taxRate) {
         Position position = positions.get(symbol);
         if (position == null) {
             throw new IllegalStateException("No position found for symbol: " + symbol);
@@ -72,18 +76,18 @@ public class Portfolio {
             throw new IllegalStateException("Insufficient position quantity");
         }
 
-        double profit = position.calculateProfit(quantity, price, costRate);
-        double proceeds = quantity * price * (1 - costRate);
+        double profit = position.calculateProfit(quantity, price, commissionRate, taxRate);
+        double proceeds = quantity * price * (1 - commissionRate - taxRate);
 
         cash += proceeds;
         realizedPnL += profit;
-        totalCommission += quantity * price * costRate;
+        totalCommission += quantity * price * commissionRate;
 
         if (profit > 0) {
             winningTrades++;
         }
 
-        position.reduceQuantity(quantity, price, costRate);
+        position.reduceQuantity(quantity, price, commissionRate, taxRate);
         if (position.getQuantity() == 0) {
             positions.remove(symbol);
         }

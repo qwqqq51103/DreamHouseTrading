@@ -1,196 +1,174 @@
 # DreamHouseTrading Project Documentation
 
-## 1. 專案定位
+最後更新：2026-05-20
 
-DreamHouseTrading 是 Swing 桌面交易分析平台，主線目標是：
+## 1. 專案目標
 
-- 市場資料分析
-- 交易訊號與決策
-- 風控檢查
-- 模擬執行
-- 回測與績效報表
+DreamHouseTrading 是台股交易分析與模擬平台，重點是把盤中 SQL 分 K、雷達策略、風控、回測、紙上交易紀錄串成可驗證的流程。
 
-目前產品邊界：
+目前不做真實券商下單，所有交易相關功能都限制在模擬交易、回測與報告分析。
 
-- 保留桌面架構
-- 保留掃描 / 決策 / 回測能力
-- 不做真實券商下單
-- 第一階段維持 `long-only`
+## 2. 系統流程
 
-## 2. 主要模組
+1. Market Data
+2. Signal Generation
+3. Decision & Risk
+4. Execution Simulation
+5. Backtest & Reporting
 
-### 2.1 Market Data
+核心原則：
 
-- `MarketDataFeed`
-- `FinMindFeed`
-- `MarketDataLoader`
-- `MarketDataCache`
+- `DecisionResult` 是標準決策輸出。
+- `MarketScanResult` 是雷達掃描輸出。
+- `ExecutionEngine` 負責把決策轉成模擬執行結果。
+- UI 不重做交易語意，只展示核心服務輸出。
 
-### 2.2 Decision & Risk
+## 3. 資料源現況
 
-- `DecisionEngine`
-- `RiskManager`
-- `MarketRegimeDetector`
-- `TrendAnalyzer`
-- `VotingEngine`
-- `TradeModeClassifier`
+### 3.1 MarketDataCollectorFeed
 
-### 2.3 Execution Simulation
-
-- `ExecutionEngine`
-- `ExecutionResult`
-- `Order`
-- `OrderSide`
-- `OrderStatus`
-- `OrderType`
-
-### 2.4 Backtest & Reporting
-
-- `BacktestEngine`
-- `BacktestResult`
-- `Portfolio`
-- `Position`
-- `PortfolioSnapshot`
-- `TradeRecord`
-
-### 2.5 UI
-
-- `MainFrameWithDocking`
-- `WatchlistPanel`
-- `MarketAnalysisDock`
-- `ModeRecommendationDock`
-- `BacktestResultDialog`
-
-## 3. 2026-05-11 完整化實作
-
-### 3.1 核心流程定稿
-
-專案內部流程已明確收斂成：
-
-1. `Market Data`
-2. `Signal Generation`
-3. `Decision & Risk`
-4. `Execution Simulation`
-5. `Backtest & Reporting`
-
-### 3.2 單一決策契約
-
-`DecisionResult` 現在是策略層到執行層的唯一標準化決策物件。
-
-欄位語意：
-
-- `symbol`
-- `tradeMode`
-- `action`
-- `orderType`
-- `orderSide`
-- `confidence`
-- `reason`
-- `suggestedStopLoss`
-- `suggestedTakeProfit`
-- `suggestedQuantity`
-- `riskRewardRatio`
-
-### 3.3 掃描輸出契約
-
-`MarketScanResult` 由 `DecisionResult` 派生，讓掃描結果與決策結果共用同一套語意，不再各自長不同欄位定義。
-
-### 3.4 執行契約
-
-`ExecutionEngine` 新增：
-
-- `executeDecision(DecisionResult decision, double price)`
-- `executeOrder(Order order)`
-
-這讓 UI 或其他呼叫端不需要再自己重建下單意圖。
-
-### 3.5 風控規則
-
-`RiskManager` 現在除了原有帳戶級檢查外，也會做進場層級檢查：
-
-- 最低風險報酬比
-- 波動率下限
-- 波動率上限
-- 既有資金與部位限制
-
-### 3.6 金融語意限制
-
-第一階段限制如下：
-
-- `long-only`
-- `OPEN_SHORT` 決策會被拒絕
-- 模擬執行仍可保留 `OPEN_SHORT` 型別語意，但產品不允許落地
-
-## 4. 目前已落地的核心模型
-
-### 4.1 DecisionResult
+狀態：主要盤中資料源。
 
 用途：
 
-- 標準化進出場建議
-- 承接風控與投票結果
-- 轉成 `MarketScanResult`
-- 提供執行引擎消費
+- 讀取 MySQL `market_data`。
+- 載入今日或指定日期 `09:00~13:30` 分 K。
+- 觀察清單顯示最新 SQL tick。
+- 雷達掃描與 SQL 回測。
 
-### 4.2 Order / ExecutionResult
+限制：
 
-用途：
+- Collector 沒有啟動或資料過期時，雷達應跳過，不得改打 FinMind 即時 API。
+- 台股 `13:25~13:30` 集合競價期間 tick 可能停止更新，這不是 Collector 故障。
 
-- 標準化模擬訂單
-- 區分 `BUY / SELL / SHORT / COVER`
-- 區分 `NEW / ACCEPTED / FILLED / CANCELLED / REJECTED`
+### 3.2 FinMind
 
-### 4.3 Portfolio / PortfolioSnapshot
+狀態：低頻與手動查詢資料源。
 
-用途：
+允許用途：
 
-- 追蹤現金、部位、總資產
-- 累積已實現損益
-- 建立快照供回測與報表使用
+- 盤前 / 盤後補資料。
+- `TaiwanStockKBar` 盤後分 K。
+- `TaiwanStockInfo` 股票名稱與產業 fallback。
+- `TaiwanStockIndustryChain` 產業鏈匯入 SQL。
+- `TaiwanStockTradingDailyReport` 分點資料。
+- 新聞、籌碼、API usage 與手動 API 面板。
 
-## 5. 驗證矩陣
+禁止用途：
 
-### 5.1 已驗證情境
+- DreamHouseTrading 盤中雷達不得直接呼叫 FinMind 即時行情。
+- 盤中不得用 `TaiwanStockKBar` 補即時分 K。
 
-- `DecisionResult` 可正確轉成 `MarketScanResult`
-- 風險報酬比不足時，`RiskManager` 會拒絕進場
-- 波動太低時，`RiskManager` 會拒絕進場
-- 波動太高時，`RiskManager` 會拒絕進場
-- `ExecutionEngine` 可直接執行標準化做多決策
-- `ExecutionEngine` 會拒絕標準化放空決策
-- `ExecutionEngine` 可依決策物件平掉既有持倉
+### 3.3 Yahoo
 
-### 5.2 現有整合測試仍涵蓋
+狀態：保留為輔助資料源，不作為目前當沖自動監控主資料源。
 
-- `DecisionSystemIntegrationTest`
-- `PortfolioTest`
-- `PositionTest`
-- 既有 cache / feed / data source 相關測試
+## 4. 當沖監控進度
 
-## 6. 實際驗證結果
+已完成或已接入：
 
-已執行：
+- 自動監控語意強制為 `DAY_TRADE`。
+- 當沖模擬開單固定 `1000` 股。
+- 13:25 後禁止自動開倉並強制平倉 auto-managed 部位。
+- 早盤禁開倉預設 `09:00~09:15`，可由監控設定調整。
+- 同股停損冷卻預設 `60` 分鐘，平倉後冷卻預設 `30` 分鐘。
+- 最大同時持倉預設 `3`。
+- 每日最多自動交易預設 `5`。
+- 日損、連敗、停損次數熔斷。
+- `SignalRSI = SHORT` 阻擋 `OPEN_LONG`。
+- VWAP、VWAP slope、Volume Sustain、ATR 追高限制。
+- RANGE 盤時間 / 動能失效出場。
+- 三層停損停利：結構停損、盤勢感知停利、持倉中理由失效 / 移動停損。
+
+目前策略方向：
+
+- 日線只做盤前股票池。
+- 5 分 K 是主交易層。
+- 1 分 K 是執行確認層。
+- 盤中缺少可靠即時大盤與產業資料時，使用觀察清單內部市場狀態替代。
+
+## 5. 回測與報告進度
+
+已完成或已接入：
+
+- SQL 雷達批次回測。
+- 指定日期與日期範圍回測。
+- 同一天資料仍按單日交易規則計算。
+- N 根訊號成立後，N+1 open 成交。
+- 同一根 K 同時碰停損與停利時，採保守停損優先。
+- 回測報告拆分 grossProfit、commission、tax、slippageCost、netProfit。
+- 交易理由、阻擋原因、技術指標與週期資訊寫入報告。
+- 圖表支援回測開平倉標記。
+
+仍需持續驗證：
+
+- 被阻擋訊號的後續最大漲幅、最大回撤與收盤報酬統計。
+- 各硬阻擋條件與加分條件的貢獻分析。
+- 三層停損停利在多日資料上的勝率、Profit Factor 與平均虧損變化。
+
+## 6. 盤後股票池進度
+
+已完成或已接入：
+
+- 產生隔日當沖股票池 UI。
+- 觀察清單可鎖定股票，避免被股票池覆蓋。
+- 股票池依日線趨勢、量能、型態、當沖活躍度、風險扣分與分點籌碼評分。
+- 分點資料讀取 `finmind_taiwan_stock_trading_daily_report`，並支援 raw JSON 格式聚合。
+- 分點欄位改用每家分點買賣超聚合，顯示最大買超 / 最大賣超分點、張數、分點家數與筆數。
+
+注意：
+
+- FinMind 分點資料是盤後資料，適合隔日股票池，不適合盤中進場。
+- 若指定日期資料尚未匯入 SQL，股票池需先匯入或明確顯示資料缺失。
+
+## 7. UI 進度
+
+已完成或已接入：
+
+- 主圖 K 棒批次載入，避免逐 tick 推送造成卡頓。
+- 表格支援欄位 resize 與排序。
+- 觀察清單支援批量新增 / 刪除與中文名稱補齊。
+- 產業分布支援大類篩選與加入觀察清單。
+- FinMind API 面板支援資料集分類與寫入 SQL。
+- 交易紀錄分析可匯入每日 CSV 並檢視開平倉流程。
+- 監控設定收斂為當沖有效欄位，短線 / 波段欄位停用。
+
+仍需注意：
+
+- 所有新增表格都要確認 resize 時欄位不遮蔽文字。
+- UI 只負責呈現與設定，不要複製核心交易語意。
+
+## 8. 已知限制
+
+- FinMind 無法作為穩定盤中即時大盤 / 產業資料源。
+- 當沖策略目前不依賴即時大盤與即時產業，改用觀察清單內部市場狀態。
+- 產業鏈與分點資料是低頻資料，主要用於盤前選股與盤後分析。
+- MarketDataCollector 必須在盤中持續寫入 SQL，否則雷達只能跳過資料不足股票。
+- macOS 可執行 DreamHouseTrading，但若 Collector 跑在 Windows，需調整 MySQL 網路連線設定。
+
+## 9. 驗證
+
+編譯：
 
 ```bash
 mvn -q -DskipTests compile
+```
+
+測試：
+
+```bash
 cmd /c "mvn -q -Djacoco.skip=true test"
 ```
 
-結果：
+本機測試備註：
 
-- 編譯通過
-- 測試通過
+- 這台 Windows 主機上一般 `mvn test` 可能被 JaCoCo coverage 檔權限卡住。
+- 測試輸出可能出現既有背景 scheduler noise，只要 Maven exit code 為 0 即視為通過。
 
-殘留風險：
+## 10. 後續優先序
 
-- 預設 `mvn test` 仍會因 JaCoCo coverage 檔案權限問題失敗
-- 部分 feed 測試在背景 thread 仍會輸出 scheduler noise，但 Maven 可成功結束
-
-## 7. 後續建議
-
-下一階段若要再往「更完整金融體系」推進，建議順序：
-
-1. 把 `TradeRecord` 補齊 entry/exit reason 與 hit-state 語意
-2. 讓 `ModeRecommendationDock` 完全吃 `DecisionEngine` 既有分類結果，不再在 UI 端重算
-3. 補 scanner 與 UI candidate table 的一致欄位模型
-4. 補 `Feed -> Strategy -> Decision -> Execution -> Report` 的更完整整合測試
+1. 用多日 SQL 回測驗證三層停損停利是否降低平均虧損。
+2. 補條件貢獻分析與阻擋後續表現統計。
+3. 持續校準 B 組收斂版與三個當沖模板。
+4. 改善分點資料匯入診斷，讓資料缺失、API 失敗、SQL 已有資料三種狀態更清楚。
+5. 等回測可信度與風控穩定後，再評估 ML 或更複雜模型。

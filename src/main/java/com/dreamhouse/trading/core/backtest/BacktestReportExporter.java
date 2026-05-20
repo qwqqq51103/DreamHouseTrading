@@ -41,10 +41,10 @@ public final class BacktestReportExporter {
 
         report.append("完整交易紀錄:\n");
         report.append("-".repeat(120)).append('\n');
-        report.append("ID, 股票, 開倉時間, 開倉價, 平倉時間, 平倉價, 數量, 停損, 停利, 出場原因, 毛損益, 淨損益, 報酬率, 持倉分鐘, 開單理由\n");
+        report.append("ID, 股票, 開倉時間, 開倉價, 平倉時間, 平倉價, 數量, 停損, 停利, 出場原因, 毛損益, 手續費, 證交稅, 滑價成本, 淨損益, 報酬率, 持倉分鐘, 開單理由\n");
         for (TradeLifecycle lifecycle : pairTrades(result.getTrades())) {
             report.append(String.format(
-                    "%s, %s, %s, %.2f, %s, %.2f, %d, %s, %s, %s, %.2f, %.2f, %.2f%%, %d, %s%n",
+                    "%s, %s, %s, %.2f, %s, %.2f, %d, %s, %s, %s, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f%%, %d, %s%n",
                     lifecycle.tradeId(),
                     lifecycle.symbol(),
                     format(lifecycle.entryTime()),
@@ -56,11 +56,15 @@ public final class BacktestReportExporter {
                     formatNullable(lifecycle.takeProfit()),
                     lifecycle.exitReason(),
                     lifecycle.grossProfit(),
+                    lifecycle.commission(),
+                    lifecycle.tax(),
+                    lifecycle.slippageCost(),
                     lifecycle.netProfit(),
                     lifecycle.returnPercent() * 100,
                     lifecycle.holdingMinutes(),
                     lifecycle.entryReason()));
         }
+        appendSignalObservations(report, result);
         return report.toString();
     }
 
@@ -103,7 +107,7 @@ public final class BacktestReportExporter {
         html.append("<section><h3>完整交易紀錄</h3><table><thead><tr>");
         String[] headers = {
                 "ID", "股票", "開倉時間", "開倉價", "平倉時間", "平倉價", "數量",
-                "停損", "停利", "出場原因", "毛損益", "淨損益", "報酬率", "持倉分鐘", "開單理由"
+                "停損", "停利", "出場原因", "毛損益", "手續費", "證交稅", "滑價成本", "淨損益", "報酬率", "持倉分鐘", "開單理由"
         };
         for (String header : headers) {
             html.append("<th>").append(escapeHtml(header)).append("</th>");
@@ -123,6 +127,9 @@ public final class BacktestReportExporter {
             html.append(td(formatNullable(lifecycle.takeProfit())));
             html.append(td(lifecycle.exitReason()));
             html.append(td(String.format("%.2f", lifecycle.grossProfit())));
+            html.append(td(String.format("%.2f", lifecycle.commission())));
+            html.append(td(String.format("%.2f", lifecycle.tax())));
+            html.append(td(String.format("%.2f", lifecycle.slippageCost())));
             html.append("<td class=\"").append(profitClass).append("\">")
                     .append(String.format("%.2f", lifecycle.netProfit())).append("</td>");
             html.append(td(String.format("%.2f%%", lifecycle.returnPercent() * 100)));
@@ -131,6 +138,7 @@ public final class BacktestReportExporter {
             html.append("</tr>");
         }
         html.append("</tbody></table></section>");
+        appendSignalObservationsHtml(html, result);
         html.append("</body></html>");
         return html.toString();
     }
@@ -160,7 +168,7 @@ public final class BacktestReportExporter {
             writer.write('\n');
             writer.write(String.join(",",
                     "交易ID", "股票", "開倉時間", "開倉價", "平倉時間", "平倉價", "數量",
-                    "停損", "停利", "出場原因", "毛損益", "手續費", "淨損益",
+                    "停損", "停利", "出場原因", "毛損益", "手續費", "證交稅", "滑價成本", "淨損益",
                     "報酬率", "持倉分鐘", "開單理由") + "\n");
             for (TradeLifecycle lifecycle : pairTrades(result.getTrades())) {
                 writer.write(String.join(",",
@@ -176,10 +184,40 @@ public final class BacktestReportExporter {
                         csv(lifecycle.exitReason()),
                         csv(String.format("%.2f", lifecycle.grossProfit())),
                         csv(String.format("%.2f", lifecycle.commission())),
+                        csv(String.format("%.2f", lifecycle.tax())),
+                        csv(String.format("%.2f", lifecycle.slippageCost())),
                         csv(String.format("%.2f", lifecycle.netProfit())),
                         csv(String.format("%.2f%%", lifecycle.returnPercent() * 100)),
                         csv(String.valueOf(lifecycle.holdingMinutes())),
                         csv(lifecycle.entryReason())) + "\n");
+            }
+            writer.write('\n');
+            writer.write(String.join(",",
+                    "訊號時間", "股票", "動作", "是否阻擋", "分數",
+                    "MarketDecision", "MarketRegime", "內部市場狀態", "族群", "觀察清單排名%",
+                    "VWAP", "VWAP斜率%", "量能延續", "相對大盤%", "相對族群%",
+                    "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由") + "\n");
+            for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+                writer.write(String.join(",",
+                        csv(format(observation.timestamp())),
+                        csv(observation.symbol()),
+                        csv(observation.action()),
+                        csv(observation.blocked() ? "Y" : "N"),
+                        csv(String.format("%.3f", observation.score())),
+                        csv(observation.marketDecision()),
+                        csv(observation.marketRegime()),
+                        csv(observation.internalMarketState()),
+                        csv(observation.industry()),
+                        csv(formatNullable(observation.watchlistRankPercent())),
+                        csv(formatNullable(observation.vwap())),
+                        csv(formatNullable(observation.vwapSlopePercent())),
+                        csv(String.valueOf(observation.volumeSustain())),
+                        csv(formatNullable(observation.relativeToBenchmarkPercent())),
+                        csv(formatNullable(observation.relativeToIndustryPercent())),
+                        csv(String.format("%.2f", observation.maxFavorablePercent())),
+                        csv(String.format("%.2f", observation.maxAdversePercent())),
+                        csv(String.format("%.2f", observation.closeReturnPercent())),
+                        csv(observation.reason())) + "\n");
             }
         }
         return output.getAbsolutePath();
@@ -230,6 +268,65 @@ public final class BacktestReportExporter {
         report.append("當沖與雷達配置:\n");
         report.append("-".repeat(40)).append('\n');
         report.append(normalize(configurationSummary)).append("\n\n");
+    }
+
+    private static void appendSignalObservations(StringBuilder report, BacktestResult result) {
+        if (result.getSignalObservations().isEmpty()) {
+            return;
+        }
+        report.append("\n訊號與阻擋後續表現:\n");
+        report.append("-".repeat(120)).append('\n');
+        report.append("時間, 股票, 動作, 是否阻擋, 分數, MarketDecision, MarketRegime, 內部市場狀態, 族群, 觀察清單排名%, 後續最大漲幅%, 後續最大回撤%, 收盤報酬%, 理由\n");
+        for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+            report.append(String.format(
+                    "%s, %s, %s, %s, %.3f, %s, %s, %s, %s, %s, %.2f, %.2f, %.2f, %s%n",
+                    format(observation.timestamp()),
+                    observation.symbol(),
+                    observation.action(),
+                    observation.blocked() ? "Y" : "N",
+                    observation.score(),
+                    observation.marketDecision(),
+                    observation.marketRegime(),
+                    observation.internalMarketState(),
+                    observation.industry(),
+                    formatNullable(observation.watchlistRankPercent()),
+                    observation.maxFavorablePercent(),
+                    observation.maxAdversePercent(),
+                    observation.closeReturnPercent(),
+                    observation.reason()));
+        }
+    }
+
+    private static void appendSignalObservationsHtml(StringBuilder html, BacktestResult result) {
+        if (result.getSignalObservations().isEmpty()) {
+            return;
+        }
+        html.append("<section><h3>訊號與阻擋後續表現</h3><table><thead><tr>");
+        String[] headers = {"時間", "股票", "動作", "阻擋", "分數", "MarketDecision", "MarketRegime",
+                "內部市場狀態", "族群", "觀察清單排名%", "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由"};
+        for (String header : headers) {
+            html.append("<th>").append(escapeHtml(header)).append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+            html.append("<tr>");
+            html.append(td(format(observation.timestamp())));
+            html.append(td(observation.symbol()));
+            html.append(td(observation.action()));
+            html.append(td(observation.blocked() ? "Y" : "N"));
+            html.append(td(String.format("%.3f", observation.score())));
+            html.append(td(observation.marketDecision()));
+            html.append(td(observation.marketRegime()));
+            html.append(td(observation.internalMarketState()));
+            html.append(td(observation.industry()));
+            html.append(td(formatNullable(observation.watchlistRankPercent())));
+            html.append(td(String.format("%.2f", observation.maxFavorablePercent())));
+            html.append(td(String.format("%.2f", observation.maxAdversePercent())));
+            html.append(td(String.format("%.2f", observation.closeReturnPercent())));
+            html.append("<td class=\"reason\">").append(escapeHtml(observation.reason())).append("</td>");
+            html.append("</tr>");
+        }
+        html.append("</tbody></table></section>");
     }
 
     private static void addMetric(StringBuilder html, String label, String value) {
@@ -331,6 +428,14 @@ public final class BacktestReportExporter {
 
         public double commission() {
             return entry.getCommissionAmount() + exit.getCommissionAmount();
+        }
+
+        public double tax() {
+            return entry.getTaxAmount() + exit.getTaxAmount();
+        }
+
+        public double slippageCost() {
+            return entry.getSlippageCost() + exit.getSlippageCost();
         }
 
         public double netProfit() {

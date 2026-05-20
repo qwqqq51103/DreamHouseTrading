@@ -67,6 +67,8 @@ datasource.properties
 
 # Data files
 data/
+logs/paper-trades/*.csv
+config/*.properties
 
 # Local agent / issue exports
 .github-issues/

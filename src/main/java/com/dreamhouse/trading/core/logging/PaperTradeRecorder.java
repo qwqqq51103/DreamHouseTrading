@@ -50,7 +50,10 @@ public class PaperTradeRecorder {
             "confidence",
             "risk_reward",
             "reason",
-            "message");
+            "message",
+            "tax",
+            "strategy_name",
+            "strategy_details");
 
     private static final String TRADE_HEADER = String.join(",",
             "closed_time",
@@ -83,7 +86,10 @@ public class PaperTradeRecorder {
             "entry_reason",
             "exit_reason",
             "raw_signal_summary",
-            "block_reason");
+            "block_reason",
+            "tax",
+            "strategy_name",
+            "strategy_details");
 
     private static final String SETUP_HEADER = String.join(",",
             "entry_time",
@@ -103,7 +109,9 @@ public class PaperTradeRecorder {
             "decision_source",
             "reason",
             "raw_signal_summary",
-            "block_reason");
+            "block_reason",
+            "strategy_name",
+            "strategy_details");
 
     private final Path outputDirectory;
     private final Map<String, OpenTrade> openTrades = new ConcurrentHashMap<>();
@@ -121,13 +129,21 @@ public class PaperTradeRecorder {
     }
 
     public void record(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source) {
+        record(result, decision, scanResult, source, "");
+    }
+
+    public void record(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName) {
+        record(result, decision, scanResult, source, strategyName, "");
+    }
+
+    public void record(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) {
         if (result == null) {
             return;
         }
         try {
             ensureDirectory();
-            appendOrder(result, decision, source);
-            updateCompletedTrade(result, decision, scanResult, source);
+            appendOrder(result, decision, source, strategyName, strategyDetails);
+            updateCompletedTrade(result, decision, scanResult, source, strategyName, strategyDetails);
         } catch (IOException e) {
             System.err.println("[PaperTradeRecorder] failed to write trade log: " + e.getMessage());
         }
@@ -156,7 +172,7 @@ public class PaperTradeRecorder {
         return outputDirectory.resolve("trade_setups_" + LocalDate.now().format(DATE_FORMAT) + ".csv");
     }
 
-    private void appendOrder(ExecutionResult result, DecisionResult decision, String source) throws IOException {
+    private void appendOrder(ExecutionResult result, DecisionResult decision, String source, String strategyName, String strategyDetails) throws IOException {
         appendCsvLine(getTodayOrderLogPath(), ORDER_HEADER, String.join(",",
                 csv(formatTime(result.getExecutionTime())),
                 csv(source),
@@ -178,10 +194,13 @@ public class PaperTradeRecorder {
                 decimal(decision != null ? decision.getConfidence() : 0.0),
                 optionalDecimal(decision != null ? decision.getRiskRewardRatio() : null),
                 csv(result.getDecisionReason()),
-                csv(result.getMessage())));
+                csv(result.getMessage()),
+                decimal(result.getTax()),
+                csv(strategyName),
+                csv(strategyDetails)));
     }
 
-    private void updateCompletedTrade(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source) throws IOException {
+    private void updateCompletedTrade(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) throws IOException {
         if (!result.isSuccess() || result.getOrderSide() == null) {
             return;
         }
@@ -191,9 +210,9 @@ public class PaperTradeRecorder {
         }
 
         if (result.getOrderSide().opensExposure()) {
-            OpenTrade openTrade = OpenTrade.from(result, decision, scanResult);
+            OpenTrade openTrade = OpenTrade.from(result, decision, scanResult, strategyName, strategyDetails);
             openTrades.put(positionId, openTrade);
-            appendSetup(result, decision, scanResult, source);
+            appendSetup(result, decision, scanResult, source, strategyName, strategyDetails);
             return;
         }
 
@@ -246,10 +265,13 @@ public class PaperTradeRecorder {
                 csv(open.reason()),
                 csv(result.getDecisionReason()),
                 csv(open.rawSignalSummary()),
-                csv(open.blockReason())));
+                csv(open.blockReason()),
+                decimal(result.getTax()),
+                csv(open.strategyName()),
+                csv(open.strategyDetails())));
     }
 
-    private void appendSetup(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source) throws IOException {
+    private void appendSetup(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) throws IOException {
         appendCsvLine(getTodaySetupLogPath(), SETUP_HEADER, String.join(",",
                 csv(formatTime(result.getExecutionTime())),
                 csv(source),
@@ -268,13 +290,16 @@ public class PaperTradeRecorder {
                 csv(decision != null && decision.getSource() != null ? decision.getSource().name() : ""),
                 csv(result.getDecisionReason()),
                 csv(scanResult != null ? scanResult.getRawSignalSummary() : ""),
-                csv(scanResult != null ? scanResult.getBlockReason() : "")));
+                csv(scanResult != null ? scanResult.getBlockReason() : ""),
+                csv(strategyName),
+                csv(strategyDetails)));
     }
 
     private void appendCsvLine(Path path, String header, String line) throws IOException {
         boolean newFile = Files.notExists(path) || Files.size(path) == 0L;
         if (!newFile) {
             ensureUtf8Bom(path);
+            ensureCurrentHeader(path, header);
         }
         try (BufferedWriter writer = Files.newBufferedWriter(
                 path,
@@ -289,6 +314,23 @@ public class PaperTradeRecorder {
             writer.write(line);
             writer.newLine();
         }
+    }
+
+    private void ensureCurrentHeader(Path path, String header) throws IOException {
+        if (Files.notExists(path) || Files.size(path) == 0L) {
+            return;
+        }
+        var lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+        if (lines.isEmpty()) {
+            return;
+        }
+        String firstLine = lines.get(0);
+        String currentHeader = firstLine.startsWith("\ufeff") ? firstLine.substring(1) : firstLine;
+        if (header.equals(currentHeader)) {
+            return;
+        }
+        lines.set(0, "\ufeff" + header);
+        Files.write(path, lines, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     private void ensureUtf8Bom(Path path) throws IOException {
@@ -380,6 +422,8 @@ public class PaperTradeRecorder {
         private final Double stopLoss;
         private final Double takeProfit;
         private final TradeMode tradeMode;
+        private final String strategyName;
+        private final String strategyDetails;
         private final String reason;
         private final double setupScore;
         private final double setupConfidence;
@@ -399,6 +443,8 @@ public class PaperTradeRecorder {
                 Double stopLoss,
                 Double takeProfit,
                 TradeMode tradeMode,
+                String strategyName,
+                String strategyDetails,
                 String reason,
                 double setupScore,
                 double setupConfidence,
@@ -412,6 +458,8 @@ public class PaperTradeRecorder {
             this.stopLoss = stopLoss;
             this.takeProfit = takeProfit;
             this.tradeMode = tradeMode;
+            this.strategyName = strategyName != null ? strategyName : "";
+            this.strategyDetails = strategyDetails != null ? strategyDetails : "";
             this.reason = reason;
             this.setupScore = setupScore;
             this.setupConfidence = setupConfidence;
@@ -424,7 +472,7 @@ public class PaperTradeRecorder {
             this.lowestTime = entryTime;
         }
 
-        static OpenTrade from(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult) {
+        static OpenTrade from(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String strategyName, String strategyDetails) {
             return new OpenTrade(
                     result.getSymbol(),
                     result.getOrderId(),
@@ -433,6 +481,8 @@ public class PaperTradeRecorder {
                     result.getStopLoss(),
                     result.getTakeProfit(),
                     resolveTradeMode(decision, scanResult),
+                    strategyName,
+                    strategyDetails,
                     result.getDecisionReason(),
                     scanResult != null ? scanResult.getScore() : 0.0,
                     resolveConfidence(decision, scanResult),
@@ -450,6 +500,8 @@ public class PaperTradeRecorder {
                     result.getStopLoss(),
                     result.getTakeProfit(),
                     resolveTradeMode(decision),
+                    "",
+                    "",
                     "",
                     0.0,
                     resolveConfidence(decision, null),
@@ -498,6 +550,14 @@ public class PaperTradeRecorder {
 
         TradeMode tradeMode() {
             return tradeMode;
+        }
+
+        String strategyName() {
+            return strategyName;
+        }
+
+        String strategyDetails() {
+            return strategyDetails;
         }
 
         String reason() {

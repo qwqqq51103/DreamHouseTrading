@@ -28,11 +28,14 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
     private final String industry;
     private final Double industryStrength;
     private final Double relativeToIndustryPercent;
+    private final Double watchlistRankPercent;
+    private final Double watchlistVolumeRankPercent;
     private final Double vwap;
     private final Double vwapSlopePercent;
     private final Boolean volumeSustain;
     private final Double atrStopLoss;
     private final Double atrTakeProfit;
+    private final MarketDecision marketDecision;
     private final LocalDateTime scannedAt;
 
     private MarketScanResult(Builder builder) {
@@ -54,11 +57,14 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         this.industry = builder.industry;
         this.industryStrength = builder.industryStrength;
         this.relativeToIndustryPercent = builder.relativeToIndustryPercent;
+        this.watchlistRankPercent = builder.watchlistRankPercent;
+        this.watchlistVolumeRankPercent = builder.watchlistVolumeRankPercent;
         this.vwap = builder.vwap;
         this.vwapSlopePercent = builder.vwapSlopePercent;
         this.volumeSustain = builder.volumeSustain;
         this.atrStopLoss = builder.atrStopLoss;
         this.atrTakeProfit = builder.atrTakeProfit;
+        this.marketDecision = builder.marketDecision;
         this.scannedAt = builder.scannedAt;
     }
 
@@ -138,6 +144,14 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         return relativeToIndustryPercent;
     }
 
+    public Double getWatchlistRankPercent() {
+        return watchlistRankPercent;
+    }
+
+    public Double getWatchlistVolumeRankPercent() {
+        return watchlistVolumeRankPercent;
+    }
+
     public Double getVwap() {
         return vwap;
     }
@@ -156,6 +170,10 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
 
     public Double getAtrTakeProfit() {
         return atrTakeProfit;
+    }
+
+    public MarketDecision getMarketDecision() {
+        return marketDecision;
     }
 
     public LocalDateTime getScannedAt() {
@@ -190,11 +208,14 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         private String industry = "";
         private Double industryStrength;
         private Double relativeToIndustryPercent;
+        private Double watchlistRankPercent;
+        private Double watchlistVolumeRankPercent;
         private Double vwap;
         private Double vwapSlopePercent;
         private Boolean volumeSustain;
         private Double atrStopLoss;
         private Double atrTakeProfit;
+        private MarketDecision marketDecision = MarketDecision.ALLOW_LONG;
         private LocalDateTime scannedAt = LocalDateTime.now();
 
         private Builder(String symbol) {
@@ -261,6 +282,9 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
 
         public Builder blockReason(String blockReason) {
             this.blockReason = blockReason != null ? blockReason : "";
+            if (!this.blockReason.isBlank()) {
+                this.marketDecision = MarketDecision.BLOCK_LONG;
+            }
             return this;
         }
 
@@ -273,6 +297,8 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
                 this.relativeToBenchmarkPercent = context.relativeToBenchmarkPercent();
                 this.industry = context.industry();
                 this.relativeToIndustryPercent = context.relativeToIndustryPercent();
+                this.watchlistRankPercent = context.watchlistReturnRankPercent();
+                this.watchlistVolumeRankPercent = context.watchlistVolumeRankPercent();
                 this.vwap = context.vwap();
                 this.vwapSlopePercent = context.vwapSlopePercent();
                 this.volumeSustain = context.volumeSustain();
@@ -287,6 +313,11 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         public Builder atrLevels(Double stopLoss, Double takeProfit) {
             this.atrStopLoss = stopLoss;
             this.atrTakeProfit = takeProfit;
+            return this;
+        }
+
+        public Builder marketDecision(MarketDecision marketDecision) {
+            this.marketDecision = marketDecision != null ? marketDecision : MarketDecision.ALLOW_LONG;
             return this;
         }
 
