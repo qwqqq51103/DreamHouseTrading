@@ -20,6 +20,7 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -32,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 /**
@@ -199,6 +201,86 @@ public class MarketDataCollectorRepository implements AutoCloseable {
         return bars;
     }
 
+    public OptionalDouble findPreviousClosePrice(String symbol, LocalDate sessionDate) {
+        if (connection == null || symbol == null || symbol.isBlank() || sessionDate == null) {
+            return OptionalDouble.empty();
+        }
+        LocalDateTime end = sessionDate.atTime(9, 0);
+        LocalDateTime start = sessionDate.minusDays(14).atStartOfDay();
+        PriceAtTime candle = findLatestCandleCloseBefore(symbol, start, end);
+        PriceAtTime tick = findLatestTickPriceBefore(symbol, start, end);
+        PriceAtTime best = latestPriceAtTime(candle, tick);
+        return best != null && best.price() > 0.0
+                ? OptionalDouble.of(best.price())
+                : OptionalDouble.empty();
+    }
+
+    private PriceAtTime findLatestCandleCloseBefore(String symbol, LocalDateTime start, LocalDateTime end) {
+        List<String> aliases = symbolAliases(symbol);
+        String sql = """
+                SELECT REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') AS normalized_ts, close_price AS price
+                FROM candlesticks
+                WHERE symbol IN (%s)
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') >= ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') < ?
+                ORDER BY normalized_ts DESC, ts DESC
+                LIMIT 1
+                """.formatted(placeholders(aliases.size()));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int parameterIndex = bindStrings(statement, 1, aliases);
+            statement.setString(parameterIndex++, formatSqlTime(start));
+            statement.setString(parameterIndex, formatSqlTime(end));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return new PriceAtTime(
+                            parseTimestamp(resultSet.getString("normalized_ts")),
+                            resultSet.getDouble("price"));
+                }
+            }
+        } catch (SQLException e) {
+            logger.debug("Failed to read previous candle close for {}: {}", symbol, e.getMessage());
+        }
+        return null;
+    }
+
+    private PriceAtTime findLatestTickPriceBefore(String symbol, LocalDateTime start, LocalDateTime end) {
+        List<String> aliases = symbolAliases(symbol);
+        String sql = """
+                SELECT REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') AS normalized_ts, price
+                FROM ticks
+                WHERE symbol IN (%s)
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') >= ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') < ?
+                ORDER BY normalized_ts DESC, ts DESC
+                LIMIT 1
+                """.formatted(placeholders(aliases.size()));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int parameterIndex = bindStrings(statement, 1, aliases);
+            statement.setString(parameterIndex++, formatSqlTime(start));
+            statement.setString(parameterIndex, formatSqlTime(end));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return new PriceAtTime(
+                            parseTimestamp(resultSet.getString("normalized_ts")),
+                            resultSet.getDouble("price"));
+                }
+            }
+        } catch (SQLException e) {
+            logger.debug("Failed to read previous tick close for {}: {}", symbol, e.getMessage());
+        }
+        return null;
+    }
+
+    private PriceAtTime latestPriceAtTime(PriceAtTime left, PriceAtTime right) {
+        if (left == null) {
+            return right;
+        }
+        if (right == null) {
+            return left;
+        }
+        return right.time().isAfter(left.time()) ? right : left;
+    }
+
     public List<Bar> findTodaySessionCandles(String symbol, String interval) {
         LocalDate today = LocalDate.now(TAIPEI_ZONE);
         return findSessionCandles(symbol, interval, today);
@@ -207,6 +289,50 @@ public class MarketDataCollectorRepository implements AutoCloseable {
     public List<Bar> findSessionCandles(String symbol, String interval, LocalDate date) {
         LocalDate sessionDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
         return findCandlesByTimeRange(symbol, interval, sessionDate.atTime(9, 0), sessionDate.atTime(13, 30));
+    }
+
+    public boolean hasCompleteIntradayM1Session(String symbol, LocalDate date) {
+        SessionCandleCoverage coverage = findSessionCandleCoverage(symbol, "M1", date);
+        return coverage.isCompleteIntradayM1Session();
+    }
+
+    public SessionCandleCoverage findSessionCandleCoverage(String symbol, String interval, LocalDate date) {
+        if (connection == null || symbol == null || symbol.isBlank()
+                || interval == null || interval.isBlank() || date == null) {
+            return SessionCandleCoverage.empty();
+        }
+        List<String> aliases = symbolAliases(symbol);
+        String sql = """
+                SELECT COUNT(*) AS candle_count,
+                       MIN(REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ')) AS first_ts,
+                       MAX(REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ')) AS last_ts
+                FROM candlesticks
+                WHERE symbol IN (%s) AND interval_type = ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') >= ?
+                  AND REPLACE(SUBSTRING(ts, 1, 19), 'T', ' ') <= ?
+                """.formatted(placeholders(aliases.size()));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int parameterIndex = bindStrings(statement, 1, aliases);
+            statement.setString(parameterIndex++, interval);
+            statement.setString(parameterIndex++, formatSqlTime(date.atTime(9, 0)));
+            statement.setString(parameterIndex, formatSqlTime(date.atTime(13, 30)));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return new SessionCandleCoverage(
+                            resultSet.getInt("candle_count"),
+                            parseNullableTimestamp(resultSet.getString("first_ts")),
+                            parseNullableTimestamp(resultSet.getString("last_ts")));
+                }
+            }
+        } catch (SQLException e) {
+            logger.warn("Failed to check MarketDataCollector session candle coverage for {} {} {}: {}",
+                    symbol, interval, date, e.getMessage());
+        }
+        return SessionCandleCoverage.empty();
+    }
+
+    private LocalDateTime parseNullableTimestamp(String value) {
+        return value == null || value.isBlank() ? null : parseTimestamp(value);
     }
 
     public List<Bar> findCandlesByTimeRange(String symbol, String interval, LocalDateTime startTime, LocalDateTime endTime) {
@@ -1760,6 +1886,38 @@ public class MarketDataCollectorRepository implements AutoCloseable {
     }
 
     private record SymbolDateKey(String symbol, LocalDate date) {
+    }
+
+    private record PriceAtTime(LocalDateTime time, double price) {
+    }
+
+    public record SessionCandleCoverage(int candleCount, LocalDateTime firstTimestamp, LocalDateTime lastTimestamp) {
+        private static final int EXPECTED_INTRADAY_M1_CANDLES = 271;
+        private static final int MIN_INTRADAY_M1_CANDLES = (int) Math.ceil(EXPECTED_INTRADAY_M1_CANDLES * 0.80);
+        private static final LocalTime REQUIRED_OPEN_COVERAGE_TIME = LocalTime.of(9, 5);
+        private static final LocalTime REQUIRED_CLOSE_COVERAGE_TIME = LocalTime.of(13, 20);
+
+        static SessionCandleCoverage empty() {
+            return new SessionCandleCoverage(0, null, null);
+        }
+
+        public boolean isCompleteIntradayM1Session() {
+            return candleCount >= MIN_INTRADAY_M1_CANDLES
+                    && firstTimestamp != null
+                    && !firstTimestamp.toLocalTime().isAfter(REQUIRED_OPEN_COVERAGE_TIME)
+                    && lastTimestamp != null
+                    && !lastTimestamp.toLocalTime().isBefore(REQUIRED_CLOSE_COVERAGE_TIME);
+        }
+
+        public String describeIntradayM1Coverage() {
+            return "M1=" + candleCount
+                    + ", 首根=" + formatCoverageTime(firstTimestamp)
+                    + ", 末根=" + formatCoverageTime(lastTimestamp);
+        }
+
+        private String formatCoverageTime(LocalDateTime timestamp) {
+            return timestamp != null ? timestamp.toLocalTime().toString() : "--";
+        }
     }
 
     public record IndustryInfo(

@@ -127,6 +127,7 @@ public class MarketScannerService {
             }
             Double riskReward = resolveRiskReward(lastBar.getClose(), decision);
             String rawSignalSummary = appendMarketContextSummary(summarizeSignals(signals), marketContext, symbolContext, atrLevels);
+            List<RadarScoreComponent> scoreComponents = buildScoreComponents(signals);
             String entryBlockReason = resolveEntryQualityBlockReason(
                     decision,
                     signals,
@@ -150,6 +151,7 @@ public class MarketScannerService {
                         .score(0.0)
                         .riskRewardRatio(riskReward)
                         .rawSignalSummary(rawSignalSummary)
+                        .scoreComponents(scoreComponents)
                         .blockReason(entryBlockReason)
                         .marketDecision(MarketDecision.BLOCK_LONG)
                         .marketContext(marketContext, symbolContext)
@@ -164,7 +166,8 @@ public class MarketScannerService {
                     .score(calculateScore(decision, effectiveRequest.getTradeMode()))
                     .riskRewardRatio(riskReward)
                     .rawSignalSummary(rawSignalSummary)
-                    .blockReason(resolveBlockReason(decision))
+                    .scoreComponents(scoreComponents)
+                    .blockReason(resolveBlockReason(decision, signals, effectiveRequest.getRadarStrategyConfig(), effectiveRequest.getTradeMode()))
                     .marketDecision(resolveMarketDecision(decision, marketContext))
                     .marketContext(marketContext, symbolContext)
                     .atrLevels(atrLevels != null ? atrLevels.stopLoss() : null,
@@ -395,17 +398,27 @@ public class MarketScannerService {
         if (effectiveConfig.isRequireRsiEntryConfirmation() && rsiLong && !movingAverageLong && !volumeLong) {
             return "RSI 超賣訊號缺少 EMA 趨勢或放量反轉確認，略過接刀進場";
         }
+        String nextBarConfirmationBlockReason = effectiveConfig.isRequireBreakoutNextBarConfirmation()
+                ? resolveBreakoutNextBarConfirmationBlockReason(bars, effectiveConfig)
+                : null;
+        boolean nextBarBreakoutConfirmed = effectiveConfig.isRequireBreakoutNextBarConfirmation()
+                && nextBarConfirmationBlockReason == null;
+        if (effectiveConfig.isBlockMovingAverageOnlyEntry()
+                && movingAverageLong
+                && !rsiLong
+                && !volumeLong
+                && !nextBarBreakoutConfirmed) {
+            return "EMA 單因子做多未確認：需 RSI 轉強或有效放量突破";
+        }
         if (effectiveConfig.isRequireBreakoutContinuation() && volumeLong) {
             String continuationBlockReason = resolveBreakoutContinuationBlockReason(bars);
             if (continuationBlockReason != null) {
                 return continuationBlockReason;
             }
         }
-        if (effectiveConfig.isRequireBreakoutNextBarConfirmation()) {
-            String nextBarConfirmationBlockReason = resolveBreakoutNextBarConfirmationBlockReason(bars, effectiveConfig);
-            if (nextBarConfirmationBlockReason != null) {
-                return nextBarConfirmationBlockReason;
-            }
+        if (effectiveConfig.isRequireBreakoutNextBarConfirmation()
+                && nextBarConfirmationBlockReason != null) {
+            return nextBarConfirmationBlockReason;
         }
         if (effectiveConfig.getMaxEntryRiseFromRecentLowPercent() > 0.0) {
             String chaseBlockReason = resolveChaseLimitBlockReason(bars, effectiveConfig);
@@ -426,8 +439,10 @@ public class MarketScannerService {
         if (marketContextBlockReason != null) {
             return marketContextBlockReason;
         }
-        if (effectiveConfig.isVolumeSustainEnabled()
-                && (symbolContext == null || !symbolContext.volumeSustain())) {
+        boolean volumeSustain = symbolContext != null
+                ? symbolContext.volumeSustain()
+                : MarketContextService.isVolumeSustained(bars);
+        if (effectiveConfig.isVolumeSustainEnabled() && !volumeSustain) {
             return "量能延續不足：最近 K 線沒有維持放量與突破後價格結構";
         }
         if (effectiveConfig.isAtrChaseLimitEnabled()) {
@@ -633,13 +648,13 @@ public class MarketScannerService {
             }
             if (context.relativeToBenchmarkPercent() < config.getWeakOutperformBenchmarkPercent()) {
                 return String.format(Locale.US,
-                        "弱勢盤禁止開多：強於大盤 %.2f%%，未達 %.2f%%",
+                        "弱勢盤禁止開多：強於基準 %.2f%%，未達 %.2f%%",
                         context.relativeToBenchmarkPercent(),
                         config.getWeakOutperformBenchmarkPercent());
             }
             if (context.relativeToIndustryPercent() < config.getWeakOutperformIndustryPercent()) {
                 return String.format(Locale.US,
-                        "弱勢盤禁止開多：強於族群 %.2f%%，未達 %.2f%%",
+                        "弱勢盤禁止開多：強於群體 %.2f%%，未達 %.2f%%",
                         context.relativeToIndustryPercent(),
                         config.getWeakOutperformIndustryPercent());
             }
@@ -942,15 +957,93 @@ public class MarketScannerService {
                 .orElse("No entry or exit signals");
     }
 
+    private List<RadarScoreComponent> buildScoreComponents(List<IStrategySignal> signals) {
+        if (signals == null || signals.isEmpty()) {
+            return List.of();
+        }
+        return signals.stream()
+                .filter(signal -> signal != null && signal.getSignal() != null)
+                .map(signal -> new RadarScoreComponent(
+                        signal.getStrategyName(),
+                        signal.getSignal().name(),
+                        signal.getConfidence(),
+                        signal.getWeight(),
+                        signal.getSignal() == SignalType.LONG ? weightedScore(signal) : 0.0,
+                        signal.getReason()))
+                .toList();
+    }
+
     private double weightedScore(IStrategySignal signal) {
         return signal.getConfidence() * signal.getWeight();
     }
 
-    private String resolveBlockReason(DecisionResult decision) {
+    private String resolveBlockReason(
+            DecisionResult decision,
+            List<IStrategySignal> signals,
+            RadarStrategyConfig config,
+            TradeMode mode) {
         if (decision == null) {
             return "No decision returned";
         }
-        return decision.shouldTrade() ? "" : decision.getReason();
+        if (decision.shouldTrade()) {
+            return "";
+        }
+        if ("No entry signal".equalsIgnoreCase(decision.getReason())) {
+            return resolveNoEntrySignalReason(signals, config, mode);
+        }
+        return decision.getReason();
+    }
+
+    private String resolveNoEntrySignalReason(
+            List<IStrategySignal> signals,
+            RadarStrategyConfig config,
+            TradeMode mode) {
+        RadarStrategyConfig effectiveConfig = (config != null ? config : RadarStrategyConfig.createDefault())
+                .copyForMode(mode);
+        List<String> missing = new ArrayList<>();
+        boolean hasLong = false;
+        boolean rsiShort = false;
+        for (IStrategySignal signal : signals != null ? signals : List.<IStrategySignal>of()) {
+            if (signal == null || signal.getSignal() == null) {
+                continue;
+            }
+            hasLong |= signal.getSignal() == SignalType.LONG;
+            rsiShort |= "SignalRSI".equals(signal.getStrategyName()) && signal.getSignal() == SignalType.SHORT;
+        }
+        if (rsiShort) {
+            return "未進場：SignalRSI=SHORT 阻擋做多";
+        }
+        if (effectiveConfig.isMovingAverageEnabled() && !hasLongSignal(signals, "MovingAverageTrend")) {
+            missing.add(String.format(Locale.US, "%s%d/%d 尚未形成多方",
+                    effectiveConfig.getMovingAverageType().name(),
+                    effectiveConfig.getFastMovingAveragePeriod(),
+                    effectiveConfig.getSlowMovingAveragePeriod()));
+        }
+        if (effectiveConfig.isVolumeBreakoutEnabled() && !hasLongSignal(signals, "VolumeBreakout")) {
+            missing.add(String.format(Locale.US, "近 %d 根放量突破未成立(量倍數 %.2f)",
+                    effectiveConfig.getBreakoutLookbackBars(),
+                    effectiveConfig.getVolumeMultiplier()));
+        }
+        if (effectiveConfig.isRsiEnabled() && !hasLongSignal(signals, "SignalRSI")) {
+            missing.add(String.format(Locale.US, "RSI%d 未形成多方訊號",
+                    effectiveConfig.getRsiPeriod()));
+        }
+        if (!missing.isEmpty()) {
+            return "未進場：" + String.join("；", missing);
+        }
+        if (hasLong) {
+            return "未進場：做多投票分數或最少策略數不足";
+        }
+        return "未進場：策略尚未形成可執行做多訊號";
+    }
+
+    private boolean hasLongSignal(List<IStrategySignal> signals, String strategyName) {
+        if (signals == null || signals.isEmpty()) {
+            return false;
+        }
+        return signals.stream()
+                .filter(signal -> signal != null && strategyName.equals(signal.getStrategyName()))
+                .anyMatch(signal -> signal.getSignal() == SignalType.LONG);
     }
 
     private double calculateScore(DecisionResult decision, TradeMode mode) {

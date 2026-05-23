@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -220,6 +221,26 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
             return bars;
         }
         return candles;
+    }
+
+    public List<Bar> fetchWarmupBarsBeforeSession(String symbol, Timeframe timeframe, LocalDate date, int barCount) {
+        if (symbol == null || symbol.isBlank() || timeframe == null || date == null || barCount <= 0
+                || !repository.isAvailable()) {
+            return List.of();
+        }
+        LocalDateTime start = date.minusDays(21).atTime(MARKET_OPEN_TIME);
+        LocalDateTime end = date.atStartOfDay().minusSeconds(1);
+        List<Bar> best = List.of();
+        for (String interval : collectorIntervals(timeframe)) {
+            List<Bar> bars = repository.findCandlesByTimeRange(symbol, interval, start, end);
+            if (bars.size() > best.size()) {
+                best = bars;
+            }
+        }
+        if (best.size() <= barCount) {
+            return best;
+        }
+        return new ArrayList<>(best.subList(best.size() - barCount, best.size()));
     }
 
     private List<Bar> findSessionCandlesWithIntervalAliases(String symbol, Timeframe timeframe, LocalDate date) {

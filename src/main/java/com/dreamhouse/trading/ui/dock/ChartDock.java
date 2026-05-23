@@ -3,11 +3,10 @@ package com.dreamhouse.trading.ui.dock;
 import com.dreamhouse.trading.core.*;
 import com.dreamhouse.trading.core.model.*;
 import com.dreamhouse.trading.core.backtest.Trade;
-import com.dreamhouse.trading.ui.chart.*;
+import com.dreamhouse.trading.ui.chart.TradeMarker;
+import com.dreamhouse.trading.ui.chart.TradeMarkerManager;
 import com.dreamhouse.trading.util.I18n;
 import com.dreamhouse.trading.util.BarAggregator;
-import org.jfree.chart.ChartMouseEvent;
-import org.jfree.chart.ChartMouseListener;
 import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
 import org.jfree.chart.axis.DateAxis;
@@ -89,8 +88,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private ChartPanel chartPanel;
     
     // 繪圖工具
-    private DrawingManager drawingManager;
-    private ChartOverlay chartOverlay;
     
     // 交易標記
     private List<TradeMarker> tradeMarkers = new ArrayList<>();
@@ -109,7 +106,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private Timeframe currentTimeframe = Timeframe.M1;
     private String currentOverlayIndicator = "SMA";  // SMA/EMA/None
     private String currentSubIndicator = "RSI";      // RSI/MACD/None
-    private boolean crosshairEnabled = true;
 
     // 指標參數配置
     private final Map<String, IndicatorConfig> indicatorConfigs = new HashMap<>();
@@ -300,10 +296,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
         pricePlot.setRenderer(2, overlayRenderer);
         
         // 十字線
-        pricePlot.setDomainCrosshairVisible(crosshairEnabled);
-        pricePlot.setRangeCrosshairVisible(crosshairEnabled);
-        pricePlot.setDomainCrosshairPaint(Color.LIGHT_GRAY);
-        pricePlot.setRangeCrosshairPaint(Color.LIGHT_GRAY);
         
         // === 技術指標圖（下方）===
         createIndicatorPlot();
@@ -324,11 +316,13 @@ public class ChartDock extends JPanel implements MarketDataListener {
         chart.setBackgroundPaint(chartBackgroundColor);
         
         chartPanel = new ChartPanel(chart);
-        chartPanel.setMouseWheelEnabled(true);
+        chartPanel.setMouseWheelEnabled(false);
+        chartPanel.setDomainZoomable(false);
+        chartPanel.setRangeZoomable(false);
         add(chartPanel, BorderLayout.CENTER);
         
         // 初始化繪圖工具
-        initializeDrawingTools();
+        initializeTradeMarkers();
     }
     
     private void createIndicatorPlot() {
@@ -563,8 +557,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 updateLastBar();
             }
 
-            // ⭐ 更新觀察清單的即時數據
-            updateWatchlist();
+            // 觀察清單漲跌幅由 MainFrame 以昨收為基準統一更新，避免圖表用開盤價覆蓋。
         });
     }
 
@@ -1122,32 +1115,6 @@ public class ChartDock extends JPanel implements MarketDataListener {
         System.out.println("[ChartDock] 週期已更新，等待數據重新載入");
     }
     
-    public void zoomIn() {
-        if (chartPanel != null) {
-            chartPanel.zoomInBoth(chartPanel.getWidth() / 2.0, chartPanel.getHeight() / 2.0);
-        }
-    }
-    
-    public void zoomOut() {
-        if (chartPanel != null) {
-            chartPanel.zoomOutBoth(chartPanel.getWidth() / 2.0, chartPanel.getHeight() / 2.0);
-        }
-    }
-    
-    public void resetZoom() {
-        if (chartPanel != null) {
-            chartPanel.restoreAutoBounds();
-        }
-    }
-    
-    public void toggleCrosshair() {
-        crosshairEnabled = !crosshairEnabled;
-        if (pricePlot != null) {
-            pricePlot.setDomainCrosshairVisible(crosshairEnabled);
-            pricePlot.setRangeCrosshairVisible(crosshairEnabled);
-        }
-    }
-    
     /**
      * 根據當前 UIManager 更新主題顏色
      */
@@ -1531,272 +1498,8 @@ public class ChartDock extends JPanel implements MarketDataListener {
         return indicatorConfigs.getOrDefault(indicatorName, new IndicatorConfig());
     }
     
-    // ==================== 繪圖工具相關方法 ====================
-    
-    /**
-     * 初始化繪圖工具
-     */
-    private void initializeDrawingTools() {
-        // 創建繪圖管理器
-        drawingManager = new DrawingManager();
-        
-        // 創建並添加覆蓋層
-        chartOverlay = new ChartOverlay(drawingManager);
-        pricePlot.addAnnotation(chartOverlay);
-        
-        // 初始化交易標記管理器
+    private void initializeTradeMarkers() {
         markerManager = new TradeMarkerManager(chartPanel, pricePlot);
-        
-        // 添加滑鼠事件監聽器
-        chartPanel.addChartMouseListener(new ChartMouseListener() {
-            private double lastX = 0;
-            private double lastY = 0;
-            private long lastRepaintTime = 0;
-            private static final long REPAINT_THROTTLE_MS = 16; // 約60 FPS
-            
-            @Override
-            public void chartMouseClicked(ChartMouseEvent event) {
-                handleChartMouseClicked(event);
-            }
-            
-            @Override
-            public void chartMouseMoved(ChartMouseEvent event) {
-                // 節流處理，避免過度重繪
-                long currentTime = System.currentTimeMillis();
-                if (currentTime - lastRepaintTime > REPAINT_THROTTLE_MS) {
-                    handleChartMouseMoved(event);
-                    lastRepaintTime = currentTime;
-                }
-            }
-        });
-        
-        // 添加鍵盤事件監聽器支援刪除
-        chartPanel.setFocusable(true);
-        chartPanel.addKeyListener(new java.awt.event.KeyAdapter() {
-            @Override
-            public void keyPressed(java.awt.event.KeyEvent e) {
-                if (e.getKeyCode() == java.awt.event.KeyEvent.VK_DELETE) {
-                    if (drawingManager.getSelectedObject() != null) {
-                        drawingManager.deleteSelected();
-                        chartPanel.repaint();
-                    }
-                } else if (e.getKeyCode() == java.awt.event.KeyEvent.VK_ESCAPE) {
-                    if (drawingManager.isDrawing()) {
-                        drawingManager.cancelDrawing();
-                        chartPanel.repaint();
-                    } else {
-                        drawingManager.deselectAll();
-                        chartPanel.repaint();
-                    }
-                }
-            }
-        });
-    }
-    
-    /**
-     * 處理滑鼠點擊事件
-     */
-    private void handleChartMouseClicked(ChartMouseEvent event) {
-        if (pricePlot == null) return;
-        
-        java.awt.geom.Point2D point = chartPanel.translateScreenToJava2D(
-            new java.awt.Point(event.getTrigger().getX(), event.getTrigger().getY())
-        );
-        
-        java.awt.geom.Rectangle2D dataArea = chartPanel.getScreenDataArea();
-        
-        // 檢查是否在圖表區域內
-        if (dataArea.contains(point)) {
-            double screenX = point.getX() - dataArea.getX();
-            double screenY = point.getY() - dataArea.getY();
-            
-            // 根據滑鼠按鈕處理不同操作
-            if (SwingUtilities.isLeftMouseButton(event.getTrigger())) {
-                if (drawingManager.isDrawing()) {
-                    // 完成繪製
-                    drawingManager.finishDrawing(screenX, screenY, dataArea);
-                } else if (drawingManager.getCurrentTool() != DrawingManager.DrawingTool.NONE) {
-                    // 開始繪製新對象
-                    drawingManager.startDrawing(screenX, screenY, dataArea);
-                } else {
-                    // 選擇模式：嘗試選擇對象
-                    boolean selected = drawingManager.selectObjectAt(screenX, screenY, dataArea);
-                    if (!selected) {
-                        // 點擊空白區域，取消所有選擇
-                        drawingManager.deselectAll();
-                    }
-                }
-                
-                // 重繪圖表
-                SwingUtilities.invokeLater(() -> chartPanel.repaint());
-                
-                // 確保圖表面板獲得焦點以接收鍵盤事件
-                chartPanel.requestFocusInWindow();
-                
-            } else if (SwingUtilities.isRightMouseButton(event.getTrigger())) {
-                // 右鍵：取消繪製或顯示菜單
-                if (drawingManager.isDrawing()) {
-                    drawingManager.cancelDrawing();
-                    SwingUtilities.invokeLater(() -> chartPanel.repaint());
-                } else {
-                    // 如果右鍵點擊在對象上，先選擇它
-                    if (drawingManager.getCurrentTool() == DrawingManager.DrawingTool.NONE) {
-                        drawingManager.selectObjectAt(screenX, screenY, dataArea);
-                    }
-                    showDrawingContextMenu(event.getTrigger().getX(), event.getTrigger().getY());
-                }
-            }
-        }
-    }
-    
-    /**
-     * 處理滑鼠移動事件
-     */
-    private void handleChartMouseMoved(ChartMouseEvent event) {
-        if (pricePlot == null) return;
-        
-        java.awt.geom.Point2D point = chartPanel.translateScreenToJava2D(
-            new java.awt.Point(event.getTrigger().getX(), event.getTrigger().getY())
-        );
-        
-        java.awt.geom.Rectangle2D dataArea = chartPanel.getScreenDataArea();
-        
-        if (dataArea.contains(point)) {
-            double screenX = point.getX() - dataArea.getX();
-            double screenY = point.getY() - dataArea.getY();
-            
-            // 如果正在繪製，更新臨時對象
-            if (drawingManager.isDrawing()) {
-                drawingManager.updateDrawing(screenX, screenY, dataArea);
-                // 使用 SwingUtilities.invokeLater 避免阻塞
-                SwingUtilities.invokeLater(() -> chartPanel.repaint());
-            } else {
-                // 檢查滑鼠懸停效果（可選）
-                updateMouseCursor(screenX, screenY, dataArea);
-            }
-        }
-    }
-    
-    /**
-     * 更新滑鼠游標樣式
-     */
-    private void updateMouseCursor(double x, double y, java.awt.geom.Rectangle2D dataArea) {
-        // 檢查是否懸停在繪圖對象上
-        boolean overObject = false;
-        for (DrawingObject obj : drawingManager.getAllDrawings()) {
-            if (obj.isVisible() && obj.hitTest(x, y, dataArea)) {
-                overObject = true;
-                break;
-            }
-        }
-        
-        // 設定游標樣式
-        java.awt.Cursor cursor;
-        if (drawingManager.getCurrentTool() != DrawingManager.DrawingTool.NONE) {
-            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.CROSSHAIR_CURSOR);
-        } else if (overObject) {
-            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR);
-        } else {
-            cursor = java.awt.Cursor.getDefaultCursor();
-        }
-        
-        if (chartPanel.getCursor() != cursor) {
-            chartPanel.setCursor(cursor);
-        }
-    }
-    
-    /**
-     * 顯示繪圖工具右鍵菜單
-     */
-    private void showDrawingContextMenu(int x, int y) {
-        JPopupMenu menu = new JPopupMenu();
-        
-        // 如果有選中的對象，顯示編輯選項
-        if (drawingManager.getSelectedObject() != null) {
-            JMenuItem colorItem = new JMenuItem(I18n.get("drawing.color"));
-            colorItem.addActionListener(e -> {
-                DrawingObject obj = drawingManager.getSelectedObject();
-                if (obj != null) {
-                    Color newColor = JColorChooser.showDialog(
-                        this,
-                        I18n.get("drawing.choose.color"),
-                        obj.getColor()
-                    );
-                    if (newColor != null) {
-                        obj.setColor(newColor);
-                        chartPanel.repaint();
-                    }
-                }
-            });
-            
-            JMenuItem deleteItem = new JMenuItem(I18n.get("drawing.delete"));
-            deleteItem.addActionListener(e -> {
-                drawingManager.deleteSelected();
-                chartPanel.repaint();
-            });
-            
-            menu.add(colorItem);
-            menu.add(deleteItem);
-            menu.addSeparator();
-        }
-        
-        // 通用選項
-        if (drawingManager.getDrawingCount() > 0) {
-            JMenuItem clearAllItem = new JMenuItem(I18n.get("drawing.clear.all"));
-            clearAllItem.addActionListener(e -> {
-                int result = JOptionPane.showConfirmDialog(
-                    this,
-                    "確定要清除所有繪圖嗎？",
-                    "確認清除",
-                    JOptionPane.YES_NO_OPTION
-                );
-                if (result == JOptionPane.YES_OPTION) {
-                    drawingManager.clearAll();
-                    chartPanel.repaint();
-                }
-            });
-            menu.add(clearAllItem);
-        }
-        
-        // 工具切換選項
-        menu.addSeparator();
-        JMenuItem selectToolItem = new JMenuItem("選擇工具");
-        selectToolItem.addActionListener(e -> {
-            drawingManager.setCurrentTool(DrawingManager.DrawingTool.NONE);
-            updateMouseCursor(0, 0, null); // 更新游標
-        });
-        menu.add(selectToolItem);
-        
-        // 只有在有菜單項目時才顯示
-        if (menu.getComponentCount() > 0) {
-            menu.show(chartPanel, x, y);
-        }
-    }
-    
-    /**
-     * 設定當前繪圖工具
-     */
-    public void setDrawingTool(DrawingManager.DrawingTool tool) {
-        if (drawingManager != null) {
-            drawingManager.setCurrentTool(tool);
-        }
-    }
-    
-    /**
-     * 獲取繪圖管理器
-     */
-    public DrawingManager getDrawingManager() {
-        return drawingManager;
-    }
-    
-    /**
-     * 清除所有繪圖
-     */
-    public void clearAllDrawings() {
-        if (drawingManager != null) {
-            drawingManager.clearAll();
-            chartPanel.repaint();
-        }
     }
 }
 

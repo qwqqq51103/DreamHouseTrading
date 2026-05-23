@@ -163,14 +163,6 @@ public class ChartView extends JPanel {
         pricePlot.setRenderer(1, smaRenderer);
         pricePlot.mapDatasetToRangeAxis(1, 0);
 
-        // 啟用十字線
-        pricePlot.setDomainCrosshairVisible(true);
-        pricePlot.setRangeCrosshairVisible(true);
-        pricePlot.setDomainCrosshairPaint(Color.GRAY);
-        pricePlot.setRangeCrosshairPaint(Color.GRAY);
-        pricePlot.setDomainCrosshairStroke(new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0, new float[]{5, 3}, 0));
-        pricePlot.setRangeCrosshairStroke(new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0, new float[]{5, 3}, 0));
-
         pricePlot.setBackgroundPaint(new Color(30, 30, 30));
         pricePlot.setDomainGridlinePaint(new Color(60, 60, 60));
         pricePlot.setRangeGridlinePaint(new Color(60, 60, 60));

@@ -34,6 +34,7 @@ public class RadarStrategyConfig {
     private boolean requireBreakoutContinuation = true;
     private boolean requirePriceAboveVwapForLong = false;
     private boolean requireBreakoutNextBarConfirmation = false;
+    private boolean blockMovingAverageOnlyEntry = false;
     private double maxEntryRiseFromRecentLowPercent = 0.0;
     private double minimumEntryScore = 0.50;
     private boolean marketRegimeFilterEnabled = true;
@@ -42,6 +43,12 @@ public class RadarStrategyConfig {
     private double weakOutperformBenchmarkPercent = 0.30;
     private double weakOutperformIndustryPercent = 0.20;
     private boolean rangeMarketRequiresVwapAndVolume = true;
+    private double internalAllowVwapPassPercent = 60.0;
+    private double internalAllowAverageReturnPercent = 0.0;
+    private double internalAllowVolumeSustainPercent = 20.0;
+    private double internalBlockVwapPassPercent = 40.0;
+    private double internalBlockAverageReturnPercent = -0.8;
+    private int internalBlockNewLowExcessCount = 2;
     private boolean volumeSustainEnabled = false;
     private boolean atrRiskEnabled = false;
     private boolean atrChaseLimitEnabled = false;
@@ -49,6 +56,8 @@ public class RadarStrategyConfig {
     private double atrStopMultiplier = 1.00;
     private double atrTakeProfitMultiplier = 1.60;
     private double atrChaseLimitMultiplier = 2.00;
+    private boolean backtestCrossDayWarmupEnabled = false;
+    private int backtestWarmupBarCount = 96;
 
     private Timeframe dayTradeTimeframe = Timeframe.M1;
     private Timeframe executionConfirmationTimeframe = Timeframe.M1;
@@ -135,6 +144,39 @@ public class RadarStrategyConfig {
         config.setAtrStopMultiplier(1.00);
         config.setAtrTakeProfitMultiplier(1.60);
         config.setAtrChaseLimitMultiplier(2.00);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeGroupATemplate() {
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setSlowMovingAveragePeriod(21);
+        config.setBacktestCrossDayWarmupEnabled(false);
+        config.setMarketRegimeFilterEnabled(false);
+        config.setWeakMarketStrictLongEnabled(false);
+        config.setRangeMarketRequiresVwapAndVolume(false);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeGroupBTemplate() {
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setBacktestCrossDayWarmupEnabled(true);
+        config.setBacktestWarmupBarCount(120);
+        config.setMarketRegimeFilterEnabled(false);
+        config.setWeakMarketStrictLongEnabled(false);
+        config.setRangeMarketRequiresVwapAndVolume(false);
+        return config;
+    }
+
+    public static RadarStrategyConfig createDayTradeGroupCTemplate() {
+        RadarStrategyConfig config = createDayTradeGroupBTemplate();
+        config.setRsiOversold(38.0);
+        config.setRsiOverbought(70.0);
+        config.setRsiWeight(0.65);
+        config.setVolumeMultiplier(1.45);
+        config.setVolumeBreakoutWeight(0.95);
+        config.setMinimumEntryScore(0.50);
+        config.setBlockMovingAverageOnlyEntry(true);
+        config.setRequireBreakoutNextBarConfirmation(true);
         return config;
     }
 
@@ -293,6 +335,7 @@ public class RadarStrategyConfig {
         copy.requireBreakoutContinuation = requireBreakoutContinuation;
         copy.requirePriceAboveVwapForLong = requirePriceAboveVwapForLong;
         copy.requireBreakoutNextBarConfirmation = requireBreakoutNextBarConfirmation;
+        copy.blockMovingAverageOnlyEntry = blockMovingAverageOnlyEntry;
         copy.maxEntryRiseFromRecentLowPercent = maxEntryRiseFromRecentLowPercent;
         copy.minimumEntryScore = minimumEntryScore;
         copy.marketRegimeFilterEnabled = marketRegimeFilterEnabled;
@@ -301,6 +344,12 @@ public class RadarStrategyConfig {
         copy.weakOutperformBenchmarkPercent = weakOutperformBenchmarkPercent;
         copy.weakOutperformIndustryPercent = weakOutperformIndustryPercent;
         copy.rangeMarketRequiresVwapAndVolume = rangeMarketRequiresVwapAndVolume;
+        copy.internalAllowVwapPassPercent = internalAllowVwapPassPercent;
+        copy.internalAllowAverageReturnPercent = internalAllowAverageReturnPercent;
+        copy.internalAllowVolumeSustainPercent = internalAllowVolumeSustainPercent;
+        copy.internalBlockVwapPassPercent = internalBlockVwapPassPercent;
+        copy.internalBlockAverageReturnPercent = internalBlockAverageReturnPercent;
+        copy.internalBlockNewLowExcessCount = internalBlockNewLowExcessCount;
         copy.volumeSustainEnabled = volumeSustainEnabled;
         copy.atrRiskEnabled = atrRiskEnabled;
         copy.atrChaseLimitEnabled = atrChaseLimitEnabled;
@@ -308,6 +357,8 @@ public class RadarStrategyConfig {
         copy.atrStopMultiplier = atrStopMultiplier;
         copy.atrTakeProfitMultiplier = atrTakeProfitMultiplier;
         copy.atrChaseLimitMultiplier = atrChaseLimitMultiplier;
+        copy.backtestCrossDayWarmupEnabled = backtestCrossDayWarmupEnabled;
+        copy.backtestWarmupBarCount = backtestWarmupBarCount;
         copy.dayTradeTimeframe = dayTradeTimeframe;
         copy.executionConfirmationTimeframe = executionConfirmationTimeframe;
         copy.shortSwingTimeframe = shortSwingTimeframe;
@@ -356,6 +407,8 @@ public class RadarStrategyConfig {
     public void setRequirePriceAboveVwapForLong(boolean requirePriceAboveVwapForLong) { this.requirePriceAboveVwapForLong = requirePriceAboveVwapForLong; }
     public boolean isRequireBreakoutNextBarConfirmation() { return requireBreakoutNextBarConfirmation; }
     public void setRequireBreakoutNextBarConfirmation(boolean requireBreakoutNextBarConfirmation) { this.requireBreakoutNextBarConfirmation = requireBreakoutNextBarConfirmation; }
+    public boolean isBlockMovingAverageOnlyEntry() { return blockMovingAverageOnlyEntry; }
+    public void setBlockMovingAverageOnlyEntry(boolean blockMovingAverageOnlyEntry) { this.blockMovingAverageOnlyEntry = blockMovingAverageOnlyEntry; }
     public double getMaxEntryRiseFromRecentLowPercent() { return maxEntryRiseFromRecentLowPercent; }
     public void setMaxEntryRiseFromRecentLowPercent(double maxEntryRiseFromRecentLowPercent) { this.maxEntryRiseFromRecentLowPercent = clamp(maxEntryRiseFromRecentLowPercent, 0.0, 1.0); }
     public double getMinimumEntryScore() { return minimumEntryScore; }
@@ -372,6 +425,18 @@ public class RadarStrategyConfig {
     public void setWeakOutperformIndustryPercent(double weakOutperformIndustryPercent) { this.weakOutperformIndustryPercent = clamp(weakOutperformIndustryPercent, 0.0, 10.0); }
     public boolean isRangeMarketRequiresVwapAndVolume() { return rangeMarketRequiresVwapAndVolume; }
     public void setRangeMarketRequiresVwapAndVolume(boolean rangeMarketRequiresVwapAndVolume) { this.rangeMarketRequiresVwapAndVolume = rangeMarketRequiresVwapAndVolume; }
+    public double getInternalAllowVwapPassPercent() { return internalAllowVwapPassPercent; }
+    public void setInternalAllowVwapPassPercent(double internalAllowVwapPassPercent) { this.internalAllowVwapPassPercent = clamp(internalAllowVwapPassPercent, 0.0, 100.0); }
+    public double getInternalAllowAverageReturnPercent() { return internalAllowAverageReturnPercent; }
+    public void setInternalAllowAverageReturnPercent(double internalAllowAverageReturnPercent) { this.internalAllowAverageReturnPercent = clamp(internalAllowAverageReturnPercent, -10.0, 10.0); }
+    public double getInternalAllowVolumeSustainPercent() { return internalAllowVolumeSustainPercent; }
+    public void setInternalAllowVolumeSustainPercent(double internalAllowVolumeSustainPercent) { this.internalAllowVolumeSustainPercent = clamp(internalAllowVolumeSustainPercent, 0.0, 100.0); }
+    public double getInternalBlockVwapPassPercent() { return internalBlockVwapPassPercent; }
+    public void setInternalBlockVwapPassPercent(double internalBlockVwapPassPercent) { this.internalBlockVwapPassPercent = clamp(internalBlockVwapPassPercent, 0.0, 100.0); }
+    public double getInternalBlockAverageReturnPercent() { return internalBlockAverageReturnPercent; }
+    public void setInternalBlockAverageReturnPercent(double internalBlockAverageReturnPercent) { this.internalBlockAverageReturnPercent = clamp(internalBlockAverageReturnPercent, -10.0, 10.0); }
+    public int getInternalBlockNewLowExcessCount() { return internalBlockNewLowExcessCount; }
+    public void setInternalBlockNewLowExcessCount(int internalBlockNewLowExcessCount) { this.internalBlockNewLowExcessCount = Math.max(0, internalBlockNewLowExcessCount); }
     public boolean isVolumeSustainEnabled() { return volumeSustainEnabled; }
     public void setVolumeSustainEnabled(boolean volumeSustainEnabled) { this.volumeSustainEnabled = volumeSustainEnabled; }
     public boolean isAtrRiskEnabled() { return atrRiskEnabled; }
@@ -386,6 +451,10 @@ public class RadarStrategyConfig {
     public void setAtrTakeProfitMultiplier(double atrTakeProfitMultiplier) { this.atrTakeProfitMultiplier = Math.max(0.1, atrTakeProfitMultiplier); }
     public double getAtrChaseLimitMultiplier() { return atrChaseLimitMultiplier; }
     public void setAtrChaseLimitMultiplier(double atrChaseLimitMultiplier) { this.atrChaseLimitMultiplier = Math.max(0.1, atrChaseLimitMultiplier); }
+    public boolean isBacktestCrossDayWarmupEnabled() { return backtestCrossDayWarmupEnabled; }
+    public void setBacktestCrossDayWarmupEnabled(boolean backtestCrossDayWarmupEnabled) { this.backtestCrossDayWarmupEnabled = backtestCrossDayWarmupEnabled; }
+    public int getBacktestWarmupBarCount() { return backtestWarmupBarCount; }
+    public void setBacktestWarmupBarCount(int backtestWarmupBarCount) { this.backtestWarmupBarCount = Math.max(0, backtestWarmupBarCount); }
     public Timeframe getDayTradeTimeframe() { return dayTradeTimeframe; }
     public void setDayTradeTimeframe(Timeframe dayTradeTimeframe) { this.dayTradeTimeframe = dayTradeTimeframe != null ? dayTradeTimeframe : Timeframe.M1; }
     public Timeframe getExecutionConfirmationTimeframe() { return executionConfirmationTimeframe; }

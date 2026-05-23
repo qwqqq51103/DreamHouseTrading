@@ -109,6 +109,25 @@ class MarketDataCollectorFeedTest {
     }
 
     @Test
+    void feedReadsCrossDayWarmupBarsBeforeRequestedSessionOnly() throws Exception {
+        try (Connection connection = createSchema()) {
+            LocalDate sessionDate = LocalDate.of(2026, 5, 21);
+            insertCandle(connection, "2330.TW", "M5", sessionDate.minusDays(1).atTime(13, 20).toString(), 100, 101, 99, 100, 10);
+            insertCandle(connection, "2330.TW", "M5", sessionDate.minusDays(1).atTime(13, 25).toString(), 101, 102, 100, 101, 10);
+            insertCandle(connection, "2330.TW", "M5", sessionDate.atTime(9, 0).toString(), 102, 103, 101, 102, 10);
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            List<Bar> bars = feed.fetchWarmupBarsBeforeSession("2330.TW", Timeframe.M5, sessionDate, 1);
+
+            assertThat(bars).hasSize(1);
+            assertThat(bars.get(0).getTimestamp()).isEqualTo(sessionDate.minusDays(1).atTime(13, 25));
+        }
+    }
+
+    @Test
     void closingAuctionTimeDoesNotCountAsCollectorFailureWindow() {
         LocalDate today = LocalDate.of(2026, 5, 13);
 

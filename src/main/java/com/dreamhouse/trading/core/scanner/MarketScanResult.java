@@ -3,6 +3,9 @@ package com.dreamhouse.trading.core.scanner;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.time.LocalDateTime;
 
 /**
@@ -35,6 +38,7 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
     private final Boolean volumeSustain;
     private final Double atrStopLoss;
     private final Double atrTakeProfit;
+    private final List<RadarScoreComponent> scoreComponents;
     private final MarketDecision marketDecision;
     private final LocalDateTime scannedAt;
 
@@ -64,6 +68,7 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         this.volumeSustain = builder.volumeSustain;
         this.atrStopLoss = builder.atrStopLoss;
         this.atrTakeProfit = builder.atrTakeProfit;
+        this.scoreComponents = Collections.unmodifiableList(new ArrayList<>(builder.scoreComponents));
         this.marketDecision = builder.marketDecision;
         this.scannedAt = builder.scannedAt;
     }
@@ -172,6 +177,31 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         return atrTakeProfit;
     }
 
+    public List<RadarScoreComponent> getScoreComponents() {
+        return scoreComponents;
+    }
+
+    public String getScoreComponentSummary() {
+        if (scoreComponents.isEmpty()) {
+            return "";
+        }
+        return scoreComponents.stream()
+                .map(RadarScoreComponent::toCompactText)
+                .reduce((left, right) -> left + " | " + right)
+                .orElse("");
+    }
+
+    public String getLongBonusSummary() {
+        if (scoreComponents.isEmpty()) {
+            return "";
+        }
+        return scoreComponents.stream()
+                .filter(RadarScoreComponent::contributesToLong)
+                .map(RadarScoreComponent::toCompactText)
+                .reduce((left, right) -> left + " | " + right)
+                .orElse("");
+    }
+
     public MarketDecision getMarketDecision() {
         return marketDecision;
     }
@@ -215,6 +245,7 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         private Boolean volumeSustain;
         private Double atrStopLoss;
         private Double atrTakeProfit;
+        private List<RadarScoreComponent> scoreComponents = List.of();
         private MarketDecision marketDecision = MarketDecision.ALLOW_LONG;
         private LocalDateTime scannedAt = LocalDateTime.now();
 
@@ -313,6 +344,11 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         public Builder atrLevels(Double stopLoss, Double takeProfit) {
             this.atrStopLoss = stopLoss;
             this.atrTakeProfit = takeProfit;
+            return this;
+        }
+
+        public Builder scoreComponents(List<RadarScoreComponent> scoreComponents) {
+            this.scoreComponents = scoreComponents != null ? new ArrayList<>(scoreComponents) : List.of();
             return this;
         }
 

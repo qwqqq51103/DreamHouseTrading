@@ -45,12 +45,6 @@ public class MainFrame extends JFrame {
         callbacks.onSymbolChange = this::changeSymbol;
         callbacks.onTimeframeChange = this::changeTimeframe;
         callbacks.onIndicatorChange = this::changeIndicator;
-        callbacks.onZoomIn = this::zoomIn;
-        callbacks.onZoomOut = this::zoomOut;
-        callbacks.onZoomReset = this::zoomReset;
-        callbacks.onCrosshairToggle = this::toggleCrosshair;
-        callbacks.onTrendlineToggle = this::toggleTrendline;
-        callbacks.onHorizontalLineToggle = this::toggleHorizontalLine;
         
         JToolBar toolBar = ToolBarFactory.createToolBar(callbacks);
         
@@ -187,30 +181,6 @@ public class MainFrame extends JFrame {
         // chartDock.repaint();
     }
     
-    private void zoomIn() {
-        System.out.println("Zoom In");
-    }
-    
-    private void zoomOut() {
-        System.out.println("Zoom Out");
-    }
-    
-    private void zoomReset() {
-        System.out.println("Zoom Reset");
-    }
-    
-    private void toggleCrosshair() {
-        System.out.println("Toggle Crosshair");
-    }
-    
-    private void toggleTrendline() {
-        System.out.println("Toggle Trendline");
-    }
-    
-    private void toggleHorizontalLine() {
-        System.out.println("Toggle Horizontal Line");
-    }
-    
     private void setupKeyBindings() {
         JRootPane rootPane = getRootPane();
         InputMap inputMap = rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
@@ -233,33 +203,6 @@ public class MainFrame extends JFrame {
                 } catch (Exception ex) {
                     ex.printStackTrace();
                 }
-            }
-        });
-        
-        // Ctrl+=: Zoom In
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
-        actionMap.put("zoomIn", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomIn();
-            }
-        });
-        
-        // Ctrl+-: Zoom Out
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut");
-        actionMap.put("zoomOut", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomOut();
-            }
-        });
-        
-        // Ctrl+0: Zoom Reset
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset");
-        actionMap.put("zoomReset", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomReset();
             }
         });
     }

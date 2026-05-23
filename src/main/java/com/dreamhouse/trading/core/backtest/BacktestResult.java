@@ -1,5 +1,7 @@
 package com.dreamhouse.trading.core.backtest;
 
+import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -297,8 +299,16 @@ public class BacktestResult {
             Boolean volumeSustain,
             Double relativeToBenchmarkPercent,
             Double relativeToIndustryPercent,
+            List<RadarScoreComponent> scoreComponentDetails,
+            String scoreComponents,
+            String longBonusComponents,
             double maxFavorablePercent,
             double maxAdversePercent,
             double closeReturnPercent) {
+        public SignalObservation {
+            scoreComponentDetails = scoreComponentDetails != null
+                    ? List.copyOf(scoreComponentDetails)
+                    : List.of();
+        }
     }
 }

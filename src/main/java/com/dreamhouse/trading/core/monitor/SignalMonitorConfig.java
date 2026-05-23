@@ -102,6 +102,24 @@ public class SignalMonitorConfig {
         return config;
     }
 
+    public static SignalMonitorConfig createDayTradeGroupATemplate() {
+        SignalMonitorConfig config = createBConvergenceTemplate();
+        config.setRadarStrategyConfig(RadarStrategyConfig.createDayTradeGroupATemplate());
+        return config;
+    }
+
+    public static SignalMonitorConfig createDayTradeGroupBTemplate() {
+        SignalMonitorConfig config = createBConvergenceTemplate();
+        config.setRadarStrategyConfig(RadarStrategyConfig.createDayTradeGroupBTemplate());
+        return config;
+    }
+
+    public static SignalMonitorConfig createDayTradeGroupCTemplate() {
+        SignalMonitorConfig config = createBConvergenceTemplate();
+        config.setRadarStrategyConfig(RadarStrategyConfig.createDayTradeGroupCTemplate());
+        return config;
+    }
+
     public static SignalMonitorConfig createDayTradeDefensiveTemplate() {
         SignalMonitorConfig config = new SignalMonitorConfig();
         config.setScanIntervalSeconds(15);

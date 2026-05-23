@@ -50,9 +50,9 @@ public class PaperTradeAnalysisDock extends JPanel {
     private final DefaultTableModel timelineModel = tableModel(
             "狀態", "部位ID", "代碼", "中文", "模式", "數量", "開倉時間", "開倉價", "平倉時間", "平倉價", "淨損益", "開倉原因", "平倉原因");
     private final DefaultTableModel completedModel = tableModel(
-            "平倉時間", "部位ID", "代碼", "中文", "模式", "數量", "進場", "出場", "淨損益", "結果", "Setup分數", "進場原因", "出場原因");
+            "平倉時間", "部位ID", "代碼", "中文", "模式", "數量", "進場", "出場", "淨損益", "結果", "Setup分數", "進場原因", "加分明細", "出場原因");
     private final DefaultTableModel setupsModel = tableModel(
-            "進場時間", "部位ID", "訂單ID", "代碼", "中文", "模式", "數量", "進場價", "停損", "停利", "分數", "信心", "原因");
+            "進場時間", "部位ID", "訂單ID", "代碼", "中文", "模式", "數量", "進場價", "停損", "停利", "分數", "信心", "原因", "加分明細");
     private final DefaultTableModel ordersModel = tableModel(
             "時間", "部位ID", "訂單ID", "代碼", "中文", "方向", "狀態", "數量", "委託價", "成交價", "模式", "原因", "訊息");
     private final DefaultTableModel unmatchedModel = tableModel(
@@ -99,8 +99,8 @@ public class PaperTradeAnalysisDock extends JPanel {
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("摘要", new JScrollPane(summaryArea));
         tabs.addTab("開平倉流程", table(timelineModel, 7, 13, 7, 7, 5, 4, 9, 6, 9, 6, 7, 17, 17));
-        tabs.addTab("完成交易", table(completedModel, 11, 13, 7, 7, 5, 4, 6, 6, 7, 5, 7, 17, 17));
-        tabs.addTab("進場 Setup", table(setupsModel, 11, 13, 13, 7, 7, 5, 4, 6, 6, 6, 5, 5, 18));
+        tabs.addTab("完成交易", table(completedModel, 11, 13, 7, 7, 5, 4, 6, 6, 7, 5, 7, 15, 22, 15));
+        tabs.addTab("進場 Setup", table(setupsModel, 11, 13, 13, 7, 7, 5, 4, 6, 6, 6, 5, 5, 16, 22));
         tabs.addTab("訂單", table(ordersModel, 11, 13, 13, 7, 7, 5, 6, 4, 6, 6, 5, 15, 15));
         tabs.addTab("未配對", table(unmatchedModel, 8, 14, 14, 8, 8, 12, 5, 6, 25));
         return tabs;
@@ -282,7 +282,7 @@ public class PaperTradeAnalysisDock extends JPanel {
                     StockNameResolver.resolveChineseName(row.get("symbol")), row.get("trade_mode"),
                     row.get("quantity"), row.get("entry_price"), row.get("exit_price"),
                     row.get("net_pnl"), row.get("outcome"), row.get("setup_score"),
-                    row.get("entry_reason"), row.get("exit_reason")
+                    row.get("entry_reason"), row.get("score_components"), row.get("exit_reason")
             });
         }
         for (Map<String, String> row : result.setups().rows()) {
@@ -290,7 +290,7 @@ public class PaperTradeAnalysisDock extends JPanel {
                     row.get("entry_time"), row.get("position_id"), row.get("order_id"), row.get("symbol"),
                     StockNameResolver.resolveChineseName(row.get("symbol")), row.get("trade_mode"),
                     row.get("quantity"), row.get("entry_price"), row.get("stop_loss"), row.get("take_profit"),
-                    row.get("setup_score"), row.get("confidence"), row.get("reason")
+                    row.get("setup_score"), row.get("confidence"), row.get("reason"), row.get("score_components")
             });
         }
         for (Map<String, String> row : result.orders().rows()) {

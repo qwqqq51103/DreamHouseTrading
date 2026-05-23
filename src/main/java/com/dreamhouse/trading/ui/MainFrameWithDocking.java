@@ -30,7 +30,6 @@ import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 import com.dreamhouse.trading.core.scanner.WeakMarketLongPolicy;
 import com.dreamhouse.trading.core.stockpool.AfterHoursStockPoolService;
-import com.dreamhouse.trading.ui.chart.DrawingManager;
 import com.dreamhouse.trading.ui.dialog.CsvExportDialog;
 import com.dreamhouse.trading.ui.dialog.CsvImportDialog;
 import com.dreamhouse.trading.ui.dialog.IndicatorSettingsDialog;
@@ -69,6 +68,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Properties;
 import java.util.Set;
 
@@ -565,9 +565,9 @@ public class MainFrameWithDocking extends JFrame {
         toolBar.add(customDateBtn);
 
         // 載入歷史數據按鈕
-        JButton loadHistoryBtn = new JButton("載入日期分K到SQL");
-        loadHistoryBtn.setToolTipText("使用 FinMind TaiwanStockKBar 批量下載目前日期的觀察清單分K，寫入 MarketDataCollector SQL");
-        loadHistoryBtn.addActionListener(e -> importSelectedDateKBarToSql());
+        JButton loadHistoryBtn = new JButton("載入範圍分K到SQL");
+        loadHistoryBtn.setToolTipText("批量補齊指定日期範圍的觀察清單分K；SQL M1 分K時段覆蓋完整的股票日期不再呼叫 FinMind API");
+        loadHistoryBtn.addActionListener(e -> importDateRangeKBarToSql());
         toolBar.add(loadHistoryBtn);
 
         JButton taiexBtn = new JButton("TAIEX");
@@ -589,52 +589,6 @@ public class MainFrameWithDocking extends JFrame {
         indicatorCombo.setMaximumSize(new Dimension(120, 25));
         indicatorCombo.addActionListener(e -> changeIndicator((String) indicatorCombo.getSelectedItem()));
         toolBar.add(indicatorCombo);
-        toolBar.addSeparator();
-        
-        // 繪圖工具
-        JToggleButton crosshairBtn = new JToggleButton("✛ 十字線");
-        crosshairBtn.setSelected(true);
-        crosshairBtn.addActionListener(e -> chartDock.toggleCrosshair());
-        toolBar.add(crosshairBtn);
-        
-        JToggleButton trendlineBtn = new JToggleButton("📈 趨勢線");
-        trendlineBtn.addActionListener(e -> toggleTrendline());
-        toolBar.add(trendlineBtn);
-        
-        JToggleButton hlineBtn = new JToggleButton("─ 水平線");
-        hlineBtn.addActionListener(e -> toggleHorizontalLine());
-        toolBar.add(hlineBtn);
-
-        JToggleButton measureBtn = new JToggleButton("📏 測量工具");
-        measureBtn.addActionListener(e -> toggleMeasure());
-        toolBar.add(measureBtn);
-
-        JToggleButton fibonacciBtn = new JToggleButton("📊 斐波那契");
-        fibonacciBtn.addActionListener(e -> toggleFibonacci());
-        toolBar.add(fibonacciBtn);
-
-        toolBar.addSeparator();
-        
-        // Zoom 控制
-        JButton zoomInBtn = new JButton("🔍+ 放大");
-        zoomInBtn.addActionListener(e -> chartDock.zoomIn());
-        toolBar.add(zoomInBtn);
-        
-        JButton zoomOutBtn = new JButton("🔍- 縮小");
-        zoomOutBtn.addActionListener(e -> chartDock.zoomOut());
-        toolBar.add(zoomOutBtn);
-        
-        JButton zoomResetBtn = new JButton("重置");
-        zoomResetBtn.addActionListener(e -> chartDock.resetZoom());
-        toolBar.add(zoomResetBtn);
-        toolBar.addSeparator();
-        
-        // 數據模擬控制
-        JToggleButton simulationBtn = new JToggleButton("⏸ 暫停模擬");
-        simulationBtn.setSelected(true);  // 預設為暫停狀態
-        simulationBtn.addActionListener(e -> toggleSimulation(simulationBtn));
-        toolBar.add(simulationBtn);
-        
         toolBar.addSeparator();
         
         // 交易標記篩選
@@ -776,12 +730,12 @@ public class MainFrameWithDocking extends JFrame {
                 - SignalRSI = SHORT 時禁止自動監控 OPEN_LONG。
                 - RSI 超賣不得單獨開多，至少需要 EMA 未明顯下彎或放量反轉確認。
                 - B 模板會檢查 VWAP 結構、量能延續、最大持倉、冷卻與收盤時間。
-                - 弱勢盤仍可開多，但必須同時強於自身 VWAP、強於所屬族群、強於對應大盤。
+                - 弱勢盤仍可開多，但必須同時強於自身 VWAP、強於內部基準、強於觀察清單群體。
 
                 四、市場與族群
                 - TAIEX / TPEx 用於 Market Regime：TREND_UP、RANGE、WEAK、DATA_MISSING。
                 - TWSE 股票對比 TAIEX；TPEx 股票對比 TPEx。
-                - 弱勢盤放行門檻：個股日內表現至少強於大盤 0.3%，強於族群 0.2%。
+                - 弱勢盤放行門檻：個股日內表現至少強於內部基準 0.3%，強於觀察清單群體 0.2%。
                 - 族群強度使用 FinMind TaiwanStockIndustryChain 匯入 SQL 後的產業全體股票計算。
 
                 五、風控與報告
@@ -936,10 +890,15 @@ public class MainFrameWithDocking extends JFrame {
         latestPrices.put(symbol, price);
         paperTradeRecorder.recordMarketPrice(symbol, price, tick.getTimestamp());
 
-        double openPrice = watchlistOpenPrices.computeIfAbsent(symbol, ignored -> price);
+        LocalDate sessionDate = tick.getTimestamp() != null
+                ? tick.getTimestamp().toLocalDate()
+                : LocalDate.now(TAIPEI_ZONE);
+        double referencePrice = watchlistOpenPrices.computeIfAbsent(
+                symbol,
+                ignored -> resolveWatchlistReferencePrice(symbol, sessionDate, price));
         long volume = resolveWatchlistVolume(tick);
         watchlistVolumes.put(symbol, volume);
-        double changePct = openPrice > 0.0 ? ((price - openPrice) / openPrice) * 100.0 : 0.0;
+        double changePct = referencePrice > 0.0 ? ((price - referencePrice) / referencePrice) * 100.0 : 0.0;
 
         SwingUtilities.invokeLater(() -> {
             if (watchlistPanel != null) {
@@ -955,6 +914,24 @@ public class MainFrameWithDocking extends JFrame {
             closeAutoPositionIfStopTriggered(symbol, price);
             closeRangePositionIfFailureTriggered(symbol, price);
         });
+    }
+
+    private double resolveWatchlistReferencePrice(String symbol, LocalDate sessionDate, double fallbackPrice) {
+        if (symbol == null || symbol.isBlank() || sessionDate == null) {
+            return fallbackPrice;
+        }
+        try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                dataSourceManager.getMarketCollectorJdbcUrl(),
+                dataSourceManager.getMarketCollectorUser(),
+                dataSourceManager.getMarketCollectorPassword())) {
+            OptionalDouble previousClose = repository.findPreviousClosePrice(symbol, sessionDate);
+            if (previousClose.isPresent() && previousClose.getAsDouble() > 0.0) {
+                return previousClose.getAsDouble();
+            }
+        } catch (Exception e) {
+            System.err.println("[MainFrame] 無法讀取 " + symbol + " 昨收，改用目前價格作為觀察清單基準: " + e.getMessage());
+        }
+        return fallbackPrice;
     }
 
     private void closeAutoManagedPositionsAtCutoff() {
@@ -1373,6 +1350,7 @@ public class MainFrameWithDocking extends JFrame {
 
     private void changeDateQuery(java.time.LocalDate date) {
         selectedQueryDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
+        watchlistOpenPrices.clear();
         System.out.println("[MainFrame] 切換查詢日期: " + date);
 
         // 如果當前數據源是 FinMindFeed，設置查詢日期
@@ -1562,17 +1540,7 @@ public class MainFrameWithDocking extends JFrame {
         worker.execute();
     }
 
-    private void importSelectedDateKBarToSql() {
-        System.out.println("[MainFrame] 手動觸發 FinMind 分K匯入 SQL，日期: " + selectedQueryDate);
-
-        if (!(dataFeed instanceof com.dreamhouse.trading.core.FinMindFeed)) {
-            JOptionPane.showMessageDialog(this,
-                    "日期分K匯入需要使用 FinMind API。\n請先切換至 FinMind 數據源，再按「載入日期分K到SQL」。",
-                    "FinMind API 匯入",
-                    JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-
+    private void importDateRangeKBarToSql() {
         List<String> symbols = resolveImportSymbols();
         if (symbols.isEmpty()) {
             JOptionPane.showMessageDialog(this,
@@ -1582,23 +1550,34 @@ public class MainFrameWithDocking extends JFrame {
             return;
         }
 
+        LocalDate[] range = promptKBarImportDateRange();
+        if (range == null) {
+            return;
+        }
+        LocalDate startDate = range[0];
+        LocalDate endDate = range[1];
+        long calendarDays = java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) + 1;
+        System.out.println("[MainFrame] 手動觸發 FinMind 分K補齊 SQL，日期範圍: " + startDate + " ~ " + endDate);
+
         int confirm = JOptionPane.showConfirmDialog(this,
-                "將使用 FinMind TaiwanStockKBar 匯入 " + selectedQueryDate + " 的分K。\n"
+                "將補齊 " + startDate + " ~ " + endDate + " 的 FinMind TaiwanStockKBar 分K。\n"
                         + "股票數：" + symbols.size() + "\n"
-                        + "API 呼叫：約 " + symbols.size() + " 次（每檔股票一次）\n"
+                        + "日期數：" + calendarDays + "\n"
+                        + "API 上限：約 " + (calendarDays * symbols.size()) + " 次；SQL M1 分K完整者略過\n"
+                        + "週六、週日會直接略過；休市日若 SQL 無資料仍可能收到 FinMind 0 筆結果\n"
                         + "寫入：market_data.candlesticks 的 M1/M5/M15/M30/H1\n\n"
                         + "是否開始？",
-                "批量匯入分K到SQL",
+                "批量補齊分K到SQL",
                 JOptionPane.OK_CANCEL_OPTION,
                 JOptionPane.QUESTION_MESSAGE);
         if (confirm != JOptionPane.OK_OPTION) {
             return;
         }
 
-        statusBar.setText("正在從 FinMind 匯入 " + selectedQueryDate + " 分K到 SQL...");
-        SwingWorker<FinMindKBarSqlImporter.ImportResult, Void> worker = new SwingWorker<>() {
+        statusBar.setText("正在補齊 " + startDate + " ~ " + endDate + " 分K到 SQL...");
+        SwingWorker<FinMindKBarSqlImporter.RangeImportResult, Void> worker = new SwingWorker<>() {
             @Override
-            protected FinMindKBarSqlImporter.ImportResult doInBackground() throws Exception {
+            protected FinMindKBarSqlImporter.RangeImportResult doInBackground() throws Exception {
                 try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
                         dataSourceManager.getMarketCollectorJdbcUrl(),
                         dataSourceManager.getMarketCollectorUser(),
@@ -1606,14 +1585,14 @@ public class MainFrameWithDocking extends JFrame {
                     FinMindKBarSqlImporter importer = new FinMindKBarSqlImporter(
                             new FinMindClient(dataSourceManager.getFinMindApiToken()),
                             repository);
-                    return importer.importSymbols(symbols, selectedQueryDate);
+                    return importer.importMissingSymbols(symbols, startDate, endDate);
                 }
             }
 
             @Override
             protected void done() {
                 try {
-                    FinMindKBarSqlImporter.ImportResult result = get();
+                    FinMindKBarSqlImporter.RangeImportResult result = get();
                     showFinMindKBarImportResult(result);
                     loadImportedCurrentSymbolBars(result);
                 } catch (Exception e) {
@@ -1628,6 +1607,52 @@ public class MainFrameWithDocking extends JFrame {
             }
         };
         worker.execute();
+    }
+
+    private LocalDate[] promptKBarImportDateRange() {
+        JTextField startField = new JTextField(selectedQueryDate.toString(), 12);
+        JTextField endField = new JTextField(selectedQueryDate.toString(), 12);
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        panel.add(new JLabel("開始日期"), gbc);
+        gbc.gridx = 1;
+        panel.add(startField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        panel.add(new JLabel("結束日期"), gbc);
+        gbc.gridx = 1;
+        panel.add(endField, gbc);
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.gridwidth = 2;
+        panel.add(new JLabel("格式：yyyy-MM-dd；SQL M1 分K根數與開收盤覆蓋完整時不打 API。"), gbc);
+
+        while (true) {
+            int option = JOptionPane.showConfirmDialog(
+                    this,
+                    panel,
+                    "載入範圍分K到SQL",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.PLAIN_MESSAGE);
+            if (option != JOptionPane.OK_OPTION) {
+                return null;
+            }
+            try {
+                LocalDate start = LocalDate.parse(startField.getText().trim());
+                LocalDate end = LocalDate.parse(endField.getText().trim());
+                if (end.isBefore(start)) {
+                    JOptionPane.showMessageDialog(this, "結束日期不可早於開始日期。", "載入範圍分K到SQL", JOptionPane.WARNING_MESSAGE);
+                    continue;
+                }
+                return new LocalDate[]{start, end};
+            } catch (RuntimeException e) {
+                JOptionPane.showMessageDialog(this, "日期格式錯誤，請使用 yyyy-MM-dd。", "載入範圍分K到SQL", JOptionPane.WARNING_MESSAGE);
+            }
+        }
     }
 
     private List<String> resolveImportSymbols() {
@@ -1667,6 +1692,47 @@ public class MainFrameWithDocking extends JFrame {
         area.setEditable(false);
         area.setLineWrap(false);
         JOptionPane.showMessageDialog(this, new JScrollPane(area), "FinMind 分K匯入結果", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void showFinMindKBarImportResult(FinMindKBarSqlImporter.RangeImportResult result) {
+        statusBar.setText("FinMind 分K補齊完成：API " + result.apiRequests()
+                + " 次，匯入 " + result.successImports() + " 組股票日期，略過 SQL 完整 " + result.skippedExisting() + " 組");
+
+        StringBuilder detail = new StringBuilder();
+        detail.append("日期範圍：").append(result.startDate()).append(" ~ ").append(result.endDate()).append('\n');
+        detail.append("掃描日期：").append(result.daysScanned()).append(" 天\n");
+        detail.append("股票數：").append(result.requestedSymbols()).append(" 檔\n");
+        detail.append("實際 API 呼叫：").append(result.apiRequests()).append(" 次\n");
+        detail.append("成功匯入：").append(result.successImports()).append(" 組股票日期\n");
+        detail.append("SQL 分K完整略過：").append(result.skippedExisting()).append(" 組股票日期\n");
+        detail.append("寫入K線：").append(result.totalInsertedBars()).append(" 根\n\n");
+        for (FinMindKBarSqlImporter.DateImportResult dateResult : result.dateResults()) {
+            detail.append("[").append(dateResult.date()).append("] ");
+            if (dateResult.marketClosed()) {
+                detail.append("週末略過 ").append(dateResult.marketClosedSkippedSymbols()).append(" 檔\n");
+                continue;
+            }
+            detail.append('\n');
+            for (FinMindKBarSqlImporter.SymbolImportResult item : dateResult.symbolResults()) {
+                if (item.skippedExisting()) {
+                    detail.append("略過 ");
+                } else {
+                    detail.append(item.success() ? "OK " : "失敗 ");
+                }
+                detail.append(item.symbol()).append("：");
+                if (item.success()) {
+                    detail.append(item.insertedByInterval());
+                } else {
+                    detail.append(item.message());
+                }
+                detail.append('\n');
+            }
+        }
+
+        JTextArea area = new JTextArea(detail.toString(), 22, 78);
+        area.setEditable(false);
+        area.setLineWrap(false);
+        JOptionPane.showMessageDialog(this, new JScrollPane(area), "FinMind 分K補齊結果", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void importFinMindIndustryToSql() {
@@ -1994,6 +2060,47 @@ public class MainFrameWithDocking extends JFrame {
         }
     }
 
+    private void loadImportedCurrentSymbolBars(FinMindKBarSqlImporter.RangeImportResult result) {
+        if (currentSymbol == null || currentSymbol.isBlank()
+                || selectedQueryDate.isBefore(result.startDate()) || selectedQueryDate.isAfter(result.endDate())) {
+            return;
+        }
+        boolean selectedDateAvailable = result.dateResults().stream()
+                .filter(dateResult -> selectedQueryDate.equals(dateResult.date()) && !dateResult.marketClosed())
+                .flatMap(dateResult -> dateResult.symbolResults().stream())
+                .anyMatch(item -> currentSymbol.equals(item.symbol()) && (item.success() || item.skippedExisting()));
+        if (!selectedDateAvailable) {
+            return;
+        }
+        try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                dataSourceManager.getMarketCollectorJdbcUrl(),
+                dataSourceManager.getMarketCollectorUser(),
+                dataSourceManager.getMarketCollectorPassword())) {
+            String interval = switch (currentTimeframe) {
+                case M1 -> "M1";
+                case M5 -> "M5";
+                case M15 -> "M15";
+                case M30 -> "M30";
+                case H1 -> "H1";
+                default -> null;
+            };
+            if (interval == null) {
+                return;
+            }
+            List<Bar> bars = repository.findCandlesByTimeRange(
+                    currentSymbol,
+                    interval,
+                    selectedQueryDate.atTime(9, 0),
+                    selectedQueryDate.atTime(13, 30));
+            if (!bars.isEmpty()) {
+                chartDock.loadHistoricalData(bars);
+                updateWatchlistForSelectedSqlDate();
+            }
+        } catch (Exception e) {
+            statusBar.setText("分K已補齊，但載入圖表失敗：" + e.getMessage());
+        }
+    }
+
     private void updateWatchlistForSelectedSqlDate() {
         if (watchlistPanel == null) {
             return;
@@ -2015,7 +2122,8 @@ public class MainFrameWithDocking extends JFrame {
                             continue;
                         }
                         List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, Timeframe.M1, 1000, selectedQueryDate);
-                        publish(toWatchlistSnapshot(symbol, bars));
+                        OptionalDouble previousClose = repository.findPreviousClosePrice(symbol, selectedQueryDate);
+                        publish(toWatchlistSnapshot(symbol, bars, previousClose));
                     }
                 }
                 return null;
@@ -2041,14 +2149,17 @@ public class MainFrameWithDocking extends JFrame {
         worker.execute();
     }
 
-    private WatchlistSnapshot toWatchlistSnapshot(String symbol, List<Bar> bars) {
+    private WatchlistSnapshot toWatchlistSnapshot(String symbol, List<Bar> bars, OptionalDouble previousClose) {
         if (bars == null || bars.isEmpty()) {
             return new WatchlistSnapshot(symbol, 0.0, 0.0, 0L);
         }
         Bar first = bars.get(0);
         Bar last = bars.get(bars.size() - 1);
-        double changePct = first.getOpen() > 0.0
-                ? ((last.getClose() - first.getOpen()) / first.getOpen()) * 100.0
+        double referencePrice = previousClose != null && previousClose.isPresent() && previousClose.getAsDouble() > 0.0
+                ? previousClose.getAsDouble()
+                : first.getOpen();
+        double changePct = referencePrice > 0.0
+                ? ((last.getClose() - referencePrice) / referencePrice) * 100.0
                 : 0.0;
         long volume = bars.stream().mapToLong(Bar::getVolume).sum();
         return new WatchlistSnapshot(symbol, last.getClose(), changePct, volume);
@@ -2220,7 +2331,10 @@ public class MainFrameWithDocking extends JFrame {
         Timeframe timeframe = resolveRadarTimeframe(mode);
         int barCount = resolveRadarBarCount(mode);
         InternalMarketContextService contextService = new InternalMarketContextService(dataFeed);
-        return contextService.build(symbols, timeframe, barCount, selectedQueryDate);
+        RadarStrategyConfig radarConfig = monitorConfig != null
+                ? monitorConfig.getRadarStrategyConfig()
+                : RadarStrategyConfig.createDefault();
+        return contextService.build(symbols, timeframe, barCount, selectedQueryDate, radarConfig);
     }
 
     private Map<String, MarketDataCollectorRepository.IndustryInfo> loadIndustryInfo(List<String> symbols) {
@@ -2651,12 +2765,14 @@ public class MainFrameWithDocking extends JFrame {
 
             @Override
             protected BacktestResult doInBackground() throws Exception {
+                List<Bar> warmupBars = List.of();
                 try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
                         dataSourceManager.getMarketCollectorJdbcUrl(),
                         dataSourceManager.getMarketCollectorUser(),
                         dataSourceManager.getMarketCollectorPassword())) {
                     MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
                     replayBars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, selectedQueryDate);
+                    warmupBars = fetchSqlRadarBacktestWarmupBars(sqlFeed, symbol, timeframe, selectedQueryDate, request);
                 }
                 if (replayBars == null || replayBars.size() < 2) {
                     throw new IllegalStateException("SQL K 線資料不足，無法回測：" + symbol + " " + selectedQueryDate);
@@ -2676,7 +2792,7 @@ public class MainFrameWithDocking extends JFrame {
                         monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()
                                 ? monitorConfig.getStopLossCooldownMinutes()
                                 : 0);
-                return service.replay(symbol, replayBars, request);
+                return service.replay(symbol, warmupBars, replayBars, request);
             }
 
             @Override
@@ -2760,7 +2876,8 @@ public class MainFrameWithDocking extends JFrame {
                                     skipped.add(date + " " + symbol + "：SQL K 線不足");
                                     continue;
                                 }
-                                BacktestResult result = service.replay(symbol, bars, request);
+                                List<Bar> warmupBars = fetchSqlRadarBacktestWarmupBars(sqlFeed, symbol, timeframe, date, request);
+                                BacktestResult result = service.replay(symbol, warmupBars, bars, request);
                                 daySymbolResults.add(result);
                                 testedSymbolDays++;
                                 tradesBySymbol.computeIfAbsent(symbol, ignored -> new ArrayList<>())
@@ -2865,6 +2982,23 @@ public class MainFrameWithDocking extends JFrame {
         }
     }
 
+    private List<Bar> fetchSqlRadarBacktestWarmupBars(
+            MarketDataCollectorFeed sqlFeed,
+            String symbol,
+            Timeframe timeframe,
+            LocalDate date,
+            MarketScannerService.ScanRequest request) {
+        RadarStrategyConfig radar = request != null && request.getRadarStrategyConfig() != null
+                ? request.getRadarStrategyConfig()
+                : RadarStrategyConfig.createDefault();
+        if (!radar.isBacktestCrossDayWarmupEnabled()) {
+            return List.of();
+        }
+        int minimumForSlowAverage = Math.max(0, radar.getSlowMovingAveragePeriod() * 3);
+        int warmupCount = Math.max(radar.getBacktestWarmupBarCount(), minimumForSlowAverage);
+        return sqlFeed.fetchWarmupBarsBeforeSession(symbol, timeframe, date, warmupCount);
+    }
+
     private RadarReplayBacktestService createRadarReplayService() {
         return new RadarReplayBacktestService(
                 1_000_000.0,
@@ -2937,6 +3071,9 @@ public class MainFrameWithDocking extends JFrame {
         sb.append("雷達掃描間隔: ").append(activeMonitorConfig.getScanIntervalSeconds()).append(" 秒\n");
         sb.append("同股訊號間隔: ").append(activeMonitorConfig.getMinSignalIntervalMinutes()).append(" 分鐘\n");
         sb.append("雷達日內K棒數: ").append(radar.getDayTradeBarCount()).append('\n');
+        sb.append("回測跨日暖機: ")
+                .append(radar.isBacktestCrossDayWarmupEnabled() ? "啟用 " + radar.getBacktestWarmupBarCount() + " 根" : "停用")
+                .append('\n');
         sb.append("RSI: ")
                 .append(radar.isRsiEnabled() ? "啟用" : "停用")
                 .append("，週期=").append(radar.getRsiPeriod())
@@ -2960,6 +3097,9 @@ public class MainFrameWithDocking extends JFrame {
         sb.append("RSI接刀確認: ")
                 .append(radar.isRequireRsiEntryConfirmation() ? "啟用（需EMA或放量反轉確認）" : "停用")
                 .append('\n');
+        sb.append("EMA 單因子進場: ")
+                .append(radar.isBlockMovingAverageOnlyEntry() ? "阻擋（需 RSI 或有效放量突破確認）" : "允許")
+                .append('\n');
         sb.append("尾盤禁止新倉時間: ").append(activeMonitorConfig.getLatestAutoEntryTime()).append('\n');
         sb.append("雷達最低進場分數: ").append(String.format(Locale.US, "%.2f", radar.getMinimumEntryScore())).append('\n');
         sb.append("量能突破 RSI 超買衝突過濾: ")
@@ -2972,10 +3112,23 @@ public class MainFrameWithDocking extends JFrame {
                 .append(radar.isRequirePriceAboveVwapForLong() ? "啟用" : "停用")
                 .append('\n');
         sb.append("弱勢盤策略: ").append(radar.getWeakMarketLongPolicy().getDisplayName()).append('\n');
-        sb.append("弱勢盤強勢股門檻: 強於大盤 ")
+        sb.append("弱勢盤強勢股門檻: 強於內部基準 ")
                 .append(String.format(Locale.US, "%.2f%%", radar.getWeakOutperformBenchmarkPercent()))
-                .append("，強於族群 ")
+                .append("，強於觀察清單群體 ")
                 .append(String.format(Locale.US, "%.2f%%", radar.getWeakOutperformIndustryPercent()))
+                .append('\n');
+        sb.append("內部市場 ALLOW/BLOCK 門檻: ALLOW VWAP>=")
+                .append(String.format(Locale.US, "%.1f%%", radar.getInternalAllowVwapPassPercent()))
+                .append("，平均漲跌>=")
+                .append(String.format(Locale.US, "%.2f%%", radar.getInternalAllowAverageReturnPercent()))
+                .append("，Volume Sustain>=")
+                .append(String.format(Locale.US, "%.1f%%", radar.getInternalAllowVolumeSustainPercent()))
+                .append("；BLOCK VWAP<")
+                .append(String.format(Locale.US, "%.1f%%", radar.getInternalBlockVwapPassPercent()))
+                .append("，平均漲跌<=")
+                .append(String.format(Locale.US, "%.2f%%", radar.getInternalBlockAverageReturnPercent()))
+                .append("，創低多於創高檔數>=")
+                .append(radar.getInternalBlockNewLowExcessCount())
                 .append('\n');
         sb.append("突破後一根確認: ")
                 .append(radar.isRequireBreakoutNextBarConfirmation() ? "啟用" : "停用")
@@ -3276,20 +3429,18 @@ public class MainFrameWithDocking extends JFrame {
 
     private String getMonitorTemplateDescription(int index) {
         return switch (index) {
-            case 1 -> "B組收斂版：目前主力測試模板，M5、VWAP、Volume Sustain、ATR、弱勢盤只放行極強股。";
-            case 2 -> "當沖防守控損版：最保守，09:20 後才開倉，每日最多 3 筆，弱勢盤全擋，適合大盤不明或新規則驗證。";
-            case 3 -> "當沖標準趨勢版：預設實測模板，M5 趨勢 + VWAP + 量能延續，每日最多 5 筆，適合一般盤。";
-            case 4 -> "當沖強勢突破版：只追有效放量突破，要求下一根確認與較高量能，弱勢盤全擋，適合明顯強勢盤。";
+            case 1 -> "A組 EMA8/21：M5 主交易層較早暖機，保留 VWAP、量能與 ATR，關閉內部市場狀態過濾。";
+            case 2 -> "B組 EMA8/34 跨日暖機：沿用收斂版結構，回測帶入前期 SQL K 線暖機 EMA34，關閉內部市場狀態過濾。";
+            case 3 -> "C組 EMA 單因子阻擋：基於 B 組跨日暖機，EMA 多頭需再由 RSI 轉強或突破後一根續強確認，關閉內部市場狀態過濾。";
             default -> "保留目前畫面設定，不套用任何模板。";
         };
     }
 
     private String getMonitorTemplateName(int index) {
         return switch (index) {
-            case 1 -> "B組收斂版";
-            case 2 -> "當沖防守控損版";
-            case 3 -> "當沖標準趨勢版";
-            case 4 -> "當沖強勢突破版";
+            case 1 -> "A組 EMA8/21";
+            case 2 -> "B組收斂版";
+            case 3 -> "C組 EMA確認";
             default -> "目前設定";
         };
     }
@@ -3302,14 +3453,12 @@ public class MainFrameWithDocking extends JFrame {
                 copyMonitorConfig(monitorConfig != null ? monitorConfig : SignalMonitorConfig.createDefault()),
                 copyDecisionConfig(monitorDecisionConfig != null ? monitorDecisionConfig : createDayTradeStandardMonitorConfig()),
                 false));
-        templates.add(new MonitorTemplate("B組收斂版", getMonitorTemplateDescription(1),
-                SignalMonitorConfig.createBConvergenceTemplate(), createBConvergenceMonitorConfig(), false));
-        templates.add(new MonitorTemplate("當沖防守控損版", getMonitorTemplateDescription(2),
-                SignalMonitorConfig.createDayTradeDefensiveTemplate(), createDayTradeDefensiveMonitorConfig(), false));
-        templates.add(new MonitorTemplate("當沖標準趨勢版", getMonitorTemplateDescription(3),
-                SignalMonitorConfig.createDayTradeStandardTemplate(), createDayTradeStandardMonitorConfig(), false));
-        templates.add(new MonitorTemplate("當沖強勢突破版", getMonitorTemplateDescription(4),
-                SignalMonitorConfig.createDayTradeMomentumTemplate(), createDayTradeMomentumMonitorConfig(), false));
+        templates.add(new MonitorTemplate(getMonitorTemplateName(1), getMonitorTemplateDescription(1),
+                SignalMonitorConfig.createDayTradeGroupATemplate(), createBConvergenceMonitorConfig(), false));
+        templates.add(new MonitorTemplate(getMonitorTemplateName(2), getMonitorTemplateDescription(2),
+                SignalMonitorConfig.createDayTradeGroupBTemplate(), createBConvergenceMonitorConfig(), false));
+        templates.add(new MonitorTemplate(getMonitorTemplateName(3), getMonitorTemplateDescription(3),
+                SignalMonitorConfig.createDayTradeGroupCTemplate(), createBConvergenceMonitorConfig(), false));
         templates.addAll(loadUserMonitorTemplates());
         return templates;
     }
@@ -3460,12 +3609,19 @@ public class MainFrameWithDocking extends JFrame {
         props.setProperty(prefix + "radar.requireBreakoutContinuation", String.valueOf(radar.isRequireBreakoutContinuation()));
         props.setProperty(prefix + "radar.requirePriceAboveVwapForLong", String.valueOf(radar.isRequirePriceAboveVwapForLong()));
         props.setProperty(prefix + "radar.requireBreakoutNextBarConfirmation", String.valueOf(radar.isRequireBreakoutNextBarConfirmation()));
+        props.setProperty(prefix + "radar.blockMovingAverageOnlyEntry", String.valueOf(radar.isBlockMovingAverageOnlyEntry()));
         props.setProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent", String.valueOf(radar.getMaxEntryRiseFromRecentLowPercent()));
         props.setProperty(prefix + "radar.marketRegimeFilterEnabled", String.valueOf(radar.isMarketRegimeFilterEnabled()));
         props.setProperty(prefix + "radar.weakMarketStrictLongEnabled", String.valueOf(radar.isWeakMarketStrictLongEnabled()));
         props.setProperty(prefix + "radar.weakMarketLongPolicy", radar.getWeakMarketLongPolicy().name());
         props.setProperty(prefix + "radar.weakOutperformBenchmarkPercent", String.valueOf(radar.getWeakOutperformBenchmarkPercent()));
         props.setProperty(prefix + "radar.weakOutperformIndustryPercent", String.valueOf(radar.getWeakOutperformIndustryPercent()));
+        props.setProperty(prefix + "radar.internalAllowVwapPassPercent", String.valueOf(radar.getInternalAllowVwapPassPercent()));
+        props.setProperty(prefix + "radar.internalAllowAverageReturnPercent", String.valueOf(radar.getInternalAllowAverageReturnPercent()));
+        props.setProperty(prefix + "radar.internalAllowVolumeSustainPercent", String.valueOf(radar.getInternalAllowVolumeSustainPercent()));
+        props.setProperty(prefix + "radar.internalBlockVwapPassPercent", String.valueOf(radar.getInternalBlockVwapPassPercent()));
+        props.setProperty(prefix + "radar.internalBlockAverageReturnPercent", String.valueOf(radar.getInternalBlockAverageReturnPercent()));
+        props.setProperty(prefix + "radar.internalBlockNewLowExcessCount", String.valueOf(radar.getInternalBlockNewLowExcessCount()));
         props.setProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume", String.valueOf(radar.isRangeMarketRequiresVwapAndVolume()));
         props.setProperty(prefix + "radar.volumeSustainEnabled", String.valueOf(radar.isVolumeSustainEnabled()));
         props.setProperty(prefix + "radar.atrRiskEnabled", String.valueOf(radar.isAtrRiskEnabled()));
@@ -3474,6 +3630,8 @@ public class MainFrameWithDocking extends JFrame {
         props.setProperty(prefix + "radar.atrStopMultiplier", String.valueOf(radar.getAtrStopMultiplier()));
         props.setProperty(prefix + "radar.atrTakeProfitMultiplier", String.valueOf(radar.getAtrTakeProfitMultiplier()));
         props.setProperty(prefix + "radar.atrChaseLimitMultiplier", String.valueOf(radar.getAtrChaseLimitMultiplier()));
+        props.setProperty(prefix + "radar.backtestCrossDayWarmupEnabled", String.valueOf(radar.isBacktestCrossDayWarmupEnabled()));
+        props.setProperty(prefix + "radar.backtestWarmupBarCount", String.valueOf(radar.getBacktestWarmupBarCount()));
     }
 
     private SignalMonitorConfig readMonitorConfig(Properties props, String prefix) {
@@ -3525,12 +3683,19 @@ public class MainFrameWithDocking extends JFrame {
         radar.setRequireBreakoutContinuation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutContinuation"), radar.isRequireBreakoutContinuation()));
         radar.setRequirePriceAboveVwapForLong(parseBoolean(props.getProperty(prefix + "radar.requirePriceAboveVwapForLong"), radar.isRequirePriceAboveVwapForLong()));
         radar.setRequireBreakoutNextBarConfirmation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutNextBarConfirmation"), radar.isRequireBreakoutNextBarConfirmation()));
+        radar.setBlockMovingAverageOnlyEntry(parseBoolean(props.getProperty(prefix + "radar.blockMovingAverageOnlyEntry"), radar.isBlockMovingAverageOnlyEntry()));
         radar.setMaxEntryRiseFromRecentLowPercent(parseDouble(props.getProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent"), radar.getMaxEntryRiseFromRecentLowPercent()));
         radar.setMarketRegimeFilterEnabled(parseBoolean(props.getProperty(prefix + "radar.marketRegimeFilterEnabled"), radar.isMarketRegimeFilterEnabled()));
         radar.setWeakMarketStrictLongEnabled(parseBoolean(props.getProperty(prefix + "radar.weakMarketStrictLongEnabled"), radar.isWeakMarketStrictLongEnabled()));
         radar.setWeakMarketLongPolicy(parseEnum(props.getProperty(prefix + "radar.weakMarketLongPolicy"), WeakMarketLongPolicy.class, radar.getWeakMarketLongPolicy()));
         radar.setWeakOutperformBenchmarkPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformBenchmarkPercent"), radar.getWeakOutperformBenchmarkPercent()));
         radar.setWeakOutperformIndustryPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformIndustryPercent"), radar.getWeakOutperformIndustryPercent()));
+        radar.setInternalAllowVwapPassPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowVwapPassPercent"), radar.getInternalAllowVwapPassPercent()));
+        radar.setInternalAllowAverageReturnPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowAverageReturnPercent"), radar.getInternalAllowAverageReturnPercent()));
+        radar.setInternalAllowVolumeSustainPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowVolumeSustainPercent"), radar.getInternalAllowVolumeSustainPercent()));
+        radar.setInternalBlockVwapPassPercent(parseDouble(props.getProperty(prefix + "radar.internalBlockVwapPassPercent"), radar.getInternalBlockVwapPassPercent()));
+        radar.setInternalBlockAverageReturnPercent(parseDouble(props.getProperty(prefix + "radar.internalBlockAverageReturnPercent"), radar.getInternalBlockAverageReturnPercent()));
+        radar.setInternalBlockNewLowExcessCount(parseInt(props.getProperty(prefix + "radar.internalBlockNewLowExcessCount"), radar.getInternalBlockNewLowExcessCount()));
         radar.setRangeMarketRequiresVwapAndVolume(parseBoolean(props.getProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume"), radar.isRangeMarketRequiresVwapAndVolume()));
         radar.setVolumeSustainEnabled(parseBoolean(props.getProperty(prefix + "radar.volumeSustainEnabled"), radar.isVolumeSustainEnabled()));
         radar.setAtrRiskEnabled(parseBoolean(props.getProperty(prefix + "radar.atrRiskEnabled"), radar.isAtrRiskEnabled()));
@@ -3539,6 +3704,8 @@ public class MainFrameWithDocking extends JFrame {
         radar.setAtrStopMultiplier(parseDouble(props.getProperty(prefix + "radar.atrStopMultiplier"), radar.getAtrStopMultiplier()));
         radar.setAtrTakeProfitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrTakeProfitMultiplier"), radar.getAtrTakeProfitMultiplier()));
         radar.setAtrChaseLimitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrChaseLimitMultiplier"), radar.getAtrChaseLimitMultiplier()));
+        radar.setBacktestCrossDayWarmupEnabled(parseBoolean(props.getProperty(prefix + "radar.backtestCrossDayWarmupEnabled"), radar.isBacktestCrossDayWarmupEnabled()));
+        radar.setBacktestWarmupBarCount(parseInt(props.getProperty(prefix + "radar.backtestWarmupBarCount"), radar.getBacktestWarmupBarCount()));
         monitor.setRadarStrategyConfig(radar);
         return monitor;
     }
@@ -3622,9 +3789,11 @@ public class MainFrameWithDocking extends JFrame {
                         + "longThreshold=%.3f;exitThreshold=%.3f;minStrategies=%d;minRR=%.3f;minVolatility=%.3f;maxVolatility=%.3f;"
                         + "rsiEnabled=%s;rsiPeriod=%d;rsiOversold=%.2f;rsiOverbought=%.2f;rsiWeight=%.2f;requireRsiConfirm=%s;blockRsiOverbought=%s;"
                         + "maEnabled=%s;maType=%s;maFast=%d;maSlow=%d;maWeight=%.2f;"
-                        + "volumeBreakout=%s;breakoutLookback=%d;volumeMultiplier=%.2f;volumeWeight=%.2f;volumeSustain=%s;breakoutContinuation=%s;nextBarConfirm=%s;"
+                        + "volumeBreakout=%s;breakoutLookback=%d;volumeMultiplier=%.2f;volumeWeight=%.2f;volumeSustain=%s;breakoutContinuation=%s;nextBarConfirm=%s;blockMaOnlyEntry=%s;"
                         + "requireAboveVwap=%s;rangeRequiresVwapVolume=%s;rangeFailureExit=%s;rangeFailureMinutes=%d;rangeFailureMinR=%.2f;rangeVolumeFailExit=%s;"
-                        + "marketRegimeFilter=%s;weakStrictLong=%s;weakPolicy=%s;weakOutperformBenchmark=%.2f;weakOutperformIndustry=%.2f;"
+                        + "marketRegimeFilter=%s;internalAllowVwap=%.2f;internalAllowAvgReturn=%.2f;internalAllowVolumeSustain=%.2f;"
+                        + "internalBlockVwap=%.2f;internalBlockAvgReturn=%.2f;internalBlockNewLowExcess=%d;"
+                        + "weakStrictLong=%s;weakPolicy=%s;weakOutperformInternalBenchmark=%.2f;weakOutperformWatchlistGroup=%.2f;"
                         + "atrRisk=%s;atrChaseLimitEnabled=%s;atrPeriod=%d;atrStop=%.2f;atrTakeProfit=%.2f;atrChaseLimit=%.2f;maxEntryRiseFromRecentLow=%.3f;minimumEntryScore=%.3f",
                 monitorStrategyName,
                 activeMonitorConfig.getScanIntervalSeconds(),
@@ -3674,6 +3843,7 @@ public class MainFrameWithDocking extends JFrame {
                 radar.isVolumeSustainEnabled(),
                 radar.isRequireBreakoutContinuation(),
                 radar.isRequireBreakoutNextBarConfirmation(),
+                radar.isBlockMovingAverageOnlyEntry(),
                 radar.isRequirePriceAboveVwapForLong(),
                 radar.isRangeMarketRequiresVwapAndVolume(),
                 activeMonitorConfig.isRangeFailureExitEnabled(),
@@ -3681,6 +3851,12 @@ public class MainFrameWithDocking extends JFrame {
                 activeMonitorConfig.getRangeFailureMinR(),
                 activeMonitorConfig.isRangeFailureVolumeSustainExitEnabled(),
                 radar.isMarketRegimeFilterEnabled(),
+                radar.getInternalAllowVwapPassPercent(),
+                radar.getInternalAllowAverageReturnPercent(),
+                radar.getInternalAllowVolumeSustainPercent(),
+                radar.getInternalBlockVwapPassPercent(),
+                radar.getInternalBlockAverageReturnPercent(),
+                radar.getInternalBlockNewLowExcessCount(),
                 radar.isWeakMarketStrictLongEnabled(),
                 radar.getWeakMarketLongPolicy(),
                 radar.getWeakOutperformBenchmarkPercent(),
@@ -3812,6 +3988,13 @@ public class MainFrameWithDocking extends JFrame {
         dayTimeframe.setSelectedItem(radarConfig.getDayTradeTimeframe());
         JComboBox<Timeframe> executionConfirmationTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M1, Timeframe.M5});
         executionConfirmationTimeframe.setSelectedItem(radarConfig.getExecutionConfirmationTimeframe());
+        JCheckBox backtestCrossDayWarmupEnabled = new JCheckBox(
+                "啟用 SQL 回測跨日暖機",
+                radarConfig.isBacktestCrossDayWarmupEnabled());
+        JSpinner backtestWarmupBars = new JSpinner(new SpinnerNumberModel(
+                radarConfig.getBacktestWarmupBarCount(), 0, 1000, 20));
+        JPanel backtestWarmupPanel = createCheckboxSpinnerPanel(
+                backtestCrossDayWarmupEnabled, backtestWarmupBars, "根");
         JComboBox<Timeframe> shortTimeframe = new JComboBox<>(new Timeframe[]{Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1});
         shortTimeframe.setSelectedItem(radarConfig.getShortSwingTimeframe());
         shortTimeframe.setEnabled(false);
@@ -3837,6 +4020,9 @@ public class MainFrameWithDocking extends JFrame {
         JSpinner fastMa = new JSpinner(new SpinnerNumberModel(radarConfig.getFastMovingAveragePeriod(), 2, 120, 1));
         JSpinner slowMa = new JSpinner(new SpinnerNumberModel(radarConfig.getSlowMovingAveragePeriod(), 3, 240, 1));
         JSpinner maWeight = percentSpinner(radarConfig.getMovingAverageWeight());
+        JCheckBox blockMovingAverageOnlyEntry = new JCheckBox(
+                "阻擋 EMA 單因子進場",
+                radarConfig.isBlockMovingAverageOnlyEntry());
 
         JCheckBox volumeEnabled = new JCheckBox("啟用放量突破", radarConfig.isVolumeBreakoutEnabled());
         JSpinner breakoutLookback = new JSpinner(new SpinnerNumberModel(radarConfig.getBreakoutLookbackBars(), 5, 200, 5));
@@ -3848,12 +4034,18 @@ public class MainFrameWithDocking extends JFrame {
         JCheckBox requirePriceAboveVwap = new JCheckBox("做多需站上 VWAP", radarConfig.isRequirePriceAboveVwapForLong());
         JCheckBox requireBreakoutNextBarConfirmation = new JCheckBox("突破後一根 K 確認", radarConfig.isRequireBreakoutNextBarConfirmation());
         JSpinner maxEntryRiseFromRecentLow = percentSpinner(radarConfig.getMaxEntryRiseFromRecentLowPercent());
-        JCheckBox marketRegimeFilterEnabled = new JCheckBox("啟用大盤狀態過濾", radarConfig.isMarketRegimeFilterEnabled());
+        JCheckBox marketRegimeFilterEnabled = new JCheckBox("啟用內部市場狀態過濾", radarConfig.isMarketRegimeFilterEnabled());
         JCheckBox weakMarketStrictLongEnabled = new JCheckBox("弱勢盤只允許強勢股開多", radarConfig.isWeakMarketStrictLongEnabled());
         JComboBox<WeakMarketLongPolicy> weakMarketLongPolicy = new JComboBox<>(WeakMarketLongPolicy.values());
         weakMarketLongPolicy.setSelectedItem(radarConfig.getWeakMarketLongPolicy());
         JSpinner weakOutperformBenchmark = decimalSpinner(radarConfig.getWeakOutperformBenchmarkPercent(), 0.0, 5.0, 0.05);
         JSpinner weakOutperformIndustry = decimalSpinner(radarConfig.getWeakOutperformIndustryPercent(), 0.0, 5.0, 0.05);
+        JSpinner internalAllowVwapPass = decimalSpinner(radarConfig.getInternalAllowVwapPassPercent(), 0.0, 100.0, 1.0);
+        JSpinner internalAllowAverageReturn = decimalSpinner(radarConfig.getInternalAllowAverageReturnPercent(), -10.0, 10.0, 0.05);
+        JSpinner internalAllowVolumeSustain = decimalSpinner(radarConfig.getInternalAllowVolumeSustainPercent(), 0.0, 100.0, 1.0);
+        JSpinner internalBlockVwapPass = decimalSpinner(radarConfig.getInternalBlockVwapPassPercent(), 0.0, 100.0, 1.0);
+        JSpinner internalBlockAverageReturn = decimalSpinner(radarConfig.getInternalBlockAverageReturnPercent(), -10.0, 10.0, 0.05);
+        JSpinner internalBlockNewLowExcess = new JSpinner(new SpinnerNumberModel(radarConfig.getInternalBlockNewLowExcessCount(), 0, 200, 1));
         JCheckBox rangeRequiresVwapVolume = new JCheckBox("震盪盤要求 VWAP 與量能延續", radarConfig.isRangeMarketRequiresVwapAndVolume());
         JCheckBox volumeSustainEnabled = new JCheckBox("啟用 Volume Sustain Filter", radarConfig.isVolumeSustainEnabled());
         JCheckBox atrRiskEnabled = new JCheckBox("啟用 ATR 動態停損停利", radarConfig.isAtrRiskEnabled());
@@ -3905,6 +4097,8 @@ public class MainFrameWithDocking extends JFrame {
             RadarStrategyConfig radarTemplate = configTemplate.getRadarStrategyConfig();
             dayTimeframe.setSelectedItem(radarTemplate.getDayTradeTimeframe());
             executionConfirmationTimeframe.setSelectedItem(radarTemplate.getExecutionConfirmationTimeframe());
+            backtestCrossDayWarmupEnabled.setSelected(radarTemplate.isBacktestCrossDayWarmupEnabled());
+            backtestWarmupBars.setValue(radarTemplate.getBacktestWarmupBarCount());
             shortTimeframe.setSelectedItem(radarTemplate.getShortSwingTimeframe());
             swingTimeframe.setSelectedItem(radarTemplate.getSwingTradeTimeframe());
             dayBars.setValue(radarTemplate.getDayTradeBarCount());
@@ -3921,6 +4115,7 @@ public class MainFrameWithDocking extends JFrame {
             fastMa.setValue(radarTemplate.getFastMovingAveragePeriod());
             slowMa.setValue(radarTemplate.getSlowMovingAveragePeriod());
             maWeight.setValue(radarTemplate.getMovingAverageWeight());
+            blockMovingAverageOnlyEntry.setSelected(radarTemplate.isBlockMovingAverageOnlyEntry());
             volumeEnabled.setSelected(radarTemplate.isVolumeBreakoutEnabled());
             breakoutLookback.setValue(radarTemplate.getBreakoutLookbackBars());
             volumeMultiplier.setValue(radarTemplate.getVolumeMultiplier());
@@ -3936,6 +4131,12 @@ public class MainFrameWithDocking extends JFrame {
             weakMarketLongPolicy.setSelectedItem(radarTemplate.getWeakMarketLongPolicy());
             weakOutperformBenchmark.setValue(radarTemplate.getWeakOutperformBenchmarkPercent());
             weakOutperformIndustry.setValue(radarTemplate.getWeakOutperformIndustryPercent());
+            internalAllowVwapPass.setValue(radarTemplate.getInternalAllowVwapPassPercent());
+            internalAllowAverageReturn.setValue(radarTemplate.getInternalAllowAverageReturnPercent());
+            internalAllowVolumeSustain.setValue(radarTemplate.getInternalAllowVolumeSustainPercent());
+            internalBlockVwapPass.setValue(radarTemplate.getInternalBlockVwapPassPercent());
+            internalBlockAverageReturn.setValue(radarTemplate.getInternalBlockAverageReturnPercent());
+            internalBlockNewLowExcess.setValue(radarTemplate.getInternalBlockNewLowExcessCount());
             rangeRequiresVwapVolume.setSelected(radarTemplate.isRangeMarketRequiresVwapAndVolume());
             volumeSustainEnabled.setSelected(radarTemplate.isVolumeSustainEnabled());
             atrRiskEnabled.setSelected(radarTemplate.isAtrRiskEnabled());
@@ -3955,65 +4156,78 @@ public class MainFrameWithDocking extends JFrame {
         });
 
         int row = 0;
+        addSettingsSection(panel, gbc, row++, "模板與掃描", "選擇監控模板，設定雷達多久掃描一次。");
         addSettingsRow(panel, gbc, row++, "預設模板", templatePanel);
         addSettingsRow(panel, gbc, row++, "掃描間隔（秒）", scanInterval);
-        addSettingsRow(panel, gbc, row++, "主掃描週期", createDisabledFieldPanel(timeframeBox, "目前自動監控僅支援當沖，實際週期請使用「當沖週期」。"));
-        addSettingsRow(panel, gbc, row++, "K 線數量", createDisabledFieldPanel(barCountSpinner, "目前自動監控僅支援當沖，實際 K 線數量請使用「當沖 K 線數量」。"));
+
+        addSettingsSection(panel, gbc, row++, "當沖週期", "目前自動監控只支援當沖；5 分 K 做主判斷，1 分 K 做執行確認。");
+        addSettingsRow(panel, gbc, row++, "當沖週期", dayTimeframe);
+        addSettingsRow(panel, gbc, row++, "執行確認週期", executionConfirmationTimeframe);
+        addSettingsRow(panel, gbc, row++, "當沖 K 線數量", dayBars);
+        addSettingsRow(panel, gbc, row++, "回測跨日暖機", backtestWarmupPanel);
+
+        addSettingsSection(panel, gbc, row++, "進場評分", "控制雷達分數、投票門檻與 RSI / 均線基礎權重。");
         addSettingsRow(panel, gbc, row++, "同股訊號冷卻（分）", signalInterval);
         addSettingsRow(panel, gbc, row++, "做多門檻", longThreshold);
         addSettingsRow(panel, gbc, row++, "出場門檻", exitThreshold);
-        addSettingsRow(panel, gbc, row++, "最低風報比", minRiskReward);
-        addSettingsRow(panel, gbc, row++, "最低波動", minVolatility);
-        addSettingsRow(panel, gbc, row++, "最高波動", maxVolatility);
+        addSettingsRow(panel, gbc, row++, "雷達最低進場分數", minimumRadarEntryScore);
         addSettingsRow(panel, gbc, row++, "最少策略數", minStrategies);
-        addSettingsRow(panel, gbc, row++, "最大同時持倉", maxPositions);
-        addSettingsRow(panel, gbc, row++, "", riskEnabled);
-        addSettingsRow(panel, gbc, row++, "早盤禁開倉", earlyBlockPanel);
-        addSettingsRow(panel, gbc, row++, "停損冷卻", stopLossCooldownPanel);
-        addSettingsRow(panel, gbc, row++, "當沖週期", dayTimeframe);
-        addSettingsRow(panel, gbc, row++, "執行確認週期", executionConfirmationTimeframe);
-        addSettingsRow(panel, gbc, row++, "短線週期", createDisabledFieldPanel(shortTimeframe, "目前自動監控僅支援當沖"));
-        addSettingsRow(panel, gbc, row++, "波段週期", createDisabledFieldPanel(swingTimeframe, "目前自動監控僅支援當沖"));
-        addSettingsRow(panel, gbc, row++, "當沖 K 線數量", dayBars);
-        addSettingsRow(panel, gbc, row++, "短線 K 線數量", createDisabledFieldPanel(shortBars, "目前自動監控僅支援當沖"));
-        addSettingsRow(panel, gbc, row++, "波段 K 線數量", createDisabledFieldPanel(swingBars, "目前自動監控僅支援當沖"));
         addSettingsRow(panel, gbc, row++, "", rsiEnabled);
         addSettingsRow(panel, gbc, row++, "RSI 週期", rsiPeriod);
         addSettingsRow(panel, gbc, row++, "RSI 超賣", rsiOversold);
         addSettingsRow(panel, gbc, row++, "RSI 超買", rsiOverbought);
         addSettingsRow(panel, gbc, row++, "RSI 權重", rsiWeight);
+        addSettingsRow(panel, gbc, row++, "", requireRsiEntryConfirmation);
         addSettingsRow(panel, gbc, row++, "", maEnabled);
         addSettingsRow(panel, gbc, row++, "均線類型", maType);
         addSettingsRow(panel, gbc, row++, "均線快線", fastMa);
         addSettingsRow(panel, gbc, row++, "均線慢線", slowMa);
         addSettingsRow(panel, gbc, row++, "均線權重", maWeight);
+        addSettingsRow(panel, gbc, row++, "", blockMovingAverageOnlyEntry);
+
+        addSettingsSection(panel, gbc, row++, "VWAP / 量能 / 追價", "控制做多結構、放量突破、Volume Sustain 與追高阻擋。");
         addSettingsRow(panel, gbc, row++, "", volumeEnabled);
         addSettingsRow(panel, gbc, row++, "突破回看 K 數", breakoutLookback);
         addSettingsRow(panel, gbc, row++, "成交量倍率", volumeMultiplier);
         addSettingsRow(panel, gbc, row++, "放量權重", volumeWeight);
-
-        addSettingsRow(panel, gbc, row++, "尾盤禁止新倉時間", latestEntryPanel);
-        addSettingsRow(panel, gbc, row++, "雷達最低進場分數", minimumRadarEntryScore);
         addSettingsRow(panel, gbc, row++, "", blockBreakoutOnRsiOverbought);
         addSettingsRow(panel, gbc, row++, "", requireBreakoutContinuation);
         addSettingsRow(panel, gbc, row++, "", requirePriceAboveVwap);
         addSettingsRow(panel, gbc, row++, "", requireBreakoutNextBarConfirmation);
+        addSettingsRow(panel, gbc, row++, "", volumeSustainEnabled);
         addSettingsRow(panel, gbc, row++, "追價限制（近低漲幅）", maxEntryRiseFromRecentLow);
 
-        addSettingsRow(panel, gbc, row++, "", requireRsiEntryConfirmation);
+        addSettingsSection(panel, gbc, row++, "內部市場 / 弱勢盤", "用觀察清單 SQL 分 K 取代即時大盤與即時產業，判斷 ALLOW / LIMIT / BLOCK。");
         addSettingsRow(panel, gbc, row++, "", marketRegimeFilterEnabled);
         addSettingsRow(panel, gbc, row++, "", weakMarketStrictLongEnabled);
         addSettingsRow(panel, gbc, row++, "弱勢盤策略", weakMarketLongPolicy);
-        addSettingsRow(panel, gbc, row++, "弱勢盤強於大盤%", weakOutperformBenchmark);
-        addSettingsRow(panel, gbc, row++, "弱勢盤強於族群%", weakOutperformIndustry);
+        addSettingsRow(panel, gbc, row++, "ALLOW VWAP通過比例%", internalAllowVwapPass);
+        addSettingsRow(panel, gbc, row++, "ALLOW 最低平均漲跌%", internalAllowAverageReturn);
+        addSettingsRow(panel, gbc, row++, "ALLOW Volume Sustain%", internalAllowVolumeSustain);
+        addSettingsRow(panel, gbc, row++, "BLOCK VWAP通過低於%", internalBlockVwapPass);
+        addSettingsRow(panel, gbc, row++, "BLOCK 平均漲跌低於%", internalBlockAverageReturn);
+        addSettingsRow(panel, gbc, row++, "BLOCK 創低多於創高檔數", internalBlockNewLowExcess);
+        addSettingsRow(panel, gbc, row++, "弱勢盤強於內部基準%", weakOutperformBenchmark);
+        addSettingsRow(panel, gbc, row++, "弱勢盤強於觀察清單群體%", weakOutperformIndustry);
         addSettingsRow(panel, gbc, row++, "", rangeRequiresVwapVolume);
-        addSettingsRow(panel, gbc, row++, "", volumeSustainEnabled);
+
+        addSettingsSection(panel, gbc, row++, "ATR 動態停損停利", "用波動決定停損、停利與追高限制。");
         addSettingsRow(panel, gbc, row++, "", atrRiskEnabled);
         addSettingsRow(panel, gbc, row++, "", atrChaseLimitEnabled);
         addSettingsRow(panel, gbc, row++, "ATR 週期", atrPeriod);
         addSettingsRow(panel, gbc, row++, "ATR 停損倍數", atrStopMultiplier);
         addSettingsRow(panel, gbc, row++, "ATR 停利倍數", atrTakeProfitMultiplier);
         addSettingsRow(panel, gbc, row++, "ATR 追高限制倍數", atrChaseLimitMultiplier);
+
+        addSettingsSection(panel, gbc, row++, "風控與交易節奏", "控制單日風險、持倉上限、冷卻與尾盤禁開倉。");
+        addSettingsRow(panel, gbc, row++, "最低風報比", minRiskReward);
+        addSettingsRow(panel, gbc, row++, "最低波動", minVolatility);
+        addSettingsRow(panel, gbc, row++, "最高波動", maxVolatility);
+        addSettingsRow(panel, gbc, row++, "最大同時持倉", maxPositions);
+        addSettingsRow(panel, gbc, row++, "", riskEnabled);
+        addSettingsRow(panel, gbc, row++, "早盤禁開倉", earlyBlockPanel);
+        addSettingsRow(panel, gbc, row++, "停損冷卻", stopLossCooldownPanel);
+        addSettingsRow(panel, gbc, row++, "尾盤禁止新倉時間", latestEntryPanel);
         addSettingsRow(panel, gbc, row++, "單日最大虧損", dailyMaxLoss);
         addSettingsRow(panel, gbc, row++, "單日停損次數上限", dailyMaxStopLossCount);
         addSettingsRow(panel, gbc, row++, "連續虧損上限", consecutiveLossLimit);
@@ -4022,10 +4236,20 @@ public class MainFrameWithDocking extends JFrame {
         addSettingsRow(panel, gbc, row++, "開單間隔分鐘", entryPacingMinutes);
         addSettingsRow(panel, gbc, row++, "平倉後冷卻分鐘", postExitCooldownMinutes);
         addSettingsRow(panel, gbc, row++, "", oneEntryPerFiveMinuteBar);
+
+        addSettingsSection(panel, gbc, row++, "RANGE 盤出場", "震盪盤若時間或量能沒有延續，提前離場。");
         addSettingsRow(panel, gbc, row++, "", rangeFailureExitEnabled);
         addSettingsRow(panel, gbc, row++, "RANGE 失效等待分鐘", rangeFailureExitMinutes);
         addSettingsRow(panel, gbc, row++, "RANGE 最低達成 R", rangeFailureMinR);
-        addSettingsRow(panel, gbc, row, "", rangeFailureVolumeSustainExitEnabled);
+        addSettingsRow(panel, gbc, row++, "", rangeFailureVolumeSustainExitEnabled);
+
+        addSettingsSection(panel, gbc, row++, "目前停用欄位", "短線 / 波段自動監控尚未啟用，保留欄位但不參與當沖雷達。");
+        addSettingsRow(panel, gbc, row++, "主掃描週期", createDisabledFieldPanel(timeframeBox, "目前自動監控僅支援當沖，實際週期請使用「當沖週期」。"));
+        addSettingsRow(panel, gbc, row++, "K 線數量", createDisabledFieldPanel(barCountSpinner, "目前自動監控僅支援當沖，實際 K 線數量請使用「當沖 K 線數量」。"));
+        addSettingsRow(panel, gbc, row++, "短線週期", createDisabledFieldPanel(shortTimeframe, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "波段週期", createDisabledFieldPanel(swingTimeframe, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row++, "短線 K 線數量", createDisabledFieldPanel(shortBars, "目前自動監控僅支援當沖"));
+        addSettingsRow(panel, gbc, row, "波段 K 線數量", createDisabledFieldPanel(swingBars, "目前自動監控僅支援當沖"));
 
         java.util.function.BiFunction<String, String, MonitorTemplate> buildTemplateFromForm = (name, description) -> {
             SignalMonitorConfig savedMonitor = copyMonitorConfig(monitorConfig);
@@ -4056,6 +4280,8 @@ public class MainFrameWithDocking extends JFrame {
             RadarStrategyConfig savedRadar = radarConfig.copy();
             savedRadar.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
             savedRadar.setExecutionConfirmationTimeframe((Timeframe) executionConfirmationTimeframe.getSelectedItem());
+            savedRadar.setBacktestCrossDayWarmupEnabled(backtestCrossDayWarmupEnabled.isSelected());
+            savedRadar.setBacktestWarmupBarCount(((Number) backtestWarmupBars.getValue()).intValue());
             savedRadar.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
             savedRadar.setSwingTradeTimeframe((Timeframe) swingTimeframe.getSelectedItem());
             savedRadar.setDayTradeBarCount(((Number) dayBars.getValue()).intValue());
@@ -4072,6 +4298,7 @@ public class MainFrameWithDocking extends JFrame {
             savedRadar.setFastMovingAveragePeriod(((Number) fastMa.getValue()).intValue());
             savedRadar.setSlowMovingAveragePeriod(((Number) slowMa.getValue()).intValue());
             savedRadar.setMovingAverageWeight(((Number) maWeight.getValue()).doubleValue());
+            savedRadar.setBlockMovingAverageOnlyEntry(blockMovingAverageOnlyEntry.isSelected());
             savedRadar.setVolumeBreakoutEnabled(volumeEnabled.isSelected());
             savedRadar.setBreakoutLookbackBars(((Number) breakoutLookback.getValue()).intValue());
             savedRadar.setVolumeMultiplier(((Number) volumeMultiplier.getValue()).doubleValue());
@@ -4087,6 +4314,12 @@ public class MainFrameWithDocking extends JFrame {
             savedRadar.setWeakMarketLongPolicy((WeakMarketLongPolicy) weakMarketLongPolicy.getSelectedItem());
             savedRadar.setWeakOutperformBenchmarkPercent(((Number) weakOutperformBenchmark.getValue()).doubleValue());
             savedRadar.setWeakOutperformIndustryPercent(((Number) weakOutperformIndustry.getValue()).doubleValue());
+            savedRadar.setInternalAllowVwapPassPercent(((Number) internalAllowVwapPass.getValue()).doubleValue());
+            savedRadar.setInternalAllowAverageReturnPercent(((Number) internalAllowAverageReturn.getValue()).doubleValue());
+            savedRadar.setInternalAllowVolumeSustainPercent(((Number) internalAllowVolumeSustain.getValue()).doubleValue());
+            savedRadar.setInternalBlockVwapPassPercent(((Number) internalBlockVwapPass.getValue()).doubleValue());
+            savedRadar.setInternalBlockAverageReturnPercent(((Number) internalBlockAverageReturn.getValue()).doubleValue());
+            savedRadar.setInternalBlockNewLowExcessCount(((Number) internalBlockNewLowExcess.getValue()).intValue());
             savedRadar.setRangeMarketRequiresVwapAndVolume(rangeRequiresVwapVolume.isSelected());
             savedRadar.setVolumeSustainEnabled(volumeSustainEnabled.isSelected());
             savedRadar.setAtrRiskEnabled(atrRiskEnabled.isSelected());
@@ -4178,6 +4411,8 @@ public class MainFrameWithDocking extends JFrame {
             RadarStrategyConfig updatedRadarConfig = radarConfig.copy();
             updatedRadarConfig.setDayTradeTimeframe((Timeframe) dayTimeframe.getSelectedItem());
             updatedRadarConfig.setExecutionConfirmationTimeframe((Timeframe) executionConfirmationTimeframe.getSelectedItem());
+            updatedRadarConfig.setBacktestCrossDayWarmupEnabled(backtestCrossDayWarmupEnabled.isSelected());
+            updatedRadarConfig.setBacktestWarmupBarCount(((Number) backtestWarmupBars.getValue()).intValue());
             updatedRadarConfig.setShortSwingTimeframe((Timeframe) shortTimeframe.getSelectedItem());
             updatedRadarConfig.setSwingTradeTimeframe((Timeframe) swingTimeframe.getSelectedItem());
             updatedRadarConfig.setDayTradeBarCount(((Number) dayBars.getValue()).intValue());
@@ -4194,6 +4429,7 @@ public class MainFrameWithDocking extends JFrame {
             updatedRadarConfig.setFastMovingAveragePeriod(((Number) fastMa.getValue()).intValue());
             updatedRadarConfig.setSlowMovingAveragePeriod(((Number) slowMa.getValue()).intValue());
             updatedRadarConfig.setMovingAverageWeight(((Number) maWeight.getValue()).doubleValue());
+            updatedRadarConfig.setBlockMovingAverageOnlyEntry(blockMovingAverageOnlyEntry.isSelected());
             updatedRadarConfig.setVolumeBreakoutEnabled(volumeEnabled.isSelected());
             updatedRadarConfig.setBreakoutLookbackBars(((Number) breakoutLookback.getValue()).intValue());
             updatedRadarConfig.setVolumeMultiplier(((Number) volumeMultiplier.getValue()).doubleValue());
@@ -4209,6 +4445,12 @@ public class MainFrameWithDocking extends JFrame {
             updatedRadarConfig.setWeakMarketLongPolicy((WeakMarketLongPolicy) weakMarketLongPolicy.getSelectedItem());
             updatedRadarConfig.setWeakOutperformBenchmarkPercent(((Number) weakOutperformBenchmark.getValue()).doubleValue());
             updatedRadarConfig.setWeakOutperformIndustryPercent(((Number) weakOutperformIndustry.getValue()).doubleValue());
+            updatedRadarConfig.setInternalAllowVwapPassPercent(((Number) internalAllowVwapPass.getValue()).doubleValue());
+            updatedRadarConfig.setInternalAllowAverageReturnPercent(((Number) internalAllowAverageReturn.getValue()).doubleValue());
+            updatedRadarConfig.setInternalAllowVolumeSustainPercent(((Number) internalAllowVolumeSustain.getValue()).doubleValue());
+            updatedRadarConfig.setInternalBlockVwapPassPercent(((Number) internalBlockVwapPass.getValue()).doubleValue());
+            updatedRadarConfig.setInternalBlockAverageReturnPercent(((Number) internalBlockAverageReturn.getValue()).doubleValue());
+            updatedRadarConfig.setInternalBlockNewLowExcessCount(((Number) internalBlockNewLowExcess.getValue()).intValue());
             updatedRadarConfig.setRangeMarketRequiresVwapAndVolume(rangeRequiresVwapVolume.isSelected());
             updatedRadarConfig.setVolumeSustainEnabled(volumeSustainEnabled.isSelected());
             updatedRadarConfig.setAtrRiskEnabled(atrRiskEnabled.isSelected());
@@ -4323,12 +4565,292 @@ public class MainFrameWithDocking extends JFrame {
 
     private void addSettingsRow(JPanel panel, GridBagConstraints gbc, int row, String label, JComponent component) {
         gbc.gridy = row;
+        gbc.gridwidth = 1;
         gbc.gridx = 0;
         gbc.weightx = 0.35;
-        panel.add(new JLabel(label), gbc);
+        JLabel labelComponent = new JLabel(label);
+        String tooltip = monitorSettingTooltip(label, component);
+        if (tooltip != null && !tooltip.isBlank()) {
+            labelComponent.setToolTipText(tooltip);
+            setTooltipRecursively(component, tooltip);
+        }
+        panel.add(labelComponent, gbc);
         gbc.gridx = 1;
         gbc.weightx = 0.65;
         panel.add(component, gbc);
+    }
+
+    private void addSettingsSection(JPanel panel, GridBagConstraints gbc, int row, String title, String description) {
+        gbc.gridy = row;
+        gbc.gridx = 0;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1.0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        JLabel sectionLabel = new JLabel(title + "  -  " + description);
+        sectionLabel.setFont(sectionLabel.getFont().deriveFont(Font.BOLD));
+        sectionLabel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(row == 0 ? 0 : 1, 0, 0, 0,
+                        UIManager.getColor("Separator.foreground") != null
+                                ? UIManager.getColor("Separator.foreground")
+                                : Color.GRAY),
+                BorderFactory.createEmptyBorder(row == 0 ? 0 : 10, 0, 4, 0)));
+        String tooltip = htmlTooltip(title + "\n" + description);
+        sectionLabel.setToolTipText(tooltip);
+        panel.add(sectionLabel, gbc);
+        gbc.gridwidth = 1;
+    }
+
+    private String monitorSettingTooltip(String label, JComponent component) {
+        String key = label != null ? label.trim() : "";
+        if (key.isEmpty() && component instanceof JCheckBox checkBox) {
+            key = checkBox.getText() != null ? checkBox.getText().trim() : "";
+        }
+        return switch (key) {
+            case "預設模板" -> htmlTooltip("""
+                    選擇一組已保存的監控配置。選擇模板會把下方欄位改成該模板的值。
+                    例：選「B組收斂版」後，再按套用，雷達會使用該組 RSI、VWAP、ATR 與風控門檻。""");
+            case "掃描間隔（秒）" -> htmlTooltip("""
+                    自動監控每隔幾秒掃描一次觀察清單。數值越小越即時，但 UI 與 SQL 負載較高。
+                    例：10 代表每 10 秒掃描一次。""");
+            case "主掃描週期" -> htmlTooltip("""
+                    舊版通用掃描週期，目前自動監控只支援當沖，實際採用「當沖週期」。
+                    例：此欄停用時不用調整，請改調當沖週期。""");
+            case "K 線數量" -> htmlTooltip("""
+                    舊版通用 K 線數量，目前自動監控只支援當沖，實際採用「當沖 K 線數量」。
+                    例：此欄停用時不用調整。""");
+            case "同股訊號冷卻（分）" -> htmlTooltip("""
+                    同一檔股票兩次訊號之間至少間隔幾分鐘，避免同股連續觸發。
+                    例：10 代表同一股票 10 分鐘內不重複產生新訊號。""");
+            case "做多門檻" -> htmlTooltip("""
+                    投票決策的做多門檻，採 0~1 小數。分數越高越嚴格。
+                    例：0.35 代表多方投票分數達 0.35 才可能進入 OPEN_LONG。""");
+            case "出場門檻" -> htmlTooltip("""
+                    投票決策的出場門檻，採 0~1 小數。分數越低越容易出場。
+                    例：0.35 代表出場訊號分數達 0.35 時可能觸發 EXIT。""");
+            case "最低風報比" -> htmlTooltip("""
+                    進場前要求預期報酬/風險至少達到此倍數。
+                    例：1.5 代表預期可賺 1.5R 以上才允許開倉。""");
+            case "最低波動" -> htmlTooltip("""
+                    過濾波動太小的股票，避免價差不足支付成本。
+                    例：0.00 代表不使用最低波動限制；0.01 約代表至少 1% 波動。""");
+            case "最高波動" -> htmlTooltip("""
+                    過濾波動過大的股票，避免異常急拉急殺。
+                    例：1.00 代表上限很寬；0.08 約代表超過 8% 波動就擋。""");
+            case "最少策略數" -> htmlTooltip("""
+                    至少需要幾個策略參與投票，避免單一指標決定開倉。
+                    例：2 代表至少 RSI、均線、放量等其中兩類有有效輸出。""");
+            case "最大同時持倉" -> htmlTooltip("""
+                    自動監控同時最多持有幾檔股票。
+                    例：3 代表已有 3 檔 auto-managed 持倉時，不再開新倉。""");
+            case "啟用風控" -> htmlTooltip("""
+                    是否啟用 RiskManager 風控檢查，包含持倉上限、風報比、波動限制等。
+                    例：建議保持啟用，避免只有策略分數通過就直接開倉。""");
+            case "早盤禁開倉" -> htmlTooltip("""
+                    指定早盤時間只收資料不自動開倉，用來避開開盤跳動與資料不足。
+                    例：09:00~09:15 代表 09:15 前不開新倉。""");
+            case "停損冷卻" -> htmlTooltip("""
+                    同一檔股票停損後，冷卻期間不得由自動監控重進。
+                    例：60 分鐘代表 2330.TW 停損後，一小時內不再買回。""");
+            case "當沖週期" -> htmlTooltip("""
+                    自動監控主要判斷用的 K 線週期。
+                    例：5分代表以 M5 判斷 VWAP、EMA、突破、量能延續。""");
+            case "執行確認週期" -> htmlTooltip("""
+                    主週期條件成立後，用較細週期輔助進出場確認。
+                    例：1分可用於更細緻的進場與理由失效觀察。""");
+            case "短線週期", "波段週期" -> htmlTooltip("""
+                    目前自動監控僅支援當沖，短線/波段欄位保留但不生效。
+                    例：未來恢復短線自動監控後才會啟用。""");
+            case "當沖 K 線數量" -> htmlTooltip("""
+                    每次掃描讀取多少根當沖週期 K 線。
+                    例：220 根 M5 約涵蓋多日資料；若指定單日 SQL 回測，仍依資料日期載入。""");
+            case "回測跨日暖機" -> htmlTooltip("""
+                    SQL 雷達回測可先載入指定日期前的 K 線暖機 EMA 等慢速指標，暖機資料不會產生當日交易。
+                    例：B/C 組啟用 120 根 M5 暖機，可避免 EMA34 在單日回測早盤資料不足。""");
+            case "短線 K 線數量", "波段 K 線數量" -> htmlTooltip("""
+                    目前自動監控僅支援當沖，短線/波段 K 線數量不生效。
+                    例：未來恢復短線/波段自動監控後才會使用。""");
+            case "啟用 RSI" -> htmlTooltip("""
+                    是否讓 RSI 策略參與評分與阻擋判斷。
+                    例：啟用後，RSI SHORT 可阻擋 OPEN_LONG，RSI 轉強可加分。""");
+            case "RSI 週期" -> htmlTooltip("""
+                    RSI 計算使用幾根 K 線。
+                    例：9 代表用最近 9 根 K 計算 RSI，較敏感；14 較平滑。""");
+            case "RSI 超賣" -> htmlTooltip("""
+                    RSI 低於此值視為偏超賣，可能產生多方輔助訊號。
+                    例：35 代表 RSI <= 35 才算超賣，但仍需 EMA 或放量反轉確認。""");
+            case "RSI 超買" -> htmlTooltip("""
+                    RSI 高於此值視為偏超買，可能阻擋追高開多。
+                    例：68 代表 RSI >= 68 時，量能突破做多可能被視為追高。""");
+            case "RSI 權重" -> htmlTooltip("""
+                    RSI 在雷達分數中的權重，採 0~1 小數。
+                    例：0.80 代表 RSI 訊號對總分影響較高，但不應單獨決定進場。""");
+            case "啟用均線趨勢" -> htmlTooltip("""
+                    是否使用 EMA/SMA 快慢線判斷趨勢方向。
+                    例：EMA 8 > EMA 34 且斜率向上時，多方結構較佳。""");
+            case "均線類型" -> htmlTooltip("""
+                    選擇均線計算方式。EMA 對近期價格較敏感，SMA 較平滑。
+                    例：當沖通常用 EMA 反應較快。""");
+            case "均線快線" -> htmlTooltip("""
+                    短期均線週期。
+                    例：8 代表 EMA8，用來觀察短線動能。""");
+            case "均線慢線" -> htmlTooltip("""
+                    長期均線週期。
+                    例：34 代表 EMA34，快線大於慢線時偏多。""");
+            case "均線權重" -> htmlTooltip("""
+                    均線趨勢在雷達分數中的權重，採 0~1 小數。
+                    例：0.80 代表 EMA 多頭排列對分數有明顯加分。""");
+            case "阻擋 EMA 單因子進場" -> htmlTooltip("""
+                    EMA 多頭只代表趨勢結構，不讓它單獨觸發當沖開倉。
+                    例：啟用後，EMA8 > EMA34 仍需 RSI 轉強或有效放量突破一起確認。""");
+            case "啟用放量突破" -> htmlTooltip("""
+                    是否檢查價格突破近期高點且成交量放大。
+                    例：收盤突破近 30 根高點，且量大於均量 1.6 倍。""");
+            case "突破回看 K 數" -> htmlTooltip("""
+                    放量突破與近低追價限制會參考最近幾根 K。
+                    例：30 代表用最近 30 根 K 的高點/低點做比較。""");
+            case "成交量倍率" -> htmlTooltip("""
+                    突破 K 的成交量需大於平均量幾倍。
+                    例：1.6 代表目前量 >= 近段平均量 1.6 倍才算放量。""");
+            case "放量權重" -> htmlTooltip("""
+                    放量突破在雷達分數中的權重，採 0~1 小數。
+                    例：0.85 代表有效放量突破會提供較高加分。""");
+            case "尾盤禁止新倉時間" -> htmlTooltip("""
+                    超過此時間後，自動監控不允許新開倉。
+                    例：13:05 代表 13:05 後不再 OPEN_LONG，但仍可掃描與平倉。""");
+            case "雷達最低進場分數" -> htmlTooltip("""
+                    MarketScanner 最終多頭分數需達到此值才允許進場。
+                    例：0.50 代表總分低於 0.50 時直接略過。""");
+            case "量能突破遇 RSI 超買時禁止追高" -> htmlTooltip("""
+                    當放量突破同時 RSI 過熱時，阻擋 OPEN_LONG。
+                    例：RSI >= 68 且剛爆量突破，避免追到短線高點。""");
+            case "量能突破需價格延續確認" -> htmlTooltip("""
+                    放量後價格要維持在突破區上方，避免單根假突破。
+                    例：爆量後下一根立刻跌回突破前區間，會被阻擋。""");
+            case "做多需站上 VWAP" -> htmlTooltip("""
+                    開多前要求價格在自身 VWAP 上方。
+                    例：Close <= VWAP 時，不允許自動監控 OPEN_LONG。""");
+            case "突破後一根 K 確認" -> htmlTooltip("""
+                    要求突破後再等下一根 K 續強才進場，會更保守。
+                    例：突破 K 後下一根沒有站穩高點，會阻擋。""");
+            case "追價限制（近低漲幅）" -> htmlTooltip("""
+                    目前價格距離最近 N 根 K 低點的漲幅上限，採小數比例。
+                    例：0.03 = 從近期低點漲超過 3% 擋單；0 = 關閉此限制。""");
+            case "RSI 接刀需 EMA 或放量確認" -> htmlTooltip("""
+                    RSI 超賣不能單獨開多，必須搭配 EMA 未轉弱或放量反轉。
+                    例：弱勢股 RSI 很低但 EMA 下彎且無放量，會被略過。""");
+            case "啟用內部市場狀態過濾" -> htmlTooltip("""
+                    用觀察清單 SQL 分K 建立內部市場狀態 ALLOW/LIMIT/BLOCK。
+                    例：站上 VWAP 比例太低或平均跌幅過大時，阻擋一般做多。""");
+            case "弱勢盤只允許強勢股開多" -> htmlTooltip("""
+                    WEAK 狀態下只放行相對強勢股，其他 OPEN_LONG 會被擋。
+                    例：個股需站上 VWAP 且強於內部基準與觀察清單群體。""");
+            case "弱勢盤策略" -> htmlTooltip("""
+                    決定 WEAK 盤如何處理做多。
+                    例：BLOCK_ALL 完全不做多；ALLOW_EXTREME_STRENGTH_ONLY 只做極強股。""");
+            case "ALLOW VWAP通過比例%" -> htmlTooltip("""
+                    觀察清單中站上自身 VWAP 的股票比例，達標才偏 ALLOW_LONG。
+                    例：60 表示至少 60% 股票 Close > VWAP。""");
+            case "ALLOW 最低平均漲跌%" -> htmlTooltip("""
+                    觀察清單平均日內漲跌幅需高於此值，才偏允許做多。
+                    例：0.0 表示觀察清單平均至少不能是負報酬。""");
+            case "ALLOW Volume Sustain%" -> htmlTooltip("""
+                    觀察清單中通過量能延續的股票比例，達標才偏 ALLOW_LONG。
+                    例：20 表示至少 20% 股票量能延續有效。""");
+            case "BLOCK VWAP通過低於%" -> htmlTooltip("""
+                    站上 VWAP 比例低於此值時，內部市場偏 BLOCK_LONG。
+                    例：40 表示少於 40% 股票站上 VWAP，環境偏弱。""");
+            case "BLOCK 平均漲跌低於%" -> htmlTooltip("""
+                    觀察清單平均漲跌低於此值時，內部市場偏 BLOCK_LONG。
+                    例：-0.8 表示平均跌幅達 0.8% 以上時偏弱。""");
+            case "BLOCK 創低多於創高檔數" -> htmlTooltip("""
+                    創低家數比創高家數多達此數量時，內部市場偏 BLOCK_LONG。
+                    例：2 表示創低比創高多 2 檔以上就偏弱。""");
+            case "弱勢盤強於內部基準%" -> htmlTooltip("""
+                    WEAK 盤放行時，個股需比觀察清單內部基準強多少。
+                    例：0.3 表示個股日內表現至少多 0.3%。""");
+            case "弱勢盤強於觀察清單群體%" -> htmlTooltip("""
+                    WEAK 盤放行時，個股需比觀察清單平均表現強多少。
+                    例：0.2 表示個股比群體平均至少強 0.2%。""");
+            case "震盪盤要求 VWAP 與量能延續" -> htmlTooltip("""
+                    RANGE 盤提高進場門檻，要求 VWAP 結構與 Volume Sustain。
+                    例：震盪盤中即使分數達標，VWAP 斜率不佳仍會擋。""");
+            case "啟用 Volume Sustain Filter" -> htmlTooltip("""
+                    要求最近 K 線量能能延續，而不是只有單根爆量。
+                    例：突破後量縮且價格跌回突破區，會被阻擋。""");
+            case "啟用 ATR 動態停損停利", "啟用 ATR 停損/停利" -> htmlTooltip("""
+                    使用 ATR 動態計算停損與停利，不用固定百分比。
+                    例：停損 = Entry - ATR x 停損倍數。""");
+            case "啟用 ATR 追高限制" -> htmlTooltip("""
+                    用 ATR 衡量目前價格是否離近期低點太遠。
+                    例：距低點 > ATR x 1.8 時，視為追高並阻擋。""");
+            case "ATR 週期" -> htmlTooltip("""
+                    ATR 計算使用幾根 K 線。
+                    例：14 代表用最近 14 根 K 估算平均波動。""");
+            case "ATR 停損倍數" -> htmlTooltip("""
+                    停損距離用 ATR 的幾倍。
+                    例：1.0 表示停損約放在 Entry - 1 ATR。""");
+            case "ATR 停利倍數" -> htmlTooltip("""
+                    停利距離用 ATR 的幾倍。
+                    例：1.6 表示停利約放在 Entry + 1.6 ATR。""");
+            case "ATR 追高限制倍數" -> htmlTooltip("""
+                    價格距離近期低點不可超過 ATR 幾倍。
+                    例：1.8 表示漲幅超過 1.8 ATR 就擋追高。""");
+            case "單日最大虧損" -> htmlTooltip("""
+                    自動監控當日累計損益低於此值後停止新開倉。
+                    例：-3000 表示今日虧損達 3000 元後停止交易。""");
+            case "單日停損次數上限" -> htmlTooltip("""
+                    當日停損次數達上限後停止新開倉。
+                    例：3 表示今天停損 3 次後不再開新倉。""");
+            case "連續虧損上限" -> htmlTooltip("""
+                    連續虧損達上限後停止新開倉。
+                    例：2 表示連虧 2 筆後啟動熔斷。""");
+            case "觸發日損/連敗後停止今日自動開倉" -> htmlTooltip("""
+                    啟用日損、停損次數或連敗熔斷後停止新開倉。
+                    例：連虧 2 筆後，今日雷達仍掃描但不自動買入。""");
+            case "每日最多交易" -> htmlTooltip("""
+                    自動監控每日最多開幾筆新倉。
+                    例：5 表示一天最多 5 次 OPEN_LONG。""");
+            case "開單間隔分鐘" -> htmlTooltip("""
+                    任兩筆自動新倉之間至少間隔幾分鐘。
+                    例：5 表示 5 分鐘內最多開 1 筆。""");
+            case "平倉後冷卻分鐘" -> htmlTooltip("""
+                    同股平倉後等待幾分鐘才允許再次開倉。
+                    例：30 表示賣出後 30 分鐘內不再買同一檔。""");
+            case "同一根 5 分 K 只允許 1 筆新倉" -> htmlTooltip("""
+                    限制同一個 M5 時間桶只開一筆新倉，避免同時追多檔。
+                    例：09:35 這根 K 已開一筆，就等下一根 M5。""");
+            case "RANGE 盤啟用時間/動能失效出場" -> htmlTooltip("""
+                    RANGE 盤進場後若一段時間未達指定 R，提前出場或停止持有。
+                    例：進場 25 分鐘未達 +0.5R，視為動能不足。""");
+            case "RANGE 失效等待分鐘" -> htmlTooltip("""
+                    RANGE 盤進場後等待多久檢查動能是否失效。
+                    例：25 表示進場 25 分鐘後若未達標就提前出場。""");
+            case "RANGE 最低達成 R" -> htmlTooltip("""
+                    RANGE 盤等待時間內至少要達到多少 R。
+                    例：0.5 表示至少要浮盈 0.5R，否則視為動能失效。""");
+            case "RANGE 盤 Volume Sustain 失效出場" -> htmlTooltip("""
+                    RANGE 盤持倉中若量能延續失效，提前出場。
+                    例：突破後量縮回落，避免等到固定停損。""");
+            default -> null;
+        };
+    }
+
+    private String htmlTooltip(String text) {
+        String escaped = text.strip()
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+        return "<html><div style='width:360px'>" + escaped.replace("\n", "<br>") + "</div></html>";
+    }
+
+    private void setTooltipRecursively(JComponent component, String tooltip) {
+        component.setToolTipText(tooltip);
+        for (Component child : component.getComponents()) {
+            if (child instanceof JComponent childComponent
+                    && (childComponent.getToolTipText() == null || childComponent.getToolTipText().isBlank())) {
+                setTooltipRecursively(childComponent, tooltip);
+            }
+        }
     }
 
     private void startAutoTrading(boolean showDialog) {
@@ -4767,69 +5289,6 @@ public class MainFrameWithDocking extends JFrame {
         } else if ("WR".equals(indicator)) {
             chartDock.setOverlayIndicator("None");
             chartDock.setSubIndicator("WR");
-        }
-    }
-    
-    private void toggleTrendline() {
-        // 切換趨勢線工具
-        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.TREND_LINE) {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
-            System.out.println("Trendline tool disabled");
-        } else {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.TREND_LINE);
-            System.out.println("Trendline tool enabled");
-        }
-    }
-    
-    private void toggleHorizontalLine() {
-        // 切換水平線工具
-        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.HORIZONTAL_LINE) {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
-            System.out.println("Horizontal line tool disabled");
-        } else {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.HORIZONTAL_LINE);
-            System.out.println("Horizontal line tool enabled");
-        }
-    }
-
-    private void toggleMeasure() {
-        // 切換測量工具
-        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.MEASURE) {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
-            System.out.println("Measure tool disabled");
-        } else {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.MEASURE);
-            System.out.println("Measure tool enabled");
-        }
-    }
-
-    private void toggleFibonacci() {
-        // 切換斐波那契回調工具
-        if (chartDock.getDrawingManager().getCurrentTool() == DrawingManager.DrawingTool.FIBONACCI) {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.NONE);
-            System.out.println("Fibonacci tool disabled");
-        } else {
-            chartDock.setDrawingTool(DrawingManager.DrawingTool.FIBONACCI);
-            System.out.println("Fibonacci tool enabled");
-        }
-    }
-    
-    /**
-     * 切換數據模擬的暫停/開始狀態
-     */
-    private void toggleSimulation(JToggleButton button) {
-        if (button.isSelected()) {
-            // 暫停模擬
-            dataFeed.pause();
-            button.setText("▶ 開始模擬");
-            statusBar.setText("數據模擬已暫停 - 適合查看歷史數據");
-            System.out.println("[MainFrame] 數據模擬已暫停");
-        } else {
-            // 恢復模擬
-            dataFeed.resume();
-            button.setText("⏸ 暫停模擬");
-            statusBar.setText("數據模擬運行中");
-            System.out.println("[MainFrame] 數據模擬已恢復");
         }
     }
     
@@ -5324,33 +5783,6 @@ public class MainFrameWithDocking extends JFrame {
             public void actionPerformed(ActionEvent e) {
                 setTheme(!isDark);
                 isDark = !isDark;
-            }
-        });
-
-        // Ctrl+=: Zoom In
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
-        actionMap.put("zoomIn", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.zoomIn();
-            }
-        });
-
-        // Ctrl+-: Zoom Out
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut");
-        actionMap.put("zoomOut", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.zoomOut();
-            }
-        });
-
-        // Ctrl+0: Zoom Reset
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset");
-        actionMap.put("zoomReset", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.resetZoom();
             }
         });
     }

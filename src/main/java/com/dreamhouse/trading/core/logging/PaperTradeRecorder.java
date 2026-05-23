@@ -52,6 +52,8 @@ public class PaperTradeRecorder {
             "reason",
             "message",
             "tax",
+            "score_components",
+            "long_bonus_components",
             "strategy_name",
             "strategy_details");
 
@@ -87,6 +89,8 @@ public class PaperTradeRecorder {
             "exit_reason",
             "raw_signal_summary",
             "block_reason",
+            "score_components",
+            "long_bonus_components",
             "tax",
             "strategy_name",
             "strategy_details");
@@ -110,6 +114,8 @@ public class PaperTradeRecorder {
             "reason",
             "raw_signal_summary",
             "block_reason",
+            "score_components",
+            "long_bonus_components",
             "strategy_name",
             "strategy_details");
 
@@ -142,7 +148,7 @@ public class PaperTradeRecorder {
         }
         try {
             ensureDirectory();
-            appendOrder(result, decision, source, strategyName, strategyDetails);
+            appendOrder(result, decision, scanResult, source, strategyName, strategyDetails);
             updateCompletedTrade(result, decision, scanResult, source, strategyName, strategyDetails);
         } catch (IOException e) {
             System.err.println("[PaperTradeRecorder] failed to write trade log: " + e.getMessage());
@@ -172,7 +178,7 @@ public class PaperTradeRecorder {
         return outputDirectory.resolve("trade_setups_" + LocalDate.now().format(DATE_FORMAT) + ".csv");
     }
 
-    private void appendOrder(ExecutionResult result, DecisionResult decision, String source, String strategyName, String strategyDetails) throws IOException {
+    private void appendOrder(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) throws IOException {
         appendCsvLine(getTodayOrderLogPath(), ORDER_HEADER, String.join(",",
                 csv(formatTime(result.getExecutionTime())),
                 csv(source),
@@ -196,6 +202,8 @@ public class PaperTradeRecorder {
                 csv(result.getDecisionReason()),
                 csv(result.getMessage()),
                 decimal(result.getTax()),
+                csv(scoreComponents(scanResult)),
+                csv(longBonusComponents(scanResult)),
                 csv(strategyName),
                 csv(strategyDetails)));
     }
@@ -266,6 +274,8 @@ public class PaperTradeRecorder {
                 csv(result.getDecisionReason()),
                 csv(open.rawSignalSummary()),
                 csv(open.blockReason()),
+                csv(open.scoreComponents()),
+                csv(open.longBonusComponents()),
                 decimal(result.getTax()),
                 csv(open.strategyName()),
                 csv(open.strategyDetails())));
@@ -291,8 +301,18 @@ public class PaperTradeRecorder {
                 csv(result.getDecisionReason()),
                 csv(scanResult != null ? scanResult.getRawSignalSummary() : ""),
                 csv(scanResult != null ? scanResult.getBlockReason() : ""),
+                csv(scoreComponents(scanResult)),
+                csv(longBonusComponents(scanResult)),
                 csv(strategyName),
                 csv(strategyDetails)));
+    }
+
+    private static String scoreComponents(MarketScanResult scanResult) {
+        return scanResult != null ? scanResult.getScoreComponentSummary() : "";
+    }
+
+    private static String longBonusComponents(MarketScanResult scanResult) {
+        return scanResult != null ? scanResult.getLongBonusSummary() : "";
     }
 
     private void appendCsvLine(Path path, String header, String line) throws IOException {
@@ -430,6 +450,8 @@ public class PaperTradeRecorder {
         private final Double setupRiskReward;
         private final String rawSignalSummary;
         private final String blockReason;
+        private final String scoreComponents;
+        private final String longBonusComponents;
         private double highestPrice;
         private double lowestPrice;
         private LocalDateTime highestTime;
@@ -450,7 +472,9 @@ public class PaperTradeRecorder {
                 double setupConfidence,
                 Double setupRiskReward,
                 String rawSignalSummary,
-                String blockReason) {
+                String blockReason,
+                String scoreComponents,
+                String longBonusComponents) {
             this.symbol = symbol;
             this.orderId = orderId;
             this.entryTime = entryTime;
@@ -466,6 +490,8 @@ public class PaperTradeRecorder {
             this.setupRiskReward = setupRiskReward;
             this.rawSignalSummary = rawSignalSummary;
             this.blockReason = blockReason;
+            this.scoreComponents = scoreComponents;
+            this.longBonusComponents = longBonusComponents;
             this.highestPrice = entryPrice;
             this.lowestPrice = entryPrice;
             this.highestTime = entryTime;
@@ -488,7 +514,9 @@ public class PaperTradeRecorder {
                     resolveConfidence(decision, scanResult),
                     resolveRiskReward(decision, scanResult),
                     scanResult != null ? scanResult.getRawSignalSummary() : "",
-                    scanResult != null ? scanResult.getBlockReason() : "");
+                    scanResult != null ? scanResult.getBlockReason() : "",
+                    PaperTradeRecorder.scoreComponents(scanResult),
+                    PaperTradeRecorder.longBonusComponents(scanResult));
         }
 
         static OpenTrade fromUnknownEntry(ExecutionResult result, DecisionResult decision) {
@@ -506,6 +534,8 @@ public class PaperTradeRecorder {
                     0.0,
                     resolveConfidence(decision, null),
                     resolveRiskReward(decision, null),
+                    "",
+                    "",
                     "",
                     "");
         }
@@ -582,6 +612,14 @@ public class PaperTradeRecorder {
 
         String blockReason() {
             return blockReason;
+        }
+
+        String scoreComponents() {
+            return scoreComponents;
+        }
+
+        String longBonusComponents() {
+            return longBonusComponents;
         }
 
         double maeAmount(int quantity) {

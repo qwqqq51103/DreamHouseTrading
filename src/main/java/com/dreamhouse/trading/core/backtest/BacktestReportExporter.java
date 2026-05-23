@@ -1,5 +1,7 @@
 package com.dreamhouse.trading.core.backtest;
 
+import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -10,7 +12,9 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -65,10 +69,13 @@ public final class BacktestReportExporter {
                     lifecycle.entryReason()));
         }
         appendSignalObservations(report, result);
+        appendConditionContributionStats(report, result);
+        appendBlockedSignalStats(report, result);
         return report.toString();
     }
 
     public static String generateHtmlReport(BacktestResult result, String strategyName, String configurationSummary) {
+        List<TradeLifecycle> lifecycles = pairTrades(result.getTrades());
         StringBuilder html = new StringBuilder();
         html.append("<!DOCTYPE html><html lang=\"zh-TW\"><head><meta charset=\"UTF-8\">");
         html.append("<title>回測報告 - ").append(escapeHtml(strategyName)).append("</title>");
@@ -95,7 +102,8 @@ public final class BacktestReportExporter {
         addMetric(html, "淨損益", money(result.getFinalValue() - result.getInitialCapital()));
         addMetric(html, "總報酬率", percent(result.getTotalReturn()));
         addMetric(html, "最大回撤", percent(result.getMaxDrawdown()));
-        addMetric(html, "交易筆數", String.valueOf(result.getTotalTrades()));
+        addMetric(html, "訂單筆數", String.valueOf(result.getTotalTrades()));
+        addMetric(html, "完成交易數", String.valueOf(lifecycles.size()));
         addMetric(html, "勝率", percent(result.getWinRate()));
         addMetric(html, "Profit Factor", String.format("%.2f", result.getProfitFactor()));
         html.append("</div></section>");
@@ -113,7 +121,7 @@ public final class BacktestReportExporter {
             html.append("<th>").append(escapeHtml(header)).append("</th>");
         }
         html.append("</tr></thead><tbody>");
-        for (TradeLifecycle lifecycle : pairTrades(result.getTrades())) {
+        for (TradeLifecycle lifecycle : lifecycles) {
             String profitClass = lifecycle.netProfit() >= 0 ? "profit" : "loss";
             html.append("<tr>");
             html.append(td(lifecycle.tradeId()));
@@ -139,6 +147,8 @@ public final class BacktestReportExporter {
         }
         html.append("</tbody></table></section>");
         appendSignalObservationsHtml(html, result);
+        appendConditionContributionStatsHtml(html, result);
+        appendBlockedSignalStatsHtml(html, result);
         html.append("</body></html>");
         return html.toString();
     }
@@ -196,7 +206,7 @@ public final class BacktestReportExporter {
                     "訊號時間", "股票", "動作", "是否阻擋", "分數",
                     "MarketDecision", "MarketRegime", "內部市場狀態", "族群", "觀察清單排名%",
                     "VWAP", "VWAP斜率%", "量能延續", "相對大盤%", "相對族群%",
-                    "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由") + "\n");
+                    "加分明細", "做多加分項", "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由") + "\n");
             for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
                 writer.write(String.join(",",
                         csv(format(observation.timestamp())),
@@ -214,11 +224,15 @@ public final class BacktestReportExporter {
                         csv(String.valueOf(observation.volumeSustain())),
                         csv(formatNullable(observation.relativeToBenchmarkPercent())),
                         csv(formatNullable(observation.relativeToIndustryPercent())),
+                        csv(observation.scoreComponents()),
+                        csv(observation.longBonusComponents()),
                         csv(String.format("%.2f", observation.maxFavorablePercent())),
                         csv(String.format("%.2f", observation.maxAdversePercent())),
                         csv(String.format("%.2f", observation.closeReturnPercent())),
                         csv(observation.reason())) + "\n");
             }
+            writeConditionContributionCsv(writer, result);
+            writeBlockedSignalStatsCsv(writer, result);
         }
         return output.getAbsolutePath();
     }
@@ -259,7 +273,8 @@ public final class BacktestReportExporter {
         report.append("淨損益: ").append(money(result.getFinalValue() - result.getInitialCapital())).append('\n');
         report.append("總報酬率: ").append(percent(result.getTotalReturn())).append('\n');
         report.append("最大回撤: ").append(percent(result.getMaxDrawdown())).append('\n');
-        report.append("交易筆數: ").append(result.getTotalTrades()).append('\n');
+        report.append("訂單筆數: ").append(result.getTotalTrades()).append('\n');
+        report.append("完成交易數: ").append(pairTrades(result.getTrades()).size()).append('\n');
         report.append("勝率: ").append(percent(result.getWinRate())).append('\n');
         report.append("Profit Factor: ").append(String.format("%.2f", result.getProfitFactor())).append("\n\n");
     }
@@ -276,10 +291,10 @@ public final class BacktestReportExporter {
         }
         report.append("\n訊號與阻擋後續表現:\n");
         report.append("-".repeat(120)).append('\n');
-        report.append("時間, 股票, 動作, 是否阻擋, 分數, MarketDecision, MarketRegime, 內部市場狀態, 族群, 觀察清單排名%, 後續最大漲幅%, 後續最大回撤%, 收盤報酬%, 理由\n");
+        report.append("時間, 股票, 動作, 是否阻擋, 分數, MarketDecision, MarketRegime, 內部市場狀態, 族群, 觀察清單排名%, VWAP, VWAP斜率%, 量能延續, 相對大盤%, 相對族群%, 加分明細, 做多加分項, 後續最大漲幅%, 後續最大回撤%, 收盤報酬%, 理由\n");
         for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
             report.append(String.format(
-                    "%s, %s, %s, %s, %.3f, %s, %s, %s, %s, %s, %.2f, %.2f, %.2f, %s%n",
+                    "%s, %s, %s, %s, %.3f, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %.2f, %.2f, %.2f, %s%n",
                     format(observation.timestamp()),
                     observation.symbol(),
                     observation.action(),
@@ -290,10 +305,61 @@ public final class BacktestReportExporter {
                     observation.internalMarketState(),
                     observation.industry(),
                     formatNullable(observation.watchlistRankPercent()),
+                    formatNullable(observation.vwap()),
+                    formatNullable(observation.vwapSlopePercent()),
+                    observation.volumeSustain(),
+                    formatNullable(observation.relativeToBenchmarkPercent()),
+                    formatNullable(observation.relativeToIndustryPercent()),
+                    observation.scoreComponents(),
+                    observation.longBonusComponents(),
                     observation.maxFavorablePercent(),
                     observation.maxAdversePercent(),
                     observation.closeReturnPercent(),
                     observation.reason()));
+        }
+    }
+
+    private static void appendConditionContributionStats(StringBuilder report, BacktestResult result) {
+        List<ConditionContributionStat> stats = conditionContributionStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        report.append("\n加分條件貢獻統計:\n");
+        report.append("-".repeat(120)).append('\n');
+        report.append("條件, 評估數, 做多通過, 未通過, 平均LONG加分, 通過後最大漲幅%, 通過後最大回撤%, 通過後收盤報酬%, 未通過後最大漲幅%, 未通過後最大回撤%, 未通過後收盤報酬%\n");
+        for (ConditionContributionStat stat : stats) {
+            report.append(String.format(
+                    "%s, %d, %d, %d, %.3f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f%n",
+                    stat.condition(),
+                    stat.evaluatedCount(),
+                    stat.longPassCount(),
+                    stat.nonLongCount(),
+                    stat.averageLongContribution(),
+                    stat.passPerformance().averageMaxFavorable(),
+                    stat.passPerformance().averageMaxAdverse(),
+                    stat.passPerformance().averageCloseReturn(),
+                    stat.nonLongPerformance().averageMaxFavorable(),
+                    stat.nonLongPerformance().averageMaxAdverse(),
+                    stat.nonLongPerformance().averageCloseReturn()));
+        }
+    }
+
+    private static void appendBlockedSignalStats(StringBuilder report, BacktestResult result) {
+        List<BlockedSignalStat> stats = blockedSignalStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        report.append("\n硬阻擋後續統計:\n");
+        report.append("-".repeat(120)).append('\n');
+        report.append("阻擋類型, 阻擋數, 後續最大漲幅%, 後續最大回撤%, 收盤報酬%\n");
+        for (BlockedSignalStat stat : stats) {
+            report.append(String.format(
+                    "%s, %d, %.2f, %.2f, %.2f%n",
+                    stat.reason(),
+                    stat.performance().count(),
+                    stat.performance().averageMaxFavorable(),
+                    stat.performance().averageMaxAdverse(),
+                    stat.performance().averageCloseReturn()));
         }
     }
 
@@ -303,7 +369,9 @@ public final class BacktestReportExporter {
         }
         html.append("<section><h3>訊號與阻擋後續表現</h3><table><thead><tr>");
         String[] headers = {"時間", "股票", "動作", "阻擋", "分數", "MarketDecision", "MarketRegime",
-                "內部市場狀態", "族群", "觀察清單排名%", "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由"};
+                "內部市場狀態", "族群", "觀察清單排名%", "VWAP", "VWAP斜率%", "量能延續",
+                "相對大盤%", "相對族群%", "加分明細", "做多加分項",
+                "後續最大漲幅%", "後續最大回撤%", "收盤報酬%", "理由"};
         for (String header : headers) {
             html.append("<th>").append(escapeHtml(header)).append("</th>");
         }
@@ -320,6 +388,13 @@ public final class BacktestReportExporter {
             html.append(td(observation.internalMarketState()));
             html.append(td(observation.industry()));
             html.append(td(formatNullable(observation.watchlistRankPercent())));
+            html.append(td(formatNullable(observation.vwap())));
+            html.append(td(formatNullable(observation.vwapSlopePercent())));
+            html.append(td(String.valueOf(observation.volumeSustain())));
+            html.append(td(formatNullable(observation.relativeToBenchmarkPercent())));
+            html.append(td(formatNullable(observation.relativeToIndustryPercent())));
+            html.append("<td class=\"reason\">").append(escapeHtml(observation.scoreComponents())).append("</td>");
+            html.append("<td class=\"reason\">").append(escapeHtml(observation.longBonusComponents())).append("</td>");
             html.append(td(String.format("%.2f", observation.maxFavorablePercent())));
             html.append(td(String.format("%.2f", observation.maxAdversePercent())));
             html.append(td(String.format("%.2f", observation.closeReturnPercent())));
@@ -327,6 +402,261 @@ public final class BacktestReportExporter {
             html.append("</tr>");
         }
         html.append("</tbody></table></section>");
+    }
+
+    private static void appendConditionContributionStatsHtml(StringBuilder html, BacktestResult result) {
+        List<ConditionContributionStat> stats = conditionContributionStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        html.append("<section><h3>加分條件貢獻統計</h3><table><thead><tr>");
+        String[] headers = {"條件", "評估數", "做多通過", "未通過", "平均LONG加分",
+                "通過後最大漲幅%", "通過後最大回撤%", "通過後收盤報酬%",
+                "未通過後最大漲幅%", "未通過後最大回撤%", "未通過後收盤報酬%"};
+        for (String header : headers) {
+            html.append("<th>").append(escapeHtml(header)).append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        for (ConditionContributionStat stat : stats) {
+            html.append("<tr>");
+            html.append(td(stat.condition()));
+            html.append(td(String.valueOf(stat.evaluatedCount())));
+            html.append(td(String.valueOf(stat.longPassCount())));
+            html.append(td(String.valueOf(stat.nonLongCount())));
+            html.append(td(String.format("%.3f", stat.averageLongContribution())));
+            html.append(td(String.format("%.2f", stat.passPerformance().averageMaxFavorable())));
+            html.append(td(String.format("%.2f", stat.passPerformance().averageMaxAdverse())));
+            html.append(td(String.format("%.2f", stat.passPerformance().averageCloseReturn())));
+            html.append(td(String.format("%.2f", stat.nonLongPerformance().averageMaxFavorable())));
+            html.append(td(String.format("%.2f", stat.nonLongPerformance().averageMaxAdverse())));
+            html.append(td(String.format("%.2f", stat.nonLongPerformance().averageCloseReturn())));
+            html.append("</tr>");
+        }
+        html.append("</tbody></table></section>");
+    }
+
+    private static void appendBlockedSignalStatsHtml(StringBuilder html, BacktestResult result) {
+        List<BlockedSignalStat> stats = blockedSignalStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        html.append("<section><h3>硬阻擋後續統計</h3><table><thead><tr>");
+        String[] headers = {"阻擋類型", "阻擋數", "後續最大漲幅%", "後續最大回撤%", "收盤報酬%"};
+        for (String header : headers) {
+            html.append("<th>").append(escapeHtml(header)).append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        for (BlockedSignalStat stat : stats) {
+            html.append("<tr>");
+            html.append("<td class=\"reason\">").append(escapeHtml(stat.reason())).append("</td>");
+            html.append(td(String.valueOf(stat.performance().count())));
+            html.append(td(String.format("%.2f", stat.performance().averageMaxFavorable())));
+            html.append(td(String.format("%.2f", stat.performance().averageMaxAdverse())));
+            html.append(td(String.format("%.2f", stat.performance().averageCloseReturn())));
+            html.append("</tr>");
+        }
+        html.append("</tbody></table></section>");
+    }
+
+    private static void writeConditionContributionCsv(OutputStreamWriter writer, BacktestResult result) throws IOException {
+        List<ConditionContributionStat> stats = conditionContributionStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        writer.write('\n');
+        writer.write(String.join(",",
+                "條件", "評估數", "做多通過", "未通過", "平均LONG加分",
+                "通過後最大漲幅%", "通過後最大回撤%", "通過後收盤報酬%",
+                "未通過後最大漲幅%", "未通過後最大回撤%", "未通過後收盤報酬%") + "\n");
+        for (ConditionContributionStat stat : stats) {
+            writer.write(String.join(",",
+                    csv(stat.condition()),
+                    csv(String.valueOf(stat.evaluatedCount())),
+                    csv(String.valueOf(stat.longPassCount())),
+                    csv(String.valueOf(stat.nonLongCount())),
+                    csv(String.format("%.3f", stat.averageLongContribution())),
+                    csv(String.format("%.2f", stat.passPerformance().averageMaxFavorable())),
+                    csv(String.format("%.2f", stat.passPerformance().averageMaxAdverse())),
+                    csv(String.format("%.2f", stat.passPerformance().averageCloseReturn())),
+                    csv(String.format("%.2f", stat.nonLongPerformance().averageMaxFavorable())),
+                    csv(String.format("%.2f", stat.nonLongPerformance().averageMaxAdverse())),
+                    csv(String.format("%.2f", stat.nonLongPerformance().averageCloseReturn()))) + "\n");
+        }
+    }
+
+    private static void writeBlockedSignalStatsCsv(OutputStreamWriter writer, BacktestResult result) throws IOException {
+        List<BlockedSignalStat> stats = blockedSignalStats(result);
+        if (stats.isEmpty()) {
+            return;
+        }
+        writer.write('\n');
+        writer.write(String.join(",", "阻擋類型", "阻擋數", "後續最大漲幅%", "後續最大回撤%", "收盤報酬%") + "\n");
+        for (BlockedSignalStat stat : stats) {
+            writer.write(String.join(",",
+                    csv(stat.reason()),
+                    csv(String.valueOf(stat.performance().count())),
+                    csv(String.format("%.2f", stat.performance().averageMaxFavorable())),
+                    csv(String.format("%.2f", stat.performance().averageMaxAdverse())),
+                    csv(String.format("%.2f", stat.performance().averageCloseReturn()))) + "\n");
+        }
+    }
+
+    private static List<ConditionContributionStat> conditionContributionStats(BacktestResult result) {
+        if (result == null || result.getSignalObservations().isEmpty()) {
+            return List.of();
+        }
+        Map<String, ConditionContributionAccumulator> accumulators = new LinkedHashMap<>();
+        for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+            for (var component : observation.scoreComponentDetails()) {
+                if (component == null || component.name() == null || component.name().isBlank()) {
+                    continue;
+                }
+                accumulators.computeIfAbsent(component.name(), ConditionContributionAccumulator::new)
+                        .add(component, observation);
+            }
+        }
+        return accumulators.values().stream()
+                .map(ConditionContributionAccumulator::toStat)
+                .sorted(Comparator.comparingInt(ConditionContributionStat::evaluatedCount).reversed()
+                        .thenComparing(ConditionContributionStat::condition))
+                .toList();
+    }
+
+    private static List<BlockedSignalStat> blockedSignalStats(BacktestResult result) {
+        if (result == null || result.getSignalObservations().isEmpty()) {
+            return List.of();
+        }
+        Map<String, PerformanceAccumulator> accumulators = new HashMap<>();
+        for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
+            if (!observation.blocked()) {
+                continue;
+            }
+            String reason = normalizeBlockReason(observation.reason());
+            accumulators.computeIfAbsent(reason, ignored -> new PerformanceAccumulator()).add(observation);
+        }
+        return accumulators.entrySet().stream()
+                .map(entry -> new BlockedSignalStat(entry.getKey(), entry.getValue().toStat()))
+                .sorted(Comparator.comparingInt((BlockedSignalStat stat) -> stat.performance().count()).reversed()
+                        .thenComparing(BlockedSignalStat::reason))
+                .toList();
+    }
+
+    private static String normalizeBlockReason(String reason) {
+        String text = reason != null && !reason.isBlank() ? reason : "未提供阻擋原因";
+        if (text.contains("SignalRSI=SHORT")) {
+            return "SignalRSI=SHORT";
+        }
+        if (text.contains("RSI 超賣訊號缺少")) {
+            return "RSI 接刀缺少確認";
+        }
+        if (text.contains("Volume Sustain") || text.contains("量能延續")) {
+            return "Volume Sustain 未通過";
+        }
+        if (text.contains("VWAP 斜率") || text.contains("VWAP斜率")) {
+            return "VWAP 斜率未向上";
+        }
+        if (text.contains("未站上 VWAP") || text.contains("低於 VWAP")) {
+            return "未站上 VWAP";
+        }
+        if (text.contains("ATR") && text.contains("追")) {
+            return "ATR 追價限制";
+        }
+        if (text.contains("追價限制")) {
+            return "近期低點追價限制";
+        }
+        if (text.contains("最低進場分數") || (text.contains("分數") && text.contains("低於"))) {
+            return "最低進場分數";
+        }
+        if (text.contains("弱勢盤")) {
+            return "弱勢盤阻擋";
+        }
+        if (text.contains("突破後")) {
+            return "突破確認未通過";
+        }
+        return text.replaceAll("\\s+", " ").trim();
+    }
+
+    private static final class ConditionContributionAccumulator {
+        private final String condition;
+        private final PerformanceAccumulator passPerformance = new PerformanceAccumulator();
+        private final PerformanceAccumulator nonLongPerformance = new PerformanceAccumulator();
+        private int evaluatedCount;
+        private int longPassCount;
+        private double longContributionSum;
+
+        private ConditionContributionAccumulator(String condition) {
+            this.condition = condition;
+        }
+
+        private void add(RadarScoreComponent component, BacktestResult.SignalObservation observation) {
+            evaluatedCount++;
+            if (component.contributesToLong()) {
+                longPassCount++;
+                longContributionSum += component.longContribution();
+                passPerformance.add(observation);
+            } else {
+                nonLongPerformance.add(observation);
+            }
+        }
+
+        private ConditionContributionStat toStat() {
+            return new ConditionContributionStat(
+                    condition,
+                    evaluatedCount,
+                    longPassCount,
+                    Math.max(0, evaluatedCount - longPassCount),
+                    longPassCount > 0 ? longContributionSum / longPassCount : 0.0,
+                    passPerformance.toStat(),
+                    nonLongPerformance.toStat());
+        }
+    }
+
+    private static final class PerformanceAccumulator {
+        private int count;
+        private double maxFavorableSum;
+        private double maxAdverseSum;
+        private double closeReturnSum;
+
+        private void add(BacktestResult.SignalObservation observation) {
+            if (observation == null) {
+                return;
+            }
+            count++;
+            maxFavorableSum += observation.maxFavorablePercent();
+            maxAdverseSum += observation.maxAdversePercent();
+            closeReturnSum += observation.closeReturnPercent();
+        }
+
+        private PerformanceStat toStat() {
+            if (count == 0) {
+                return new PerformanceStat(0, 0.0, 0.0, 0.0);
+            }
+            return new PerformanceStat(
+                    count,
+                    maxFavorableSum / count,
+                    maxAdverseSum / count,
+                    closeReturnSum / count);
+        }
+    }
+
+    private record ConditionContributionStat(
+            String condition,
+            int evaluatedCount,
+            int longPassCount,
+            int nonLongCount,
+            double averageLongContribution,
+            PerformanceStat passPerformance,
+            PerformanceStat nonLongPerformance) {
+    }
+
+    private record BlockedSignalStat(String reason, PerformanceStat performance) {
+    }
+
+    private record PerformanceStat(
+            int count,
+            double averageMaxFavorable,
+            double averageMaxAdverse,
+            double averageCloseReturn) {
     }
 
     private static void addMetric(StringBuilder html, String label, String value) {

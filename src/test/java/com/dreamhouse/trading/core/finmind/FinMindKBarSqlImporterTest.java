@@ -95,6 +95,83 @@ class FinMindKBarSqlImporterTest {
         }
     }
 
+    @Test
+    void importsOnlyIncompleteSymbolDatesWhenRangeSqlCoverageIsComplete() throws Exception {
+        try (Connection connection = createSchema();
+             MarketDataCollectorRepository repository = new MarketDataCollectorRepository(connection)) {
+            insertCompleteSessionCandles(repository);
+            FakeGateway gateway = new FakeGateway(objectMapper.readTree("""
+                    {"data":[
+                      {"date":"2026-05-12","minute":"09:00","open":200,"high":201,"low":199,"close":200.5,"volume":10}
+                    ]}
+                    """));
+            FinMindKBarSqlImporter importer = new FinMindKBarSqlImporter(gateway, repository);
+
+            FinMindKBarSqlImporter.RangeImportResult result = importer.importMissingSymbols(
+                    List.of("2330.TW", "2317.TW"),
+                    LocalDate.of(2026, 5, 12),
+                    LocalDate.of(2026, 5, 12));
+
+            assertThat(result.apiRequests()).isEqualTo(1);
+            assertThat(result.successImports()).isEqualTo(1);
+            assertThat(result.skippedExisting()).isEqualTo(1);
+            assertThat(gateway.queryCount).isEqualTo(1);
+            assertThat(gateway.lastRequest.getDataId()).isEqualTo("2317");
+            assertThat(result.dateResults().get(0).symbolResults())
+                    .extracting(FinMindKBarSqlImporter.SymbolImportResult::symbol,
+                            FinMindKBarSqlImporter.SymbolImportResult::skippedExisting)
+                    .containsExactly(
+                            org.assertj.core.groups.Tuple.tuple("2330.TW", true),
+                            org.assertj.core.groups.Tuple.tuple("2317.TW", false));
+        }
+    }
+
+    @Test
+    void importsPartialSqlSessionInsteadOfTreatingOneCandleAsComplete() throws Exception {
+        try (Connection connection = createSchema();
+             MarketDataCollectorRepository repository = new MarketDataCollectorRepository(connection)) {
+            insertOldCandle(connection);
+            FakeGateway gateway = new FakeGateway(objectMapper.readTree("""
+                    {"data":[
+                      {"date":"2026-05-12","minute":"09:00","open":200,"high":201,"low":199,"close":200.5,"volume":10}
+                    ]}
+                    """));
+            FinMindKBarSqlImporter importer = new FinMindKBarSqlImporter(gateway, repository);
+
+            FinMindKBarSqlImporter.RangeImportResult result = importer.importMissingSymbols(
+                    List.of("2330.TW"),
+                    LocalDate.of(2026, 5, 12),
+                    LocalDate.of(2026, 5, 12));
+
+            assertThat(result.apiRequests()).isEqualTo(1);
+            assertThat(result.successImports()).isEqualTo(1);
+            assertThat(result.skippedExisting()).isZero();
+            assertThat(gateway.queryCount).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void skipsWeekendDatesWithoutCallingFinMind() throws Exception {
+        try (Connection connection = createSchema();
+             MarketDataCollectorRepository repository = new MarketDataCollectorRepository(connection)) {
+            FakeGateway gateway = new FakeGateway(objectMapper.readTree("""
+                    {"data":[
+                      {"date":"2026-05-16","minute":"09:00","open":200,"high":201,"low":199,"close":200.5,"volume":10}
+                    ]}
+                    """));
+            FinMindKBarSqlImporter importer = new FinMindKBarSqlImporter(gateway, repository);
+
+            FinMindKBarSqlImporter.RangeImportResult result = importer.importMissingSymbols(
+                    List.of("2330.TW"),
+                    LocalDate.of(2026, 5, 16),
+                    LocalDate.of(2026, 5, 17));
+
+            assertThat(result.apiRequests()).isZero();
+            assertThat(gateway.queryCount).isZero();
+            assertThat(result.dateResults()).allMatch(FinMindKBarSqlImporter.DateImportResult::marketClosed);
+        }
+    }
+
     private Connection createSchema() throws Exception {
         Connection connection = DriverManager.getConnection("jdbc:h2:mem:" + System.nanoTime() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
         try (Statement statement = connection.createStatement()) {
@@ -127,9 +204,21 @@ class FinMindKBarSqlImporterTest {
         }
     }
 
+    private void insertCompleteSessionCandles(MarketDataCollectorRepository repository) throws Exception {
+        LocalDate date = LocalDate.of(2026, 5, 12);
+        List<Bar> bars = new java.util.ArrayList<>();
+        for (java.time.LocalDateTime timestamp = date.atTime(9, 0);
+             !timestamp.isAfter(date.atTime(13, 20));
+             timestamp = timestamp.plusMinutes(1)) {
+            bars.add(new Bar(timestamp, 100, 101, 99, 100.5, 10));
+        }
+        repository.replaceCandlesForDate("2330.TW", "M1", date, bars);
+    }
+
     private static class FakeGateway implements FinMindGateway {
         private final JsonNode response;
         private FinMindRequest lastRequest;
+        private int queryCount;
 
         private FakeGateway(JsonNode response) {
             this.response = response;
@@ -143,6 +232,7 @@ class FinMindKBarSqlImporterTest {
         @Override
         public JsonNode queryData(FinMindRequest request) {
             lastRequest = request;
+            queryCount++;
             return response;
         }
 

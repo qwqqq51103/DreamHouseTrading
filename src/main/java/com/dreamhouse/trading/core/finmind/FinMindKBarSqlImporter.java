@@ -7,6 +7,7 @@ import com.dreamhouse.trading.util.BarAggregator;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.sql.SQLException;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -68,6 +69,68 @@ public class FinMindKBarSqlImporter {
             }
         }
         return new ImportResult(date, results.size(), successCount, totalBars, List.copyOf(results));
+    }
+
+    public RangeImportResult importMissingSymbols(List<String> symbols, LocalDate startDate, LocalDate endDate) {
+        if (symbols == null || symbols.isEmpty() || startDate == null || endDate == null || endDate.isBefore(startDate)) {
+            return new RangeImportResult(startDate, endDate, 0, 0, 0, 0, 0, 0, List.of());
+        }
+
+        List<String> normalizedSymbols = new ArrayList<>();
+        for (String rawSymbol : symbols) {
+            String symbol = normalizeSymbol(rawSymbol);
+            if (!symbol.isBlank() && !normalizedSymbols.contains(symbol)) {
+                normalizedSymbols.add(symbol);
+            }
+        }
+
+        int daysScanned = 0;
+        int apiRequests = 0;
+        int successImports = 0;
+        int skippedExisting = 0;
+        int totalBars = 0;
+        List<DateImportResult> dateResults = new ArrayList<>();
+        for (LocalDate date = startDate; !date.isAfter(endDate); date = date.plusDays(1)) {
+            daysScanned++;
+            if (isWeekend(date)) {
+                dateResults.add(DateImportResult.marketClosed(date, normalizedSymbols.size()));
+                continue;
+            }
+
+            List<SymbolImportResult> symbolResults = new ArrayList<>();
+            for (String symbol : normalizedSymbols) {
+                MarketDataCollectorRepository.SessionCandleCoverage coverage =
+                        repository.findSessionCandleCoverage(symbol, "M1", date);
+                if (coverage.isCompleteIntradayM1Session()) {
+                    symbolResults.add(SymbolImportResult.skippedComplete(symbol, coverage.describeIntradayM1Coverage()));
+                    skippedExisting++;
+                    continue;
+                }
+                apiRequests++;
+                try {
+                    SymbolImportResult result = importSymbol(symbol, date);
+                    symbolResults.add(result);
+                    if (result.success()) {
+                        successImports++;
+                        totalBars += result.insertedBars();
+                    }
+                } catch (Exception e) {
+                    symbolResults.add(SymbolImportResult.failed(symbol, e.getMessage()));
+                }
+            }
+            dateResults.add(DateImportResult.completed(date, symbolResults));
+        }
+
+        return new RangeImportResult(
+                startDate,
+                endDate,
+                daysScanned,
+                normalizedSymbols.size(),
+                apiRequests,
+                successImports,
+                skippedExisting,
+                totalBars,
+                List.copyOf(dateResults));
     }
 
     public SymbolImportResult importSymbol(String symbol, LocalDate date) throws SQLException {
@@ -174,6 +237,11 @@ public class FinMindKBarSqlImporter {
         return normalized;
     }
 
+    private boolean isWeekend(LocalDate date) {
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        return dayOfWeek == DayOfWeek.SATURDAY || dayOfWeek == DayOfWeek.SUNDAY;
+    }
+
     public record ImportResult(
             LocalDate date,
             int requestedSymbols,
@@ -182,23 +250,55 @@ public class FinMindKBarSqlImporter {
             List<SymbolImportResult> symbolResults) {
     }
 
+    public record RangeImportResult(
+            LocalDate startDate,
+            LocalDate endDate,
+            int daysScanned,
+            int requestedSymbols,
+            int apiRequests,
+            int successImports,
+            int skippedExisting,
+            int totalInsertedBars,
+            List<DateImportResult> dateResults) {
+    }
+
+    public record DateImportResult(
+            LocalDate date,
+            boolean marketClosed,
+            int marketClosedSkippedSymbols,
+            List<SymbolImportResult> symbolResults) {
+
+        static DateImportResult marketClosed(LocalDate date, int skippedSymbols) {
+            return new DateImportResult(date, true, Math.max(0, skippedSymbols), List.of());
+        }
+
+        static DateImportResult completed(LocalDate date, List<SymbolImportResult> symbolResults) {
+            return new DateImportResult(date, false, 0, List.copyOf(symbolResults));
+        }
+    }
+
     public record SymbolImportResult(
             String symbol,
             boolean success,
+            boolean skippedExisting,
             int insertedBars,
             Map<String, Integer> insertedByInterval,
             String message) {
 
         static SymbolImportResult success(String symbol, int insertedBars, Map<String, Integer> insertedByInterval) {
-            return new SymbolImportResult(symbol, true, insertedBars, Map.copyOf(insertedByInterval), "");
+            return new SymbolImportResult(symbol, true, false, insertedBars, Map.copyOf(insertedByInterval), "");
+        }
+
+        static SymbolImportResult skippedComplete(String symbol, String coverage) {
+            return new SymbolImportResult(symbol, false, true, 0, Map.of(), "SQL 分K完整，略過 API（" + coverage + "）");
         }
 
         static SymbolImportResult empty(String symbol) {
-            return new SymbolImportResult(symbol, false, 0, Map.of(), "FinMind 回傳 0 筆分 K");
+            return new SymbolImportResult(symbol, false, false, 0, Map.of(), "FinMind 回傳 0 筆分 K");
         }
 
         static SymbolImportResult failed(String symbol, String message) {
-            return new SymbolImportResult(symbol, false, 0, Map.of(), message != null ? message : "匯入失敗");
+            return new SymbolImportResult(symbol, false, false, 0, Map.of(), message != null ? message : "匯入失敗");
         }
     }
 }

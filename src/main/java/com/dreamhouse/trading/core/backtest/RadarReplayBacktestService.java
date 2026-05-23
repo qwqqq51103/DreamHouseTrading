@@ -94,6 +94,14 @@ public class RadarReplayBacktestService {
     }
 
     public BacktestResult replay(String symbol, List<Bar> sessionBars, MarketScannerService.ScanRequest scanRequest) {
+        return replay(symbol, List.of(), sessionBars, scanRequest);
+    }
+
+    public BacktestResult replay(
+            String symbol,
+            List<Bar> warmupBars,
+            List<Bar> sessionBars,
+            MarketScannerService.ScanRequest scanRequest) {
         if (symbol == null || symbol.isBlank()) {
             throw new IllegalArgumentException("Symbol is required");
         }
@@ -101,17 +109,19 @@ public class RadarReplayBacktestService {
             throw new IllegalArgumentException("At least two bars are required for radar replay");
         }
 
-        List<Bar> bars = sessionBars.stream()
+        List<Bar> session = sessionBars.stream()
                 .filter(bar -> bar != null && bar.getTimestamp() != null)
                 .sorted(java.util.Comparator.comparing(Bar::getTimestamp))
                 .toList();
-        if (bars.size() < 2) {
+        if (session.size() < 2) {
             throw new IllegalArgumentException("No usable bars for radar replay");
         }
+        List<Bar> bars = mergeWarmupBars(warmupBars, session);
+        int sessionStartIndex = Math.max(0, bars.size() - session.size());
 
         BacktestResult result = new BacktestResult(
-                bars.get(0).getTimestamp(),
-                bars.get(bars.size() - 1).getTimestamp(),
+                session.get(0).getTimestamp(),
+                session.get(session.size() - 1).getTimestamp(),
                 initialCapital);
         RollingBarFeed rollingFeed = new RollingBarFeed(symbol, bars);
         MarketScannerService scanner = new MarketScannerService(rollingFeed);
@@ -130,9 +140,9 @@ public class RadarReplayBacktestService {
         Timeframe replayTimeframe = effectiveRequest.getTimeframe() != null
                 ? effectiveRequest.getTimeframe()
                 : Timeframe.M1;
-        int warmupBars = Math.min(Math.max(20, replayTimeframe.getMinutes() >= 5 ? 12 : 30), bars.size());
+        int minimumWarmupBars = Math.min(Math.max(20, replayTimeframe.getMinutes() >= 5 ? 12 : 30), bars.size());
         int lastEntryIndexExclusive = Math.max(0, bars.size() - 1);
-        for (int index = 0; index < bars.size(); index++) {
+        for (int index = sessionStartIndex; index < bars.size(); index++) {
             Bar bar = bars.get(index);
             LocalDateTime barTime = bar.getTimestamp();
             LocalDateTime decisionTime = barTime.plusMinutes(replayTimeframe.getMinutes());
@@ -173,7 +183,7 @@ public class RadarReplayBacktestService {
             if (open == null
                     && !tradingHalted
                     && index < lastEntryIndexExclusive
-                    && index + 1 >= warmupBars
+                    && index + 1 >= minimumWarmupBars
                     && !isEarlyEntryBlock(barTime.toLocalTime())
                     && (cooldownUntil == null || !barTime.isBefore(cooldownUntil))
                     && decisionTime.toLocalTime().isBefore(latestAutoEntryTime)
@@ -181,12 +191,20 @@ public class RadarReplayBacktestService {
                 rollingFeed.setVisibleBarCount(index + 1);
                 MarketScanResult scanResult = scanner.scan(symbol, effectiveRequest.barCount(index + 1));
                 DecisionResult decision = scanResult != null ? scanResult.getDecisionResult() : null;
-                recordSignalObservation(result, symbol, bars, index, scanResult, decision);
                 if (decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
                     Bar entryBar = bars.get(index + 1);
                     double entryPrice = entryBar.getOpen() > 0.0 ? entryBar.getOpen() : entryBar.getClose();
                     LocalDateTime entryTime = entryBar.getTimestamp();
                     int quantity = DAY_TRADE_LOT_SIZE;
+                    String costBlockReason = resolveNetRewardBlockReason(
+                            entryPrice,
+                            quantity,
+                            scanResult.getSuggestedTakeProfit());
+                    if (costBlockReason != null) {
+                        recordSignalObservation(result, symbol, bars, index, scanResult, decision, true, costBlockReason);
+                        continue;
+                    }
+                    recordSignalObservation(result, symbol, bars, index, scanResult, decision, false, null);
                     Trade buy = createBuyTrade(
                             entryTime,
                             symbol,
@@ -206,6 +224,8 @@ public class RadarReplayBacktestService {
                                 scanResult.getSuggestedTakeProfit(),
                                 buy);
                     }
+                } else {
+                    recordSignalObservation(result, symbol, bars, index, scanResult, decision, false, null);
                 }
             }
 
@@ -230,6 +250,21 @@ public class RadarReplayBacktestService {
 
         result.calculate();
         return result;
+    }
+
+    private List<Bar> mergeWarmupBars(List<Bar> warmupBars, List<Bar> sessionBars) {
+        java.util.LinkedHashMap<LocalDateTime, Bar> unique = new java.util.LinkedHashMap<>();
+        if (warmupBars != null) {
+            warmupBars.stream()
+                    .filter(bar -> bar != null && bar.getTimestamp() != null)
+                    .sorted(java.util.Comparator.comparing(Bar::getTimestamp))
+                    .forEach(bar -> unique.put(bar.getTimestamp(), bar));
+        }
+        sessionBars.stream()
+                .filter(bar -> bar != null && bar.getTimestamp() != null)
+                .sorted(java.util.Comparator.comparing(Bar::getTimestamp))
+                .forEach(bar -> unique.put(bar.getTimestamp(), bar));
+        return new ArrayList<>(unique.values());
     }
 
     private Trade createBuyTrade(
@@ -277,7 +312,9 @@ public class RadarReplayBacktestService {
             List<Bar> bars,
             int signalIndex,
             MarketScanResult scanResult,
-            DecisionResult decision) {
+            DecisionResult decision,
+            boolean forceBlocked,
+            String forcedReason) {
         if (scanResult == null) {
             return;
         }
@@ -298,9 +335,9 @@ public class RadarReplayBacktestService {
             maxAdverse = (lowest - basePrice) / basePrice * 100.0;
             closeReturn = (last.getClose() - basePrice) / basePrice * 100.0;
         }
-        boolean blocked = decision == null || decision.getAction() != DecisionResult.Action.OPEN_LONG;
+        boolean blocked = forceBlocked || decision == null || decision.getAction() != DecisionResult.Action.OPEN_LONG;
         String reason = blocked
-                ? firstNonBlank(scanResult.getBlockReason(), decision != null ? decision.getReason() : null)
+                ? firstNonBlank(forcedReason, firstNonBlank(scanResult.getBlockReason(), decision != null ? decision.getReason() : null))
                 : formatEntryReason(scanResult, decision);
         result.addSignalObservation(new BacktestResult.SignalObservation(
                 symbol,
@@ -319,6 +356,9 @@ public class RadarReplayBacktestService {
                 scanResult.getVolumeSustain(),
                 scanResult.getRelativeToBenchmarkPercent(),
                 scanResult.getRelativeToIndustryPercent(),
+                scanResult.getScoreComponents(),
+                scanResult.getScoreComponentSummary(),
+                scanResult.getLongBonusSummary(),
                 maxFavorable,
                 maxAdverse,
                 closeReturn));
@@ -342,7 +382,27 @@ public class RadarReplayBacktestService {
         if (scanResult.getRiskRewardRatio() != null) {
             parts.add(String.format("RR %.2f", scanResult.getRiskRewardRatio()));
         }
+        if (scanResult.getScoreComponentSummary() != null && !scanResult.getScoreComponentSummary().isBlank()) {
+            parts.add("加分明細 " + scanResult.getScoreComponentSummary());
+        }
         return String.join(" | ", parts);
+    }
+
+    private String resolveNetRewardBlockReason(double entryPrice, int quantity, Double takeProfit) {
+        if (entryPrice <= 0.0 || quantity <= 0 || takeProfit == null || takeProfit <= entryPrice) {
+            return "成本後停利空間不足：缺少有效停利價";
+        }
+        Trade buy = createBuyTrade(LocalDateTime.MIN, "COST_CHECK", quantity, entryPrice, null, takeProfit, "");
+        Trade sellAtTarget = createSellTrade(LocalDateTime.MIN, "COST_CHECK", quantity, takeProfit, null, takeProfit, "");
+        double netReward = sellAtTarget.getNetProceeds() - buy.getTotalCost();
+        if (netReward <= 0.0) {
+            return String.format(
+                    "成本後停利空間不足：進場 %.2f、停利 %.2f，目標淨利 %.2f",
+                    entryPrice,
+                    takeProfit,
+                    netReward);
+        }
+        return null;
     }
 
     private boolean isEarlyEntryBlock(LocalTime time) {

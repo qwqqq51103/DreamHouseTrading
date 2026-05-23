@@ -35,9 +35,19 @@ public class InternalMarketContextService {
     }
 
     public MarketContextSnapshot build(Collection<String> symbols, Timeframe timeframe, int barCount, LocalDate queryDate) {
+        return build(symbols, timeframe, barCount, queryDate, null);
+    }
+
+    public MarketContextSnapshot build(
+            Collection<String> symbols,
+            Timeframe timeframe,
+            int barCount,
+            LocalDate queryDate,
+            RadarStrategyConfig config) {
         if (dataFeed == null || symbols == null || symbols.isEmpty()) {
             return MarketContextSnapshot.empty("觀察清單內部市場資料不足");
         }
+        RadarStrategyConfig effectiveConfig = config != null ? config : RadarStrategyConfig.createDefault();
         Timeframe safeTimeframe = timeframe != null ? timeframe : Timeframe.M5;
         int safeBarCount = Math.max(20, barCount);
 
@@ -87,7 +97,8 @@ public class InternalMarketContextService {
                 vwapPassPercent,
                 volumeSustainPercent,
                 newHighCount,
-                newLowCount);
+                newLowCount,
+                effectiveConfig);
         MarketRegime regime = switch (decision) {
             case ALLOW_LONG -> MarketRegime.TREND_UP;
             case LIMIT_LONG -> MarketRegime.RANGE;
@@ -150,13 +161,15 @@ public class InternalMarketContextService {
 
         return new MarketContextSnapshot(
                 regime,
-                String.format("InternalMarketDecision=%s avgReturn=%.2f%% vwapPass=%.1f%% volumeSustain=%.1f%% newHigh=%d newLow=%d",
+                String.format("InternalMarketDecision=%s avgReturn=%.2f%% vwapPass=%.1f%% volumeSustain=%.1f%% newHigh=%d newLow=%d allowVwap>=%.1f blockVwap<%.1f",
                         decision,
                         averageReturn,
                         vwapPassPercent,
                         volumeSustainPercent,
                         newHighCount,
-                        newLowCount),
+                        newLowCount,
+                        effectiveConfig.getInternalAllowVwapPassPercent(),
+                        effectiveConfig.getInternalBlockVwapPassPercent()),
                 internalMetric,
                 internalMetric,
                 symbolContexts,
@@ -189,11 +202,17 @@ public class InternalMarketContextService {
             double vwapPassPercent,
             double volumeSustainPercent,
             int newHighCount,
-            int newLowCount) {
-        if (vwapPassPercent < 40.0 || averageReturn <= -0.8 || newLowCount > newHighCount + 2) {
+            int newLowCount,
+            RadarStrategyConfig config) {
+        RadarStrategyConfig effectiveConfig = config != null ? config : RadarStrategyConfig.createDefault();
+        if (vwapPassPercent < effectiveConfig.getInternalBlockVwapPassPercent()
+                || averageReturn <= effectiveConfig.getInternalBlockAverageReturnPercent()
+                || newLowCount > newHighCount + effectiveConfig.getInternalBlockNewLowExcessCount()) {
             return MarketDecision.BLOCK_LONG;
         }
-        if (vwapPassPercent >= 60.0 && averageReturn >= 0.0 && volumeSustainPercent >= 20.0) {
+        if (vwapPassPercent >= effectiveConfig.getInternalAllowVwapPassPercent()
+                && averageReturn >= effectiveConfig.getInternalAllowAverageReturnPercent()
+                && volumeSustainPercent >= effectiveConfig.getInternalAllowVolumeSustainPercent()) {
             return MarketDecision.ALLOW_LONG;
         }
         return MarketDecision.LIMIT_LONG;

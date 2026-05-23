@@ -53,6 +53,10 @@ class MarketScannerServiceTest {
         assertThat(result.getDecisionResult().getAction()).isEqualTo(DecisionResult.Action.OPEN_LONG);
         assertThat(result.getRawSignalSummary()).contains("MovingAverageTrend");
         assertThat(result.getRawSignalSummary()).contains("VolumeBreakout");
+        assertThat(result.getScoreComponents())
+                .extracting(RadarScoreComponent::name)
+                .contains("MovingAverageTrend", "VolumeBreakout");
+        assertThat(result.getLongBonusSummary()).contains("MovingAverageTrend", "long=");
     }
 
     @Test
@@ -167,6 +171,43 @@ class MarketScannerServiceTest {
     }
 
     @Test
+    void confirmedBreakoutFollowThroughCanConfirmBlockedMovingAverageOnlyEntry() {
+        MarketScannerService scanner = new MarketScannerService(new ConfirmedBreakoutFollowThroughFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setMovingAverageWeight(1.0);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setVolumeBreakoutWeight(1.0);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setRequireBreakoutNextBarConfirmation(true);
+        radarConfig.setBlockMovingAverageOnlyEntry(true);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isTrue();
+        assertThat(result.getRawSignalSummary()).contains("MovingAverageTrend:LONG");
+        assertThat(result.getRawSignalSummary()).doesNotContain("VolumeBreakout:LONG");
+    }
+
+    @Test
     void chaseLimitBlocksEntriesFarAboveRecentLow() {
         MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
         DecisionConfig decisionConfig = DecisionConfig.createAggressive();
@@ -204,9 +245,95 @@ class MarketScannerServiceTest {
         RadarStrategyConfig config = RadarStrategyConfig.createBConvergenceTemplate();
 
         assertThat(config.isRequireBreakoutNextBarConfirmation()).isFalse();
+        assertThat(config.isBlockMovingAverageOnlyEntry()).isFalse();
         assertThat(config.getMaxEntryRiseFromRecentLowPercent()).isEqualTo(0.03);
         assertThat(config.isRequirePriceAboveVwapForLong()).isTrue();
         assertThat(config.isRequireBreakoutContinuation()).isTrue();
+    }
+
+    @Test
+    void movingAverageOnlyEntryIsBlockedWhenAdditionalConfirmationIsRequired() {
+        MarketScannerService scanner = new MarketScannerService(new SmoothUptrendFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.05);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setMovingAverageWeight(1.0);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(10.0);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setRequireBreakoutContinuation(false);
+        radarConfig.setBlockMovingAverageOnlyEntry(true);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getRawSignalSummary()).contains("MovingAverageTrend:LONG");
+        assertThat(result.getRawSignalSummary()).doesNotContain("VolumeBreakout:LONG");
+        assertThat(result.getBlockReason()).contains("EMA");
+    }
+
+    @Test
+    void noEntrySignalIsSplitIntoConcreteRadarReasons() {
+        MarketScannerService scanner = new MarketScannerService(new DowntrendFeed());
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.95);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(10.0);
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig));
+
+        assertThat(result.getBlockReason()).contains("未進場");
+        assertThat(result.getBlockReason()).doesNotContain("No entry signal");
+    }
+
+    @Test
+    void dayTradeAbcTemplatesDisableInternalMarketFilterAndExposeWarmupComparison() {
+        RadarStrategyConfig groupA = RadarStrategyConfig.createDayTradeGroupATemplate();
+        RadarStrategyConfig groupB = RadarStrategyConfig.createDayTradeGroupBTemplate();
+        RadarStrategyConfig groupC = RadarStrategyConfig.createDayTradeGroupCTemplate();
+
+        assertThat(groupA.getFastMovingAveragePeriod()).isEqualTo(8);
+        assertThat(groupA.getSlowMovingAveragePeriod()).isEqualTo(21);
+        assertThat(groupA.isBacktestCrossDayWarmupEnabled()).isFalse();
+        assertThat(groupB.getSlowMovingAveragePeriod()).isEqualTo(34);
+        assertThat(groupB.isBacktestCrossDayWarmupEnabled()).isTrue();
+        assertThat(groupC.isBacktestCrossDayWarmupEnabled()).isTrue();
+        assertThat(groupC.isBlockMovingAverageOnlyEntry()).isTrue();
+        assertThat(groupC.isRequireBreakoutNextBarConfirmation()).isTrue();
+        assertThat(groupC.getVolumeMultiplier()).isLessThan(groupB.getVolumeMultiplier());
+        assertThat(List.of(groupA, groupB, groupC))
+                .allSatisfy(config -> assertThat(config.isMarketRegimeFilterEnabled()).isFalse());
     }
 
     @Test
@@ -399,6 +526,104 @@ class MarketScannerServiceTest {
                     close - 0.2,
                     close + 3.0,
                     5_000));
+            return bars;
+        }
+    }
+
+    private static class SmoothUptrendFeed implements MarketDataFeed {
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            List<Bar> bars = new ArrayList<>();
+            LocalDateTime start = LocalDateTime.of(2026, 1, 1, 9, 0);
+            double close = 100.0;
+            for (int i = 0; i < 80; i++) {
+                double open = close;
+                close += 0.15;
+                bars.add(new Bar(
+                        start.plusMinutes(i),
+                        open,
+                        close + 0.05,
+                        open - 0.05,
+                        close,
+                        1_000));
+            }
+            return bars;
+        }
+    }
+
+    private static class ConfirmedBreakoutFollowThroughFeed implements MarketDataFeed {
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            List<Bar> bars = new ArrayList<>();
+            LocalDateTime start = LocalDateTime.of(2026, 1, 1, 9, 0);
+            double close = 100.0;
+            for (int i = 0; i < 78; i++) {
+                double open = close;
+                close += 0.15;
+                bars.add(new Bar(
+                        start.plusMinutes(i),
+                        open,
+                        close + 0.05,
+                        open - 0.05,
+                        close,
+                        1_000));
+            }
+            bars.add(new Bar(
+                    start.plusMinutes(78),
+                    close,
+                    120.20,
+                    close - 0.10,
+                    120.00,
+                    5_000));
+            bars.add(new Bar(
+                    start.plusMinutes(79),
+                    120.00,
+                    120.15,
+                    119.90,
+                    120.10,
+                    1_000));
             return bars;
         }
     }

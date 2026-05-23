@@ -7,6 +7,7 @@ import com.dreamhouse.trading.core.execution.OrderSide;
 import com.dreamhouse.trading.core.execution.OrderStatus;
 import com.dreamhouse.trading.core.execution.OrderType;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
+import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,6 +40,13 @@ class PaperTradeRecorderTest {
                 .score(0.77)
                 .riskRewardRatio(2.1)
                 .rawSignalSummary("RSI:LONG 82%")
+                .scoreComponents(List.of(new RadarScoreComponent(
+                        "SignalRSI",
+                        "LONG",
+                        0.82,
+                        0.9,
+                        0.738,
+                        "RSI oversold")))
                 .blockReason("")
                 .build();
         ExecutionResult open = new ExecutionResult.Builder()
@@ -89,10 +97,10 @@ class PaperTradeRecorderTest {
         List<String> trades = Files.readAllLines(recorder.getTodayCompletedTradeLogPath());
 
         assertThat(orders).hasSize(3);
-        assertThat(orders.get(1)).contains("OPEN-1", "BUY", "entry signal");
+        assertThat(orders.get(1)).contains("OPEN-1", "BUY", "entry signal", "SignalRSI[LONG");
         assertThat(orders.get(2)).contains("CLOSE-1", "SELL", "480.000000");
         assertThat(setups).hasSize(2);
-        assertThat(setups.get(1)).contains("OPEN-1", "2330.TW", "0.770000", "RSI:LONG 82%");
+        assertThat(setups.get(1)).contains("OPEN-1", "2330.TW", "0.770000", "RSI:LONG 82%", "SignalRSI[LONG");
         assertThat(trades).hasSize(2);
         assertThat(trades.get(1)).contains(
                 "OPEN-1",
@@ -104,7 +112,8 @@ class PaperTradeRecorderTest {
                 "480.000000",
                 "-100.000000",
                 "600.000000",
-                "RSI:LONG 82%");
+                "RSI:LONG 82%",
+                "SignalRSI[LONG");
         assertThat(Files.readAllBytes(recorder.getTodayOrderLogPath()))
                 .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
         assertThat(Files.readAllBytes(recorder.getTodaySetupLogPath()))
