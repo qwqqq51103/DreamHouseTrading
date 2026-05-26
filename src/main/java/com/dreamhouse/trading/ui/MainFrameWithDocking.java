@@ -56,14 +56,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -125,6 +129,7 @@ public class MainFrameWithDocking extends JFrame {
     private final Map<String, Double> autoEntryRiskAmounts = new HashMap<>();
     private final Set<String> autoRangeEntries = new java.util.HashSet<>();
     private final Map<String, List<Trade>> latestSqlRadarBacktestTrades = new HashMap<>();
+    private SqlRadarOpeningReplaySession activeSqlRadarReplaySession;
     private final Set<String> autoManagedPositions = new java.util.HashSet<>();
     private final Map<String, LocalDateTime> stopLossCooldownUntil = new HashMap<>();
     private final Set<String> watchlistMarketSubscriptions = new java.util.HashSet<>();
@@ -459,6 +464,14 @@ public class MainFrameWithDocking extends JFrame {
         batchSqlRadarBacktestItem.addActionListener(e -> runSqlRadarBacktestForWatchlist());
         toolsMenu.add(batchSqlRadarBacktestItem);
 
+        JMenuItem sqlRadarReplayItem = new JMenuItem("SQL 雷達開盤重播");
+        sqlRadarReplayItem.addActionListener(e -> startSqlRadarOpeningReplay());
+        toolsMenu.add(sqlRadarReplayItem);
+
+        JMenuItem stopSqlRadarReplayItem = new JMenuItem("停止 SQL 雷達重播");
+        stopSqlRadarReplayItem.addActionListener(e -> stopSqlRadarOpeningReplay());
+        toolsMenu.add(stopSqlRadarReplayItem);
+
         JMenuItem importIndustryItem = new JMenuItem("匯入 FinMind 產業到 SQL");
         importIndustryItem.addActionListener(e -> importFinMindIndustryToSql());
         toolsMenu.add(importIndustryItem);
@@ -610,6 +623,16 @@ public class MainFrameWithDocking extends JFrame {
         batchSqlRadarBacktestBtn.setToolTipText("使用觀察清單全部股票的 SQL K 線批次重跑雷達策略");
         batchSqlRadarBacktestBtn.addActionListener(e -> runSqlRadarBacktestForWatchlist());
         toolBar.add(batchSqlRadarBacktestBtn);
+
+        JButton sqlRadarReplayBtn = new JButton("雷達開盤重播");
+        sqlRadarReplayBtn.setToolTipText("用 SQL 指定日期資料模擬開盤雷達逐步掃描");
+        sqlRadarReplayBtn.addActionListener(e -> startSqlRadarOpeningReplay());
+        toolBar.add(sqlRadarReplayBtn);
+
+        JButton stopSqlRadarReplayBtn = new JButton("停止重播");
+        stopSqlRadarReplayBtn.setToolTipText("停止目前 SQL 雷達開盤重播");
+        stopSqlRadarReplayBtn.addActionListener(e -> stopSqlRadarOpeningReplay());
+        toolBar.add(stopSqlRadarReplayBtn);
         
         toolBar.addSeparator();
 
@@ -2777,21 +2800,7 @@ public class MainFrameWithDocking extends JFrame {
                 if (replayBars == null || replayBars.size() < 2) {
                     throw new IllegalStateException("SQL K 線資料不足，無法回測：" + symbol + " " + selectedQueryDate);
                 }
-                RadarReplayBacktestService service = new RadarReplayBacktestService(
-                        1_000_000.0,
-                        0.001425,
-                        monitorConfig != null && monitorConfig.isEarlyEntryBlockEnabled()
-                                ? monitorConfig.getEarlyEntryBlockStart()
-                                : LocalTime.of(0, 0),
-                        monitorConfig != null && monitorConfig.isEarlyEntryBlockEnabled()
-                                ? monitorConfig.getEarlyEntryBlockEnd()
-                                : LocalTime.of(0, 0),
-                        monitorConfig != null
-                                ? monitorConfig.getLatestAutoEntryTime()
-                                : LocalTime.of(13, 5),
-                        monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()
-                                ? monitorConfig.getStopLossCooldownMinutes()
-                                : 0);
+                RadarReplayBacktestService service = createRadarReplayService();
                 return service.replay(symbol, warmupBars, replayBars, request);
             }
 
@@ -2899,7 +2908,7 @@ public class MainFrameWithDocking extends JFrame {
                 try {
                     BacktestResult combined = get();
                     latestSqlRadarBacktestTrades.clear();
-                    latestSqlRadarBacktestTrades.putAll(tradesBySymbol);
+                    latestSqlRadarBacktestTrades.putAll(groupTradesBySymbol(combined.getTrades()));
                     showSqlRadarBacktestMarkersFor(currentSymbol);
 
                     BacktestResultDialog dialog = new BacktestResultDialog(
@@ -2934,6 +2943,505 @@ public class MainFrameWithDocking extends JFrame {
             }
         };
         worker.execute();
+    }
+
+    private void startSqlRadarOpeningReplay() {
+        SqlRadarReplayConfig config = promptSqlRadarReplayConfig();
+        if (config == null) {
+            return;
+        }
+        if (activeSqlRadarReplaySession != null) {
+            activeSqlRadarReplaySession.stop();
+            activeSqlRadarReplaySession = null;
+        }
+        statusBar.setText("SQL 雷達開盤重播準備中：" + config.date() + "，" + config.symbols().size() + " 檔");
+
+        SwingWorker<SqlRadarOpeningReplaySession, Void> worker = new SwingWorker<>() {
+            @Override
+            protected SqlRadarOpeningReplaySession doInBackground() throws Exception {
+                Timeframe timeframe = resolveRadarTimeframe(TradeMode.DAY_TRADE);
+                MarketScannerService.ScanRequest request = createRadarScanRequest(TradeMode.DAY_TRADE)
+                        .initialCapital(1_000_000.0);
+                Map<String, List<Bar>> sessionBarsBySymbol = new LinkedHashMap<>();
+                Map<String, List<Bar>> warmupBarsBySymbol = new LinkedHashMap<>();
+                List<BacktestResult> replayResults = new ArrayList<>();
+                try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
+                        dataSourceManager.getMarketCollectorJdbcUrl(),
+                        dataSourceManager.getMarketCollectorUser(),
+                        dataSourceManager.getMarketCollectorPassword())) {
+                    MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
+                    RadarReplayBacktestService replayService = createRadarReplayService();
+                    for (String symbol : config.symbols()) {
+                        List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, config.date());
+                        if (bars == null || bars.size() < 2) {
+                            continue;
+                        }
+                        List<Bar> warmupBars = fetchSqlRadarBacktestWarmupBars(sqlFeed, symbol, timeframe, config.date(), request);
+                        sessionBarsBySymbol.put(symbol, bars);
+                        warmupBarsBySymbol.put(symbol, warmupBars);
+                        replayResults.add(replayService.replay(symbol, warmupBars, bars, request));
+                    }
+                }
+                if (sessionBarsBySymbol.isEmpty()) {
+                    throw new IllegalStateException("指定日期沒有可重播的 SQL K 線資料：" + config.date());
+                }
+                BacktestResult combinedResult = replayResults.isEmpty()
+                        ? new BacktestResult(config.date().atTime(config.startTime()), config.date().atTime(config.endTime()), 1_000_000.0)
+                        : combineBacktestResults(replayResults);
+                return new SqlRadarOpeningReplaySession(
+                        config,
+                        timeframe,
+                        request,
+                        sessionBarsBySymbol,
+                        warmupBarsBySymbol,
+                        groupTradesBySymbol(combinedResult.getTrades()));
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    activeSqlRadarReplaySession = get();
+                    activeSqlRadarReplaySession.start();
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    statusBar.setText("SQL 雷達開盤重播失敗：" + cause.getMessage());
+                    JOptionPane.showMessageDialog(
+                            MainFrameWithDocking.this,
+                            "SQL 雷達開盤重播失敗：\n" + cause.getMessage(),
+                            "SQL 雷達開盤重播",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void stopSqlRadarOpeningReplay() {
+        if (activeSqlRadarReplaySession != null) {
+            activeSqlRadarReplaySession.stop();
+            activeSqlRadarReplaySession = null;
+            statusBar.setText("SQL 雷達開盤重播已停止");
+        }
+    }
+
+    private SqlRadarReplayConfig promptSqlRadarReplayConfig() {
+        JComboBox<String> scope = new JComboBox<>(new String[]{"觀察清單", "目前商品"});
+        JTextField dateField = new JTextField(selectedQueryDate.toString(), 12);
+        JTextField startField = new JTextField("09:00", 8);
+        JTextField endField = new JTextField("13:30", 8);
+        JComboBox<String> speed = new JComboBox<>(new String[]{"慢速（1000ms/步）", "正常（500ms/步）", "快速（200ms/步）", "極快（50ms/步）"});
+        speed.setSelectedIndex(1);
+
+        JPanel panel = new JPanel(new GridLayout(0, 2, 8, 6));
+        panel.add(new JLabel("重播範圍"));
+        panel.add(scope);
+        panel.add(new JLabel("資料日期"));
+        panel.add(dateField);
+        panel.add(new JLabel("開始時間"));
+        panel.add(startField);
+        panel.add(new JLabel("結束時間"));
+        panel.add(endField);
+        panel.add(new JLabel("播放速度"));
+        panel.add(speed);
+
+        int result = JOptionPane.showConfirmDialog(
+                this,
+                panel,
+                "SQL 雷達開盤重播",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) {
+            return null;
+        }
+        try {
+            LocalDate date = LocalDate.parse(dateField.getText().trim());
+            LocalTime start = parseReplayTime(startField.getText().trim());
+            LocalTime end = parseReplayTime(endField.getText().trim());
+            if (!end.isAfter(start)) {
+                JOptionPane.showMessageDialog(this, "結束時間必須晚於開始時間。", "SQL 雷達開盤重播", JOptionPane.WARNING_MESSAGE);
+                return null;
+            }
+            List<String> symbols = resolveSqlRadarReplaySymbols(String.valueOf(scope.getSelectedItem()));
+            if (symbols.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "沒有可重播的股票。", "SQL 雷達開盤重播", JOptionPane.WARNING_MESSAGE);
+                return null;
+            }
+            int delayMs = switch (speed.getSelectedIndex()) {
+                case 0 -> 1000;
+                case 2 -> 200;
+                case 3 -> 50;
+                default -> 500;
+            };
+            selectedQueryDate = date;
+            return new SqlRadarReplayConfig(date, start, end, delayMs, symbols);
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "日期或時間格式錯誤，日期請用 yyyy-MM-dd，時間請用 HH:mm。", "SQL 雷達開盤重播", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+    }
+
+    private List<String> resolveSqlRadarReplaySymbols(String scope) {
+        java.util.LinkedHashSet<String> symbols = new java.util.LinkedHashSet<>();
+        if ("目前商品".equals(scope)) {
+            if (currentSymbol != null && !currentSymbol.isBlank()) {
+                symbols.add(currentSymbol);
+            }
+        } else if (watchlistPanel != null) {
+            for (String symbol : watchlistPanel.getSymbols()) {
+                if (symbol != null && !symbol.isBlank()) {
+                    symbols.add(symbol);
+                }
+            }
+        }
+        return new ArrayList<>(symbols);
+    }
+
+    private LocalTime parseReplayTime(String value) {
+        String safe = value != null ? value.trim() : "";
+        if (safe.length() == 5) {
+            return LocalTime.parse(safe);
+        }
+        return LocalTime.parse(safe.substring(0, Math.min(8, safe.length())));
+    }
+
+    private record SqlRadarReplayConfig(
+            LocalDate date,
+            LocalTime startTime,
+            LocalTime endTime,
+            int delayMs,
+            List<String> symbols) {
+    }
+
+    private record SqlRadarReplayStep(
+            LocalDateTime replayTime,
+            List<MarketScanResult> results,
+            MarketContextSnapshot context,
+            List<Bar> chartBars,
+            List<Trade> markerTrades,
+            List<Trade> replayTrades,
+            int openLongSignals,
+            int blockedSignals) {
+    }
+
+    private class SqlRadarOpeningReplaySession {
+        private final SqlRadarReplayConfig config;
+        private final Timeframe timeframe;
+        private final MarketScannerService.ScanRequest request;
+        private final ReplayBarFeed replayFeed;
+        private final Map<String, List<Trade>> tradesBySymbol;
+        private final List<Trade> allReplayTrades;
+        private final Path replayLogPath;
+        private final javax.swing.Timer timer;
+        private LocalTime cursor;
+        private boolean running;
+        private boolean stepInProgress;
+
+        SqlRadarOpeningReplaySession(
+                SqlRadarReplayConfig config,
+                Timeframe timeframe,
+                MarketScannerService.ScanRequest request,
+                Map<String, List<Bar>> sessionBarsBySymbol,
+                Map<String, List<Bar>> warmupBarsBySymbol,
+                Map<String, List<Trade>> tradesBySymbol) {
+            this.config = config;
+            this.timeframe = timeframe != null ? timeframe : Timeframe.M5;
+            this.request = request != null ? request : MarketScannerService.ScanRequest.createDefault();
+            this.replayFeed = new ReplayBarFeed(sessionBarsBySymbol, warmupBarsBySymbol);
+            this.tradesBySymbol = tradesBySymbol != null ? tradesBySymbol : Map.of();
+            this.allReplayTrades = flattenTrades(this.tradesBySymbol);
+            this.replayLogPath = createReplayLogPath(config);
+            this.cursor = config.startTime();
+            this.timer = new javax.swing.Timer(Math.max(50, config.delayMs()), event -> runStep());
+            this.timer.setRepeats(false);
+        }
+
+        void start() {
+            running = true;
+            latestSqlRadarBacktestTrades.clear();
+            latestSqlRadarBacktestTrades.putAll(tradesBySymbol);
+            opportunityRadarDock.clearResults();
+            initializeReplayLog();
+            showDockablePanel("executionStatus", "執行狀態");
+            if (executionStatusDock != null) {
+                executionStatusDock.showReplayTrades(List.of());
+            }
+            statusBar.setText("SQL 雷達開盤重播開始：" + config.date() + " " + config.startTime() + " ~ " + config.endTime()
+                    + "；日誌 " + replayLogPath);
+            runStep();
+        }
+
+        void stop() {
+            running = false;
+            timer.stop();
+            stepInProgress = false;
+        }
+
+        private void runStep() {
+            if (!running || stepInProgress) {
+                return;
+            }
+            if (cursor.isAfter(config.endTime())) {
+                stop();
+                statusBar.setText("SQL 雷達開盤重播完成：" + config.date() + "，" + config.symbols().size() + " 檔");
+                return;
+            }
+            stepInProgress = true;
+            LocalDateTime replayTime = config.date().atTime(cursor);
+            SwingWorker<SqlRadarReplayStep, Void> worker = new SwingWorker<>() {
+                @Override
+                protected SqlRadarReplayStep doInBackground() {
+                    replayFeed.setReplayTime(replayTime);
+                    MarketContextService contextService = new MarketContextService(replayFeed, symbol -> "重播觀察清單");
+                    MarketContextSnapshot context = contextService.build(
+                            config.symbols(),
+                            timeframe,
+                            request.getBarCount());
+                    MarketScannerService scanner = new MarketScannerService(replayFeed);
+                    List<MarketScanResult> results = new ArrayList<>();
+                    for (String symbol : config.symbols()) {
+                        MarketScanResult result = scanner.scan(symbol, request.copy()
+                                .marketContext(context)
+                                .useMarketContextBars(true));
+                        if (result != null) {
+                            results.add(result.withScannedAt(replayTime));
+                        }
+                    }
+                    String chartSymbol = resolveReplayChartSymbol();
+                    List<Bar> chartBars = replayFeed.visibleSessionBars(chartSymbol);
+                    List<Trade> markerTrades = tradesBySymbol.getOrDefault(chartSymbol, List.of()).stream()
+                            .filter(trade -> !trade.getTimestamp().isAfter(replayTime))
+                            .toList();
+                    List<Trade> replayTrades = allReplayTrades.stream()
+                            .filter(trade -> !trade.getTimestamp().isAfter(replayTime))
+                            .toList();
+                    int openLongSignals = (int) results.stream()
+                            .filter(result -> result.getDecisionResult() != null
+                                    && result.getDecisionResult().getAction() == DecisionResult.Action.OPEN_LONG)
+                            .count();
+                    int blockedSignals = (int) results.stream()
+                            .filter(result -> result.getBlockReason() != null && !result.getBlockReason().isBlank())
+                            .count();
+                    appendReplayLog(replayTime, results, replayTrades, openLongSignals, blockedSignals);
+                    return new SqlRadarReplayStep(
+                            replayTime,
+                            results,
+                            context,
+                            chartBars,
+                            markerTrades,
+                            replayTrades,
+                            openLongSignals,
+                            blockedSignals);
+                }
+
+                @Override
+                protected void done() {
+                    try {
+                        SqlRadarReplayStep step = get();
+                        applyReplayStep(step);
+                        cursor = cursor.plusMinutes(Math.max(1, timeframe.getMinutes()));
+                    } catch (Exception e) {
+                        Throwable cause = e.getCause() != null ? e.getCause() : e;
+                        stop();
+                        statusBar.setText("SQL 雷達開盤重播中止：" + cause.getMessage());
+                    } finally {
+                        stepInProgress = false;
+                        if (running) {
+                            timer.setInitialDelay(Math.max(50, config.delayMs()));
+                            timer.restart();
+                        }
+                    }
+                }
+            };
+            worker.execute();
+        }
+
+        private String resolveReplayChartSymbol() {
+            if (currentSymbol != null && replayFeed.hasSymbol(currentSymbol)) {
+                return currentSymbol;
+            }
+            return config.symbols().isEmpty() ? "" : config.symbols().get(0);
+        }
+
+        private void applyReplayStep(SqlRadarReplayStep step) {
+            if (step.results() != null) {
+                opportunityRadarDock.updateScanResults(step.results());
+                latestScanResults.clear();
+                for (MarketScanResult result : step.results()) {
+                    latestScanResults.put(result.getSymbol(), result);
+                }
+            }
+            updateMarketContextDocks(step.context());
+            if (step.chartBars() != null && !step.chartBars().isEmpty()) {
+                chartDock.loadHistoricalData(step.chartBars());
+                chartDock.showTradeMarkers(step.markerTrades());
+            }
+            if (executionStatusDock != null) {
+                executionStatusDock.showReplayTrades(step.replayTrades());
+            }
+            statusBar.setText(String.format(
+                    "SQL 雷達開盤重播 %s | %s | 掃描 %d 檔 | OPEN_LONG %d | 阻擋 %d | 重播交易 %d 筆 | 日誌 %s",
+                    config.date(),
+                    step.replayTime().toLocalTime(),
+                    step.results() != null ? step.results().size() : 0,
+                    step.openLongSignals(),
+                    step.blockedSignals(),
+                    step.replayTrades() != null ? step.replayTrades().size() : 0,
+                    replayLogPath));
+        }
+
+        private List<Trade> flattenTrades(Map<String, List<Trade>> tradesBySymbol) {
+            return tradesBySymbol.values().stream()
+                    .flatMap(List::stream)
+                    .filter(trade -> trade != null && trade.getTimestamp() != null)
+                    .sorted(Comparator.comparing(Trade::getTimestamp))
+                    .toList();
+        }
+
+        private Path createReplayLogPath(SqlRadarReplayConfig config) {
+            String timestamp = LocalDateTime.now(TAIPEI_ZONE).format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            return Path.of("logs", "radar-replay", "radar_replay_" + config.date() + "_" + timestamp + ".csv");
+        }
+
+        private void initializeReplayLog() {
+            try {
+                Files.createDirectories(replayLogPath.getParent());
+                String header = "replay_time,scanned_symbols,open_long_signals,blocked_signals,replay_trades,trade_events,top_candidates\n";
+                Files.writeString(replayLogPath, header, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            } catch (IOException e) {
+                statusBar.setText("SQL 雷達重播日誌建立失敗：" + e.getMessage());
+            }
+        }
+
+        private void appendReplayLog(
+                LocalDateTime replayTime,
+                List<MarketScanResult> results,
+                List<Trade> replayTrades,
+                int openLongSignals,
+                int blockedSignals) {
+            try {
+                List<Trade> currentTrades = replayTrades.stream()
+                        .filter(trade -> trade.getTimestamp().equals(replayTime))
+                        .toList();
+                String tradeEvents = currentTrades.stream()
+                        .map(trade -> trade.getTimestamp() + " " + trade.getSymbol() + " " + trade.getType()
+                                + " " + trade.getQuantity() + "@" + String.format(Locale.US, "%.2f", trade.getPrice()))
+                        .collect(java.util.stream.Collectors.joining(" | "));
+                String topCandidates = results.stream()
+                        .sorted(Comparator.naturalOrder())
+                        .limit(5)
+                        .map(result -> result.getSymbol()
+                                + ":" + String.format(Locale.US, "%.3f", result.getScore())
+                                + ":" + (result.getDecisionResult() != null ? result.getDecisionResult().getAction().name() : "NO_DECISION")
+                                + ":" + firstNonBlank(result.getBlockReason(), result.getReason()))
+                        .collect(java.util.stream.Collectors.joining(" | "));
+                String line = csv(replayTime.toString()) + ","
+                        + results.size() + ","
+                        + openLongSignals + ","
+                        + blockedSignals + ","
+                        + replayTrades.size() + ","
+                        + csv(tradeEvents) + ","
+                        + csv(topCandidates) + "\n";
+                Files.writeString(replayLogPath, line, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                statusBar.setText("SQL 雷達重播日誌寫入失敗：" + e.getMessage());
+            }
+        }
+
+        private String csv(String value) {
+            String safe = value != null ? value : "";
+            return "\"" + safe.replace("\"", "\"\"") + "\"";
+        }
+
+        private String firstNonBlank(String first, String second) {
+            return first != null && !first.isBlank() ? first : (second != null ? second : "");
+        }
+    }
+
+    private static class ReplayBarFeed implements MarketDataFeed {
+        private final Map<String, List<Bar>> sessionBarsBySymbol;
+        private final Map<String, List<Bar>> warmupBarsBySymbol;
+        private LocalDateTime replayTime = LocalDateTime.now();
+
+        ReplayBarFeed(Map<String, List<Bar>> sessionBarsBySymbol, Map<String, List<Bar>> warmupBarsBySymbol) {
+            this.sessionBarsBySymbol = normalizeBarMap(sessionBarsBySymbol);
+            this.warmupBarsBySymbol = normalizeBarMap(warmupBarsBySymbol);
+        }
+
+        void setReplayTime(LocalDateTime replayTime) {
+            this.replayTime = replayTime != null ? replayTime : LocalDateTime.now();
+        }
+
+        boolean hasSymbol(String symbol) {
+            String key = normalizeSymbolKey(symbol);
+            return sessionBarsBySymbol.containsKey(key) || warmupBarsBySymbol.containsKey(key);
+        }
+
+        List<Bar> visibleSessionBars(String symbol) {
+            String key = normalizeSymbolKey(symbol);
+            return sessionBarsBySymbol.getOrDefault(key, List.of()).stream()
+                    .filter(bar -> !bar.getTimestamp().isAfter(replayTime))
+                    .toList();
+        }
+
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            List<Bar> visibleSession = visibleSessionBars(symbol);
+            List<Bar> visible = new ArrayList<>();
+            visible.addAll(warmupBarsBySymbol.getOrDefault(normalizeSymbolKey(symbol), List.of()));
+            visible.addAll(visibleSession);
+            int safeCount = Math.max(1, barCount);
+            if (visible.size() > safeCount) {
+                return new ArrayList<>(visible.subList(visible.size() - safeCount, visible.size()));
+            }
+            return visible;
+        }
+
+        private static Map<String, List<Bar>> normalizeBarMap(Map<String, List<Bar>> source) {
+            Map<String, List<Bar>> normalized = new LinkedHashMap<>();
+            if (source == null) {
+                return normalized;
+            }
+            for (Map.Entry<String, List<Bar>> entry : source.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
+                List<Bar> bars = entry.getValue() != null
+                        ? entry.getValue().stream()
+                                .filter(bar -> bar != null && bar.getTimestamp() != null)
+                                .sorted(Comparator.comparing(Bar::getTimestamp))
+                                .toList()
+                        : List.of();
+                normalized.put(normalizeSymbolKey(entry.getKey()), bars);
+            }
+            return normalized;
+        }
+
+        private static String normalizeSymbolKey(String symbol) {
+            return symbol != null ? symbol.trim().toUpperCase(Locale.ROOT) : "";
+        }
     }
 
     private LocalDate[] promptSqlRadarBacktestDateRange() {
@@ -3020,7 +3528,10 @@ public class MainFrameWithDocking extends JFrame {
                 monitorConfig != null ? monitorConfig.getDailyMaxLoss() : -3_000.0,
                 monitorConfig != null ? monitorConfig.getDailyMaxStopLossCount() : 3,
                 monitorConfig != null ? monitorConfig.getConsecutiveLossLimit() : 3,
-                monitorConfig == null || monitorConfig.isDisableTradingAfterLossLimit());
+                monitorConfig == null || monitorConfig.isDisableTradingAfterLossLimit(),
+                monitorConfig != null ? monitorConfig.getDailyMaxAutoTrades() : 5,
+                monitorConfig != null ? monitorConfig.getEntryPacingMinutes() : 5,
+                monitorConfig == null || monitorConfig.isOneEntryPerFiveMinuteBar());
     }
 
     private String buildDayTradeBacktestConfigSummary(String scope, int symbolCount, Timeframe timeframe) {
@@ -3067,6 +3578,13 @@ public class MainFrameWithDocking extends JFrame {
                 .append("，單日最大虧損=").append(String.format(Locale.US, "%.2f", activeMonitorConfig.getDailyMaxLoss()))
                 .append("，單日停損上限=").append(activeMonitorConfig.getDailyMaxStopLossCount())
                 .append("，連續虧損上限=").append(activeMonitorConfig.getConsecutiveLossLimit())
+                .append('\n');
+        sb.append("開單節奏: 每日最多 ")
+                .append(activeMonitorConfig.getDailyMaxAutoTrades())
+                .append(" 筆，開單間隔 ")
+                .append(activeMonitorConfig.getEntryPacingMinutes())
+                .append(" 分鐘，同一根 5 分 K ")
+                .append(activeMonitorConfig.isOneEntryPerFiveMinuteBar() ? "只允許 1 筆" : "允許多筆")
                 .append('\n');
         sb.append("雷達掃描間隔: ").append(activeMonitorConfig.getScanIntervalSeconds()).append(" 秒\n");
         sb.append("同股訊號間隔: ").append(activeMonitorConfig.getMinSignalIntervalMinutes()).append(" 分鐘\n");
@@ -3152,19 +3670,122 @@ public class MainFrameWithDocking extends JFrame {
                 .orElse(start);
         double initialCapital = 1_000_000.0 * Math.max(1, results.size());
         BacktestResult combined = new BacktestResult(start, end, initialCapital);
-        double finalValue = 0.0;
+        List<CompletedTradePair> selectedPairs = selectBatchTradePairs(results);
+        double finalValue = initialCapital;
+        double realizedPnl = 0.0;
+        for (CompletedTradePair pair : selectedPairs) {
+            combined.addTrade(pair.buy());
+            combined.addTrade(pair.sell());
+            realizedPnl += pair.netPnl();
+        }
+        finalValue += realizedPnl;
         for (BacktestResult result : results) {
-            finalValue += result.getFinalValue();
-            for (Trade trade : result.getTrades()) {
-                combined.addTrade(trade);
-            }
             for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
                 combined.addSignalObservation(observation);
             }
         }
+        combined.addSnapshot(start, initialCapital, initialCapital, 0.0, 0);
         combined.addSnapshot(end, finalValue, finalValue, 0.0, 0);
         combined.calculate();
         return combined;
+    }
+
+    private List<CompletedTradePair> selectBatchTradePairs(List<BacktestResult> results) {
+        List<CompletedTradePair> candidates = new ArrayList<>();
+        for (BacktestResult result : results) {
+            candidates.addAll(toCompletedTradePairs(result.getTrades()));
+        }
+        candidates.sort(Comparator
+                .comparing((CompletedTradePair pair) -> pair.buy().getTimestamp())
+                .thenComparing(pair -> pair.buy().getSymbol()));
+
+        SignalMonitorConfig activeMonitorConfig = monitorConfig != null
+                ? monitorConfig
+                : SignalMonitorConfig.createDefault();
+        int maxTrades = Math.max(1, activeMonitorConfig.getDailyMaxAutoTrades());
+        int pacingMinutes = Math.max(0, activeMonitorConfig.getEntryPacingMinutes());
+        boolean oneEntryPerM5 = activeMonitorConfig.isOneEntryPerFiveMinuteBar();
+        int maxPositions = monitorDecisionConfig != null
+                ? Math.max(1, monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions())
+                : 1;
+
+        List<CompletedTradePair> selected = new ArrayList<>();
+        List<CompletedTradePair> active = new ArrayList<>();
+        Set<String> entryBuckets = new HashSet<>();
+        LocalDateTime lastEntryTime = null;
+        int tradesToday = 0;
+        LocalDate currentDate = null;
+        for (CompletedTradePair pair : candidates) {
+            LocalDate entryDate = pair.buy().getTimestamp().toLocalDate();
+            if (!entryDate.equals(currentDate)) {
+                currentDate = entryDate;
+                tradesToday = 0;
+                lastEntryTime = null;
+                entryBuckets.clear();
+                active.clear();
+            }
+            active.removeIf(openPair -> !openPair.sell().getTimestamp().isAfter(pair.buy().getTimestamp()));
+            if (tradesToday >= maxTrades) {
+                continue;
+            }
+            if (active.size() >= maxPositions) {
+                continue;
+            }
+            if (pacingMinutes > 0 && lastEntryTime != null
+                    && pair.buy().getTimestamp().isBefore(lastEntryTime.plusMinutes(pacingMinutes))) {
+                continue;
+            }
+            String bucket = fiveMinuteBacktestBucket(pair.buy().getTimestamp());
+            if (oneEntryPerM5 && entryBuckets.contains(bucket)) {
+                continue;
+            }
+            selected.add(pair);
+            active.add(pair);
+            entryBuckets.add(bucket);
+            lastEntryTime = pair.buy().getTimestamp();
+            tradesToday++;
+        }
+        return selected;
+    }
+
+    private List<CompletedTradePair> toCompletedTradePairs(List<Trade> trades) {
+        Map<String, Trade> openBySymbol = new HashMap<>();
+        List<CompletedTradePair> pairs = new ArrayList<>();
+        List<Trade> sortedTrades = new ArrayList<>(trades != null ? trades : List.of());
+        sortedTrades.sort(Comparator.comparing(Trade::getTimestamp));
+        for (Trade trade : sortedTrades) {
+            if (trade.getType() == TradeType.BUY) {
+                openBySymbol.put(trade.getSymbol(), trade);
+            } else if (trade.getType() == TradeType.SELL) {
+                Trade buy = openBySymbol.remove(trade.getSymbol());
+                if (buy != null) {
+                    pairs.add(new CompletedTradePair(buy, trade));
+                }
+            }
+        }
+        return pairs;
+    }
+
+    private Map<String, List<Trade>> groupTradesBySymbol(List<Trade> trades) {
+        Map<String, List<Trade>> grouped = new HashMap<>();
+        for (Trade trade : trades != null ? trades : List.<Trade>of()) {
+            grouped.computeIfAbsent(trade.getSymbol(), ignored -> new ArrayList<>()).add(trade);
+        }
+        return grouped;
+    }
+
+    private String fiveMinuteBacktestBucket(LocalDateTime time) {
+        if (time == null) {
+            return "";
+        }
+        int bucketMinute = (time.getMinute() / 5) * 5;
+        return time.toLocalDate() + "T" + String.format("%02d:%02d", time.getHour(), bucketMinute);
+    }
+
+    private record CompletedTradePair(Trade buy, Trade sell) {
+        double netPnl() {
+            return sell.getNetProceeds() - buy.getTotalCost();
+        }
     }
 
     private void showSqlRadarBacktestMarkersFor(String symbol) {
@@ -3429,18 +4050,18 @@ public class MainFrameWithDocking extends JFrame {
 
     private String getMonitorTemplateDescription(int index) {
         return switch (index) {
-            case 1 -> "A組 EMA8/21：M5 主交易層較早暖機，保留 VWAP、量能與 ATR，關閉內部市場狀態過濾。";
-            case 2 -> "B組 EMA8/34 跨日暖機：沿用收斂版結構，回測帶入前期 SQL K 線暖機 EMA34，關閉內部市場狀態過濾。";
-            case 3 -> "C組 EMA 單因子阻擋：基於 B 組跨日暖機，EMA 多頭需再由 RSI 轉強或突破後一根續強確認，關閉內部市場狀態過濾。";
+            case 1 -> "A組穩健 EMA8/34：跨日暖機、阻擋均線單因子、突破後一根 K 確認，最低分數 0.45。";
+            case 2 -> "B組放寬 EMA8/21：較快反應、阻擋均線單因子、不要求突破後一根 K 確認，最低分數 0.40。";
+            case 3 -> "C組 SMA8/21 測試：使用 SMA 觀察均線放寬效果，阻擋均線單因子、量能倍數 1.45，最低分數 0.40。";
             default -> "保留目前畫面設定，不套用任何模板。";
         };
     }
 
     private String getMonitorTemplateName(int index) {
         return switch (index) {
-            case 1 -> "A組 EMA8/21";
-            case 2 -> "B組收斂版";
-            case 3 -> "C組 EMA確認";
+            case 1 -> "A組穩健 EMA8/34";
+            case 2 -> "B組放寬 EMA8/21";
+            case 3 -> "C組 SMA8/21 測試";
             default -> "目前設定";
         };
     }
@@ -3556,6 +4177,36 @@ public class MainFrameWithDocking extends JFrame {
             }
         } catch (IOException e) {
             throw new IllegalStateException("儲存監控模板失敗：" + e.getMessage(), e);
+        }
+    }
+
+    private boolean deleteUserMonitorTemplate(String templateName) {
+        LinkedHashMap<String, MonitorTemplate> templates = new LinkedHashMap<>();
+        for (MonitorTemplate template : loadUserMonitorTemplates()) {
+            templates.put(template.name(), template);
+        }
+        if (templates.remove(templateName) == null) {
+            return false;
+        }
+
+        Properties props = new Properties();
+        props.setProperty("count", String.valueOf(templates.size()));
+        int index = 0;
+        for (MonitorTemplate template : templates.values()) {
+            String prefix = "template." + index++ + ".";
+            props.setProperty(prefix + "name", template.name());
+            props.setProperty(prefix + "description", template.description());
+            writeMonitorConfig(props, prefix, template.monitorConfig());
+            writeDecisionConfig(props, prefix, template.decisionConfig());
+        }
+        try {
+            Files.createDirectories(MONITOR_TEMPLATE_STORE.getParent());
+            try (OutputStream output = Files.newOutputStream(MONITOR_TEMPLATE_STORE)) {
+                props.store(output, "DreamHouseTrading user monitor templates");
+            }
+            return true;
+        } catch (IOException e) {
+            throw new IllegalStateException("刪除監控模板失敗：" + e.getMessage(), e);
         }
     }
 
@@ -4346,6 +4997,7 @@ public class MainFrameWithDocking extends JFrame {
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton cancelButton = new JButton("取消");
         JButton saveTemplateButton = new JButton("儲存為模板");
+        JButton deleteTemplateButton = new JButton("刪除模板");
         JButton applyButton = new JButton("套用");
         cancelButton.addActionListener(e -> dialog.dispose());
         saveTemplateButton.addActionListener(e -> {
@@ -4378,6 +5030,37 @@ public class MainFrameWithDocking extends JFrame {
                 statusBar.setText("已儲存監控模板：" + trimmedName);
             } catch (RuntimeException ex) {
                 JOptionPane.showMessageDialog(dialog, ex.getMessage(), "儲存監控模板", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+        deleteTemplateButton.addActionListener(e -> {
+            int selectedIndex = templateBox.getSelectedIndex();
+            if (selectedIndex <= 0 || selectedIndex >= monitorTemplates.size()) {
+                JOptionPane.showMessageDialog(dialog, "請先選擇一個使用者自訂模板。", "刪除監控模板", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            MonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
+            if (!selectedTemplate.userDefined()) {
+                JOptionPane.showMessageDialog(dialog, "內建測試模板不可刪除；如需修改，請另存為自訂模板。", "刪除監控模板", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            int confirm = JOptionPane.showConfirmDialog(
+                    dialog,
+                    "確定要刪除監控模板「" + selectedTemplate.name() + "」？",
+                    "刪除監控模板",
+                    JOptionPane.YES_NO_OPTION);
+            if (confirm != JOptionPane.YES_OPTION) {
+                return;
+            }
+            try {
+                if (deleteUserMonitorTemplate(selectedTemplate.name())) {
+                    monitorTemplates.remove(selectedIndex);
+                    templateBox.removeItemAt(selectedIndex);
+                    templateBox.setSelectedIndex(0);
+                    templateDescription.setText(monitorTemplates.get(0).description());
+                    statusBar.setText("已刪除監控模板：" + selectedTemplate.name());
+                }
+            } catch (RuntimeException ex) {
+                JOptionPane.showMessageDialog(dialog, ex.getMessage(), "刪除監控模板", JOptionPane.ERROR_MESSAGE);
             }
         });
         applyButton.addActionListener(e -> {
@@ -4488,6 +5171,7 @@ public class MainFrameWithDocking extends JFrame {
         });
         buttons.add(cancelButton);
         buttons.add(saveTemplateButton);
+        buttons.add(deleteTemplateButton);
         buttons.add(applyButton);
 
         JScrollPane settingsScrollPane = new JScrollPane(panel);
@@ -4608,7 +5292,7 @@ public class MainFrameWithDocking extends JFrame {
         return switch (key) {
             case "預設模板" -> htmlTooltip("""
                     選擇一組已保存的監控配置。選擇模板會把下方欄位改成該模板的值。
-                    例：選「B組收斂版」後，再按套用，雷達會使用該組 RSI、VWAP、ATR 與風控門檻。""");
+                    例：選「B組放寬 EMA8/21」後，再按套用，雷達會使用該組 RSI、VWAP、ATR 與風控門檻。""");
             case "掃描間隔（秒）" -> htmlTooltip("""
                     自動監控每隔幾秒掃描一次觀察清單。數值越小越即時，但 UI 與 SQL 負載較高。
                     例：10 代表每 10 秒掃描一次。""");

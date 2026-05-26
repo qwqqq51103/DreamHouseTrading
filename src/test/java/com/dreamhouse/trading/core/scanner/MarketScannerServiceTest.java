@@ -324,14 +324,27 @@ class MarketScannerServiceTest {
         RadarStrategyConfig groupC = RadarStrategyConfig.createDayTradeGroupCTemplate();
 
         assertThat(groupA.getFastMovingAveragePeriod()).isEqualTo(8);
-        assertThat(groupA.getSlowMovingAveragePeriod()).isEqualTo(21);
-        assertThat(groupA.isBacktestCrossDayWarmupEnabled()).isFalse();
-        assertThat(groupB.getSlowMovingAveragePeriod()).isEqualTo(34);
-        assertThat(groupB.isBacktestCrossDayWarmupEnabled()).isTrue();
-        assertThat(groupC.isBacktestCrossDayWarmupEnabled()).isTrue();
+        assertThat(groupA.getSlowMovingAveragePeriod()).isEqualTo(34);
+        assertThat(groupA.getMovingAverageType()).isEqualTo(RadarStrategyConfig.MovingAverageType.EMA);
+        assertThat(groupA.isBacktestCrossDayWarmupEnabled()).isTrue();
+        assertThat(groupA.isBlockMovingAverageOnlyEntry()).isTrue();
+        assertThat(groupA.isRequireBreakoutNextBarConfirmation()).isTrue();
+        assertThat(groupA.getMinimumEntryScore()).isEqualTo(0.45);
+        assertThat(groupB.getFastMovingAveragePeriod()).isEqualTo(8);
+        assertThat(groupB.getSlowMovingAveragePeriod()).isEqualTo(21);
+        assertThat(groupB.getMovingAverageType()).isEqualTo(RadarStrategyConfig.MovingAverageType.EMA);
+        assertThat(groupB.isBacktestCrossDayWarmupEnabled()).isFalse();
+        assertThat(groupB.isBlockMovingAverageOnlyEntry()).isTrue();
+        assertThat(groupB.isRequireBreakoutNextBarConfirmation()).isFalse();
+        assertThat(groupB.getMinimumEntryScore()).isEqualTo(0.40);
+        assertThat(groupC.getFastMovingAveragePeriod()).isEqualTo(8);
+        assertThat(groupC.getSlowMovingAveragePeriod()).isEqualTo(21);
+        assertThat(groupC.getMovingAverageType()).isEqualTo(RadarStrategyConfig.MovingAverageType.SMA);
+        assertThat(groupC.isBacktestCrossDayWarmupEnabled()).isFalse();
         assertThat(groupC.isBlockMovingAverageOnlyEntry()).isTrue();
-        assertThat(groupC.isRequireBreakoutNextBarConfirmation()).isTrue();
-        assertThat(groupC.getVolumeMultiplier()).isLessThan(groupB.getVolumeMultiplier());
+        assertThat(groupC.isRequireBreakoutNextBarConfirmation()).isFalse();
+        assertThat(groupC.getMinimumEntryScore()).isEqualTo(0.40);
+        assertThat(groupC.getVolumeMultiplier()).isEqualTo(1.45);
         assertThat(List.of(groupA, groupB, groupC))
                 .allSatisfy(config -> assertThat(config.isMarketRegimeFilterEnabled()).isFalse());
     }

@@ -149,8 +149,14 @@ public class RadarStrategyConfig {
 
     public static RadarStrategyConfig createDayTradeGroupATemplate() {
         RadarStrategyConfig config = createBConvergenceTemplate();
-        config.setSlowMovingAveragePeriod(21);
-        config.setBacktestCrossDayWarmupEnabled(false);
+        config.setMovingAverageType(MovingAverageType.EMA);
+        config.setFastMovingAveragePeriod(8);
+        config.setSlowMovingAveragePeriod(34);
+        config.setBacktestCrossDayWarmupEnabled(true);
+        config.setBacktestWarmupBarCount(120);
+        config.setMinimumEntryScore(0.45);
+        config.setBlockMovingAverageOnlyEntry(true);
+        config.setRequireBreakoutNextBarConfirmation(true);
         config.setMarketRegimeFilterEnabled(false);
         config.setWeakMarketStrictLongEnabled(false);
         config.setRangeMarketRequiresVwapAndVolume(false);
@@ -159,8 +165,13 @@ public class RadarStrategyConfig {
 
     public static RadarStrategyConfig createDayTradeGroupBTemplate() {
         RadarStrategyConfig config = createBConvergenceTemplate();
-        config.setBacktestCrossDayWarmupEnabled(true);
-        config.setBacktestWarmupBarCount(120);
+        config.setMovingAverageType(MovingAverageType.EMA);
+        config.setFastMovingAveragePeriod(8);
+        config.setSlowMovingAveragePeriod(21);
+        config.setBacktestCrossDayWarmupEnabled(false);
+        config.setMinimumEntryScore(0.40);
+        config.setBlockMovingAverageOnlyEntry(true);
+        config.setRequireBreakoutNextBarConfirmation(false);
         config.setMarketRegimeFilterEnabled(false);
         config.setWeakMarketStrictLongEnabled(false);
         config.setRangeMarketRequiresVwapAndVolume(false);
@@ -168,15 +179,19 @@ public class RadarStrategyConfig {
     }
 
     public static RadarStrategyConfig createDayTradeGroupCTemplate() {
-        RadarStrategyConfig config = createDayTradeGroupBTemplate();
-        config.setRsiOversold(38.0);
-        config.setRsiOverbought(70.0);
-        config.setRsiWeight(0.65);
+        RadarStrategyConfig config = createBConvergenceTemplate();
+        config.setMovingAverageType(MovingAverageType.SMA);
+        config.setFastMovingAveragePeriod(8);
+        config.setSlowMovingAveragePeriod(21);
+        config.setBacktestCrossDayWarmupEnabled(false);
         config.setVolumeMultiplier(1.45);
         config.setVolumeBreakoutWeight(0.95);
-        config.setMinimumEntryScore(0.50);
+        config.setMinimumEntryScore(0.40);
         config.setBlockMovingAverageOnlyEntry(true);
-        config.setRequireBreakoutNextBarConfirmation(true);
+        config.setRequireBreakoutNextBarConfirmation(false);
+        config.setMarketRegimeFilterEnabled(false);
+        config.setWeakMarketStrictLongEnabled(false);
+        config.setRangeMarketRequiresVwapAndVolume(false);
         return config;
     }
 

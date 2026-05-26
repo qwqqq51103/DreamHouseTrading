@@ -210,6 +210,40 @@ public class MarketScanResult implements Comparable<MarketScanResult> {
         return scannedAt;
     }
 
+    public MarketScanResult withScannedAt(LocalDateTime scannedAt) {
+        Builder builder = builder(symbol)
+                .tradeMode(tradeMode)
+                .score(score)
+                .decisionResult(decisionResult)
+                .reason(reason)
+                .confidence(confidence)
+                .suggestedStopLoss(suggestedStopLoss)
+                .suggestedTakeProfit(suggestedTakeProfit)
+                .suggestedQuantity(suggestedQuantity)
+                .riskRewardRatio(riskRewardRatio)
+                .rawSignalSummary(rawSignalSummary)
+                .marketDecision(marketDecision)
+                .scoreComponents(scoreComponents)
+                .scannedAt(scannedAt);
+        if (blockReason != null && !blockReason.isBlank()) {
+            builder.blockReason(blockReason);
+        }
+        builder.marketRegime = marketRegime;
+        builder.benchmarkSymbol = benchmarkSymbol;
+        builder.relativeToBenchmarkPercent = relativeToBenchmarkPercent;
+        builder.industry = industry;
+        builder.industryStrength = industryStrength;
+        builder.relativeToIndustryPercent = relativeToIndustryPercent;
+        builder.watchlistRankPercent = watchlistRankPercent;
+        builder.watchlistVolumeRankPercent = watchlistVolumeRankPercent;
+        builder.vwap = vwap;
+        builder.vwapSlopePercent = vwapSlopePercent;
+        builder.volumeSustain = volumeSustain;
+        builder.atrStopLoss = atrStopLoss;
+        builder.atrTakeProfit = atrTakeProfit;
+        return builder.build();
+    }
+
     public boolean hasTradeSignal() {
         return decisionResult != null && decisionResult.shouldTrade();
     }

@@ -36,6 +36,9 @@ public class RadarReplayBacktestService {
     private final int dailyMaxStopLossCount;
     private final int consecutiveLossLimit;
     private final boolean disableTradingAfterLossLimit;
+    private final int dailyMaxAutoTrades;
+    private final int entryPacingMinutes;
+    private final boolean oneEntryPerFiveMinuteBar;
 
     public RadarReplayBacktestService() {
         this(1_000_000.0, DEFAULT_COMMISSION_RATE);
@@ -63,7 +66,7 @@ public class RadarReplayBacktestService {
             int stopLossCooldownMinutes) {
         this(initialCapital, commissionRate, DEFAULT_DAY_TRADE_SELL_TAX_RATE, DEFAULT_SLIPPAGE_RATE,
                 earlyEntryBlockStart, earlyEntryBlockEnd, latestAutoEntryTime, stopLossCooldownMinutes,
-                -3_000.0, 3, 3, true);
+                -3_000.0, 3, 3, true, 5, 5, true);
     }
 
     public RadarReplayBacktestService(
@@ -79,6 +82,28 @@ public class RadarReplayBacktestService {
             int dailyMaxStopLossCount,
             int consecutiveLossLimit,
             boolean disableTradingAfterLossLimit) {
+        this(initialCapital, commissionRate, dayTradeSellTaxRate, slippageRate,
+                earlyEntryBlockStart, earlyEntryBlockEnd, latestAutoEntryTime, stopLossCooldownMinutes,
+                dailyMaxLoss, dailyMaxStopLossCount, consecutiveLossLimit, disableTradingAfterLossLimit,
+                5, 5, true);
+    }
+
+    public RadarReplayBacktestService(
+            double initialCapital,
+            double commissionRate,
+            double dayTradeSellTaxRate,
+            double slippageRate,
+            LocalTime earlyEntryBlockStart,
+            LocalTime earlyEntryBlockEnd,
+            LocalTime latestAutoEntryTime,
+            int stopLossCooldownMinutes,
+            double dailyMaxLoss,
+            int dailyMaxStopLossCount,
+            int consecutiveLossLimit,
+            boolean disableTradingAfterLossLimit,
+            int dailyMaxAutoTrades,
+            int entryPacingMinutes,
+            boolean oneEntryPerFiveMinuteBar) {
         this.initialCapital = initialCapital;
         this.commissionRate = Math.max(0.0, commissionRate);
         this.dayTradeSellTaxRate = Math.max(0.0, dayTradeSellTaxRate);
@@ -91,6 +116,9 @@ public class RadarReplayBacktestService {
         this.dailyMaxStopLossCount = Math.max(0, dailyMaxStopLossCount);
         this.consecutiveLossLimit = Math.max(0, consecutiveLossLimit);
         this.disableTradingAfterLossLimit = disableTradingAfterLossLimit;
+        this.dailyMaxAutoTrades = Math.max(1, dailyMaxAutoTrades);
+        this.entryPacingMinutes = Math.max(0, entryPacingMinutes);
+        this.oneEntryPerFiveMinuteBar = oneEntryPerFiveMinuteBar;
     }
 
     public BacktestResult replay(String symbol, List<Bar> sessionBars, MarketScannerService.ScanRequest scanRequest) {
@@ -136,6 +164,9 @@ public class RadarReplayBacktestService {
         int stopLossCount = 0;
         int consecutiveLosses = 0;
         boolean tradingHalted = false;
+        int autoEntryCount = 0;
+        LocalDateTime lastEntryTime = null;
+        java.util.Set<String> entryBuckets = new java.util.HashSet<>();
 
         Timeframe replayTimeframe = effectiveRequest.getTimeframe() != null
                 ? effectiveRequest.getTimeframe()
@@ -184,12 +215,17 @@ public class RadarReplayBacktestService {
                     && !tradingHalted
                     && index < lastEntryIndexExclusive
                     && index + 1 >= minimumWarmupBars
-                    && !isEarlyEntryBlock(barTime.toLocalTime())
-                    && (cooldownUntil == null || !barTime.isBefore(cooldownUntil))
+                    && !isEarlyEntryBlock(decisionTime.toLocalTime())
+                    && (cooldownUntil == null || !decisionTime.isBefore(cooldownUntil))
+                    && autoEntryCount < dailyMaxAutoTrades
+                    && !isEntryPacingBlocked(decisionTime, lastEntryTime)
+                    && !isEntryBucketBlocked(decisionTime, entryBuckets)
                     && decisionTime.toLocalTime().isBefore(latestAutoEntryTime)
                     && decisionTime.toLocalTime().isBefore(FORCE_CLOSE_TIME)) {
                 rollingFeed.setVisibleBarCount(index + 1);
-                MarketScanResult scanResult = scanner.scan(symbol, effectiveRequest.barCount(index + 1));
+                MarketScannerService.ScanRequest rollingRequest = effectiveRequest.copy()
+                        .barCount(Math.min(effectiveRequest.getBarCount(), index + 1));
+                MarketScanResult scanResult = scanner.scan(symbol, rollingRequest);
                 DecisionResult decision = scanResult != null ? scanResult.getDecisionResult() : null;
                 if (decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
                     Bar entryBar = bars.get(index + 1);
@@ -217,6 +253,9 @@ public class RadarReplayBacktestService {
                     if (cash >= requiredCash) {
                         result.addTrade(buy);
                         cash -= buy.getTotalCost();
+                        autoEntryCount++;
+                        lastEntryTime = entryTime;
+                        entryBuckets.add(fiveMinuteBucket(entryTime));
                         open = new OpenPosition(
                                 quantity,
                                 entryPrice,
@@ -407,6 +446,28 @@ public class RadarReplayBacktestService {
 
     private boolean isEarlyEntryBlock(LocalTime time) {
         return !time.isBefore(earlyEntryBlockStart) && time.isBefore(earlyEntryBlockEnd);
+    }
+
+    private boolean isEntryPacingBlocked(LocalDateTime decisionTime, LocalDateTime lastEntryTime) {
+        return entryPacingMinutes > 0
+                && decisionTime != null
+                && lastEntryTime != null
+                && decisionTime.isBefore(lastEntryTime.plusMinutes(entryPacingMinutes));
+    }
+
+    private boolean isEntryBucketBlocked(LocalDateTime decisionTime, java.util.Set<String> entryBuckets) {
+        return oneEntryPerFiveMinuteBar
+                && decisionTime != null
+                && entryBuckets != null
+                && entryBuckets.contains(fiveMinuteBucket(decisionTime));
+    }
+
+    private String fiveMinuteBucket(LocalDateTime time) {
+        if (time == null) {
+            return "";
+        }
+        int bucketMinute = (time.getMinute() / 5) * 5;
+        return time.toLocalDate() + "T" + String.format("%02d:%02d", time.getHour(), bucketMinute);
     }
 
     private ExitDecision resolveExit(OpenPosition open, List<Bar> bars, int index) {

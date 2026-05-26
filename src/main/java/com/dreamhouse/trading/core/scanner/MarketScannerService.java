@@ -1175,5 +1175,17 @@ public class MarketScannerService {
             this.initialCapital = initialCapital;
             return this;
         }
+
+        public ScanRequest copy() {
+            return ScanRequest.createDefault()
+                    .timeframe(timeframe)
+                    .barCount(barCount)
+                    .tradeMode(tradeMode)
+                    .decisionConfig(decisionConfig)
+                    .radarStrategyConfig(radarStrategyConfig)
+                    .marketContext(marketContext)
+                    .useMarketContextBars(useMarketContextBars)
+                    .initialCapital(initialCapital);
+        }
     }
 }

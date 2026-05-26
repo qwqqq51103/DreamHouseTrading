@@ -68,6 +68,7 @@ datasource.properties
 # Data files
 data/
 logs/paper-trades/*.csv
+logs/radar-replay/*.csv
 config/*.properties
 
 # Local agent / issue exports

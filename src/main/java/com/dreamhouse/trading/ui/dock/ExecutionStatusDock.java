@@ -2,6 +2,8 @@ package com.dreamhouse.trading.ui.dock;
 
 import com.dreamhouse.trading.core.StockNameResolver;
 import com.dreamhouse.trading.core.backtest.Position;
+import com.dreamhouse.trading.core.backtest.Trade;
+import com.dreamhouse.trading.core.backtest.TradeType;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
@@ -38,6 +40,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.ArrayDeque;
 
 public class ExecutionStatusDock extends JPanel {
 
@@ -257,6 +261,33 @@ public class ExecutionStatusDock extends JPanel {
         });
     }
 
+    public void showReplayTrades(List<Trade> trades) {
+        SwingUtilities.invokeLater(() -> {
+            List<Trade> safeTrades = trades != null ? trades : List.of();
+            executionModeLabel.setText("SQL雷達重播");
+            executionModeLabel.setForeground(new Color(100, 149, 237));
+            totalOrdersLabel.setText(String.valueOf(safeTrades.size()));
+            successOrdersLabel.setText(String.valueOf(safeTrades.size()));
+            failedOrdersLabel.setText("0");
+            successRateLabel.setText(safeTrades.isEmpty() ? "0%" : "100%");
+            successRateBar.setValue(safeTrades.isEmpty() ? 0 : 100);
+            successRateBar.setForeground(getSuccessRateColor(safeTrades.isEmpty() ? 0 : 100));
+
+            double realizedPnL = calculateReplayRealizedPnL(safeTrades);
+            cashLabel.setText("--");
+            positionValueLabel.setText("--");
+            totalEquityLabel.setText("--");
+            realizedPnLLabel.setText(formatPnL(realizedPnL));
+            unrealizedPnLLabel.setText("--");
+            totalPnLLabel.setText(formatPnL(realizedPnL));
+            commissionLabel.setText(formatMoney(safeTrades.stream().mapToDouble(Trade::getCommissionAmount).sum()));
+            realizedPnLLabel.setForeground(getPnLColor(realizedPnL));
+            totalPnLLabel.setForeground(getPnLColor(realizedPnL));
+
+            updateTradeHistoryTable(buildReplayLifecycleRows(safeTrades));
+        });
+    }
+
     private List<ExecutionResult> getSortedExecutionResults() {
         Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
         List<ExecutionResult> results = new ArrayList<>(history.values());
@@ -292,6 +323,75 @@ public class ExecutionStatusDock extends JPanel {
         rows.sort(Comparator.comparing(TradeLifecycleRow::getSortTime, Comparator.nullsLast(Comparator.naturalOrder()))
                 .reversed());
         return rows;
+    }
+
+    private List<TradeLifecycleRow> buildReplayLifecycleRows(List<Trade> trades) {
+        Map<String, Queue<TradeLifecycleRow>> openBySymbol = new LinkedHashMap<>();
+        List<TradeLifecycleRow> rows = new ArrayList<>();
+        int tradeId = 1;
+        List<Trade> sorted = trades.stream()
+                .filter(trade -> trade != null && trade.getTimestamp() != null)
+                .sorted(Comparator.comparing(Trade::getTimestamp))
+                .toList();
+        for (Trade trade : sorted) {
+            if (trade.getType() == TradeType.BUY) {
+                TradeLifecycleRow row = new TradeLifecycleRow(String.format("REPLAY_%05d", tradeId++));
+                row.symbol = trade.getSymbol();
+                row.quantity = trade.getQuantity();
+                row.entryPrice = trade.getPrice();
+                row.stopLoss = trade.getStopLoss();
+                row.takeProfit = trade.getTakeProfit();
+                row.openTime = trade.getTimestamp();
+                row.reason = "SQL 雷達重播開倉";
+                row.totalCommission = trade.getCommissionAmount();
+                openBySymbol.computeIfAbsent(trade.getSymbol(), ignored -> new ArrayDeque<>()).add(row);
+                rows.add(row);
+            } else if (trade.getType() == TradeType.SELL) {
+                Queue<TradeLifecycleRow> queue = openBySymbol.get(trade.getSymbol());
+                TradeLifecycleRow row = queue != null ? queue.poll() : null;
+                if (row == null) {
+                    row = new TradeLifecycleRow(String.format("REPLAY_%05d", tradeId++));
+                    row.symbol = trade.getSymbol();
+                    row.quantity = trade.getQuantity();
+                    rows.add(row);
+                }
+                row.exitPrice = trade.getPrice();
+                row.stopLoss = trade.getStopLoss() != null ? trade.getStopLoss() : row.stopLoss;
+                row.takeProfit = trade.getTakeProfit() != null ? trade.getTakeProfit() : row.takeProfit;
+                row.closeTime = trade.getTimestamp();
+                row.closeReason = trade.getExitReason();
+                row.realizedPnL = row.entryPrice > 0.0
+                        ? trade.getNetProceeds() - (row.entryPrice * row.quantity) - row.totalCommission
+                        : 0.0;
+                row.totalCommission += trade.getCommissionAmount();
+                if (row.reason == null || row.reason.isBlank()) {
+                    row.reason = "SQL 雷達重播";
+                }
+            }
+        }
+        rows.sort(Comparator.comparing(TradeLifecycleRow::getSortTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .reversed());
+        return rows;
+    }
+
+    private double calculateReplayRealizedPnL(List<Trade> trades) {
+        Map<String, Queue<Trade>> openBySymbol = new HashMap<>();
+        double pnl = 0.0;
+        for (Trade trade : trades.stream()
+                .filter(trade -> trade != null && trade.getTimestamp() != null)
+                .sorted(Comparator.comparing(Trade::getTimestamp))
+                .toList()) {
+            if (trade.getType() == TradeType.BUY) {
+                openBySymbol.computeIfAbsent(trade.getSymbol(), ignored -> new ArrayDeque<>()).add(trade);
+            } else if (trade.getType() == TradeType.SELL) {
+                Queue<Trade> queue = openBySymbol.get(trade.getSymbol());
+                Trade buy = queue != null ? queue.poll() : null;
+                if (buy != null) {
+                    pnl += trade.getNetProceeds() - buy.getTotalCost();
+                }
+            }
+        }
+        return pnl;
     }
 
     private void updatePortfolioStats() {
