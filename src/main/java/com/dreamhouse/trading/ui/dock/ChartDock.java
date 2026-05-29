@@ -115,6 +115,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
     private double lastHigh = 100.0;
     private double lastLow = 100.0;
     private long lastVolume = 0;
+    private long lastRawTickVolume = -1L;
     private LocalDateTime lastBarTime = null;
 
     
@@ -509,6 +510,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         SwingUtilities.invokeLater(() -> {
             LocalDateTime now = tick.getTimestamp();
             LocalDateTime normalizedNow = now.withSecond(0).withNano(0);
+            long volumeContribution = resolveTickVolumeContribution(tick.getVolume());
 
             if (lastBarTime == null) {
                 // 第一根 K 線
@@ -517,13 +519,13 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastHigh = tick.getPrice();
                 lastLow = tick.getPrice();
                 lastClose = tick.getPrice();
-                lastVolume = tick.getVolume(); // 使用 tick 的成交量
+                lastVolume = volumeContribution;
 
                 // ⭐ 記錄當日開盤價（用於計算漲跌%）
                 if (dayOpenPrice == 0.0) {
                     dayOpenPrice = tick.getPrice();
                 }
-                totalVolume = tick.getVolume();
+                totalVolume += volumeContribution;
 
                 addNewBar();
             } else if (normalizedNow.isAfter(lastBarTime)) {
@@ -537,10 +539,10 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastHigh = tick.getPrice();
                 lastLow = tick.getPrice();
                 lastClose = tick.getPrice();
-                lastVolume = tick.getVolume(); // 使用 tick 的成交量
+                lastVolume = volumeContribution;
 
                 // ⭐ 累積成交量
-                totalVolume += tick.getVolume();
+                totalVolume += volumeContribution;
 
                 // 添加新 K 線
                 addNewBar();
@@ -549,16 +551,31 @@ public class ChartDock extends JPanel implements MarketDataListener {
                 lastClose = tick.getPrice();
                 lastHigh = Math.max(lastHigh, tick.getPrice());
                 lastLow = Math.min(lastLow, tick.getPrice());
-                lastVolume += tick.getVolume(); // 累積 tick 的成交量
+                lastVolume += volumeContribution;
 
                 // ⭐ 累積成交量
-                totalVolume += tick.getVolume();
+                totalVolume += volumeContribution;
 
                 updateLastBar();
             }
 
             // 觀察清單漲跌幅由 MainFrame 以昨收為基準統一更新，避免圖表用開盤價覆蓋。
         });
+    }
+
+    private long resolveTickVolumeContribution(long rawVolume) {
+        if (rawVolume <= 0L) {
+            return 0L;
+        }
+        if (lastRawTickVolume < 0L) {
+            lastRawTickVolume = rawVolume;
+            return rawVolume;
+        }
+        long contribution = rawVolume >= lastRawTickVolume
+                ? rawVolume - lastRawTickVolume
+                : rawVolume;
+        lastRawTickVolume = rawVolume;
+        return Math.max(0L, contribution);
     }
 
     private boolean isTickForCurrentSymbol(Tick tick) {
@@ -633,6 +650,7 @@ public class ChartDock extends JPanel implements MarketDataListener {
         this.currentSymbol = symbol;
         this.dayOpenPrice = 0.0;  // 重置開盤價
         this.totalVolume = 0;      // 重置成交量
+        this.lastRawTickVolume = -1L;
     }
 
     /**
@@ -1206,6 +1224,9 @@ public class ChartDock extends JPanel implements MarketDataListener {
 
             // 重置狀態
             lastBarTime = null;
+            lastVolume = 0L;
+            totalVolume = 0L;
+            lastRawTickVolume = -1L;
 
             // 刷新圖表
             if (chartPanel != null) {
@@ -1288,6 +1309,18 @@ public class ChartDock extends JPanel implements MarketDataListener {
             }
             
             // 重新計算所有指標
+            Bar firstBar = displayBars.get(0);
+            Bar lastBar = displayBars.get(displayBars.size() - 1);
+            dayOpenPrice = firstBar.getOpen();
+            lastBarTime = lastBar.getTimestamp().withSecond(0).withNano(0);
+            lastOpen = lastBar.getOpen();
+            lastHigh = lastBar.getHigh();
+            lastLow = lastBar.getLow();
+            lastClose = lastBar.getClose();
+            lastVolume = lastBar.getVolume();
+            totalVolume = displayBars.stream().mapToLong(Bar::getVolume).sum();
+            lastRawTickVolume = totalVolume > 0L ? totalVolume : -1L;
+
             updateIndicators();
             
             // 自動調整視圖範圍

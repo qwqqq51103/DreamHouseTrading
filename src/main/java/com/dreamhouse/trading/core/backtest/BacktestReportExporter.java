@@ -42,6 +42,7 @@ public final class BacktestReportExporter {
 
         appendSummary(report, result);
         appendConfiguration(report, configurationSummary);
+        appendWarmupDiagnostics(report, result);
 
         report.append("完整交易紀錄:\n");
         report.append("-".repeat(120)).append('\n');
@@ -111,6 +112,7 @@ public final class BacktestReportExporter {
         html.append("<section><h3>當沖與雷達配置</h3><pre>")
                 .append(escapeHtml(normalize(configurationSummary)))
                 .append("</pre></section>");
+        appendWarmupDiagnosticsHtml(html, result);
 
         html.append("<section><h3>完整交易紀錄</h3><table><thead><tr>");
         String[] headers = {
@@ -174,6 +176,18 @@ public final class BacktestReportExporter {
                 if (!line.isBlank()) {
                     writer.write(csvLine("當沖配置", "", line));
                 }
+            }
+            for (BacktestResult.WarmupDiagnostic diagnostic : result.getWarmupDiagnostics()) {
+                writer.write(csvLine(
+                        "warmup_diagnostic",
+                        diagnostic.symbol(),
+                        "date=" + diagnostic.sessionDate()
+                                + "; timeframe=" + diagnostic.timeframe()
+                                + "; enabled=" + diagnostic.enabled()
+                                + "; requested=" + diagnostic.requestedBars()
+                                + "; loaded=" + diagnostic.loadedBars()
+                                + "; first=" + format(diagnostic.firstWarmupTime())
+                                + "; last=" + format(diagnostic.lastWarmupTime())));
             }
             writer.write('\n');
             writer.write(String.join(",",
@@ -283,6 +297,54 @@ public final class BacktestReportExporter {
         report.append("當沖與雷達配置:\n");
         report.append("-".repeat(40)).append('\n');
         report.append(normalize(configurationSummary)).append("\n\n");
+    }
+
+    private static void appendWarmupDiagnostics(StringBuilder report, BacktestResult result) {
+        if (result.getWarmupDiagnostics().isEmpty()) {
+            return;
+        }
+        report.append("SQL warmup diagnostics:\n");
+        report.append("-".repeat(80)).append('\n');
+        report.append("symbol, date, timeframe, enabled, requested_bars, loaded_bars, first_warmup, last_warmup\n");
+        for (BacktestResult.WarmupDiagnostic diagnostic : result.getWarmupDiagnostics()) {
+            report.append(String.format(
+                    "%s, %s, %s, %s, %d, %d, %s, %s%n",
+                    diagnostic.symbol(),
+                    diagnostic.sessionDate(),
+                    diagnostic.timeframe(),
+                    diagnostic.enabled(),
+                    diagnostic.requestedBars(),
+                    diagnostic.loadedBars(),
+                    format(diagnostic.firstWarmupTime()),
+                    format(diagnostic.lastWarmupTime())));
+        }
+        report.append('\n');
+    }
+
+    private static void appendWarmupDiagnosticsHtml(StringBuilder html, BacktestResult result) {
+        if (result.getWarmupDiagnostics().isEmpty()) {
+            return;
+        }
+        html.append("<section><h3>SQL warmup diagnostics</h3><table><thead><tr>");
+        String[] headers = {"symbol", "date", "timeframe", "enabled", "requested_bars", "loaded_bars",
+                "first_warmup", "last_warmup"};
+        for (String header : headers) {
+            html.append("<th>").append(escapeHtml(header)).append("</th>");
+        }
+        html.append("</tr></thead><tbody>");
+        for (BacktestResult.WarmupDiagnostic diagnostic : result.getWarmupDiagnostics()) {
+            html.append("<tr>");
+            html.append(td(diagnostic.symbol()));
+            html.append(td(String.valueOf(diagnostic.sessionDate())));
+            html.append(td(diagnostic.timeframe()));
+            html.append(td(String.valueOf(diagnostic.enabled())));
+            html.append(td(String.valueOf(diagnostic.requestedBars())));
+            html.append(td(String.valueOf(diagnostic.loadedBars())));
+            html.append(td(format(diagnostic.firstWarmupTime())));
+            html.append(td(format(diagnostic.lastWarmupTime())));
+            html.append("</tr>");
+        }
+        html.append("</tbody></table></section>");
     }
 
     private static void appendSignalObservations(StringBuilder report, BacktestResult result) {

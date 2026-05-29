@@ -91,7 +91,7 @@ public class MarketScannerService {
                     ? dataFeed.fetchHistoricalBars(symbol, timeframe, effectiveRequest.getBarCount())
                     : preloadedBars;
             List<Bar> bars = normalizeBars(sourceBars, effectiveRequest.getBarCount());
-            bars = removeIncompleteLastBar(bars, timeframe);
+            bars = removeIncompleteLastBar(bars, timeframe, effectiveRequest.getAsOfTime());
 
             if (bars.size() < 2) {
                 return noTrade(symbol, effectiveRequest.getTradeMode(), "Not enough bars to scan");
@@ -273,15 +273,15 @@ public class MarketScannerService {
         return normalized;
     }
 
-    private List<Bar> removeIncompleteLastBar(List<Bar> bars, Timeframe timeframe) {
+    private List<Bar> removeIncompleteLastBar(List<Bar> bars, Timeframe timeframe, LocalDateTime asOfTime) {
         if (bars == null || bars.isEmpty()) {
             return new ArrayList<>();
         }
 
         Bar lastBar = bars.get(bars.size() - 1);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = asOfTime != null ? asOfTime : LocalDateTime.now();
         LocalDateTime barEnd = lastBar.getTimestamp().plus(timeframe.getMinutes(), ChronoUnit.MINUTES);
-        if (lastBar.getTimestamp().toLocalDate().equals(LocalDate.now()) && now.isBefore(barEnd)) {
+        if (lastBar.getTimestamp().toLocalDate().equals(now.toLocalDate()) && now.isBefore(barEnd)) {
             return new ArrayList<>(bars.subList(0, bars.size() - 1));
         }
         return bars;
@@ -1099,6 +1099,7 @@ public class MarketScannerService {
         private double initialCapital = 100000.0;
         private MarketContextSnapshot marketContext;
         private boolean useMarketContextBars = true;
+        private LocalDateTime asOfTime;
 
         public static ScanRequest createDefault() {
             return new ScanRequest();
@@ -1176,6 +1177,15 @@ public class MarketScannerService {
             return this;
         }
 
+        public LocalDateTime getAsOfTime() {
+            return asOfTime;
+        }
+
+        public ScanRequest asOfTime(LocalDateTime asOfTime) {
+            this.asOfTime = asOfTime;
+            return this;
+        }
+
         public ScanRequest copy() {
             return ScanRequest.createDefault()
                     .timeframe(timeframe)
@@ -1185,7 +1195,8 @@ public class MarketScannerService {
                     .radarStrategyConfig(radarStrategyConfig)
                     .marketContext(marketContext)
                     .useMarketContextBars(useMarketContextBars)
-                    .initialCapital(initialCapital);
+                    .initialCapital(initialCapital)
+                    .asOfTime(asOfTime);
         }
     }
 }

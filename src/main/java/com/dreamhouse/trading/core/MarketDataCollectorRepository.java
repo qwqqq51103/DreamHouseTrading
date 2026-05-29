@@ -296,6 +296,41 @@ public class MarketDataCollectorRepository implements AutoCloseable {
         return coverage.isCompleteIntradayM1Session();
     }
 
+    public boolean hasCandleForDate(String symbol, String interval, LocalDate date) {
+        if (connection == null || symbol == null || symbol.isBlank()
+                || interval == null || interval.isBlank() || date == null) {
+            return false;
+        }
+        List<String> aliases = symbolAliases(symbol);
+        String sql = """
+                SELECT COUNT(*) AS candle_count
+                FROM candlesticks
+                WHERE symbol IN (%s) AND interval_type = ?
+                  AND (
+                    (ts >= ? AND ts < ?)
+                    OR (
+                      REPLACE(SUBSTRING(CAST(ts AS CHAR), 1, 19), 'T', ' ') >= ?
+                      AND REPLACE(SUBSTRING(CAST(ts AS CHAR), 1, 19), 'T', ' ') < ?
+                    )
+                  )
+                """.formatted(placeholders(aliases.size()));
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int parameterIndex = bindStrings(statement, 1, aliases);
+            statement.setString(parameterIndex++, interval);
+            statement.setTimestamp(parameterIndex++, Timestamp.valueOf(date.atStartOfDay()));
+            statement.setTimestamp(parameterIndex++, Timestamp.valueOf(date.plusDays(1).atStartOfDay()));
+            statement.setString(parameterIndex++, formatSqlTime(date.atStartOfDay()));
+            statement.setString(parameterIndex, formatSqlTime(date.plusDays(1).atStartOfDay()));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getInt("candle_count") > 0;
+            }
+        } catch (SQLException e) {
+            logger.warn("Failed to check MarketDataCollector candle existence for {} {} {}: {}",
+                    symbol, interval, date, e.getMessage());
+            return false;
+        }
+    }
+
     public SessionCandleCoverage findSessionCandleCoverage(String symbol, String interval, LocalDate date) {
         if (connection == null || symbol == null || symbol.isBlank()
                 || interval == null || interval.isBlank() || date == null) {

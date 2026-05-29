@@ -2,6 +2,7 @@ package com.dreamhouse.trading.core.backtest;
 
 import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,7 @@ public class BacktestResult {
     private final List<Trade> trades;
     private final List<PortfolioSnapshot> snapshots;
     private final List<SignalObservation> signalObservations;
+    private final List<WarmupDiagnostic> warmupDiagnostics;
     
     /**
      * 構造函數
@@ -49,6 +51,7 @@ public class BacktestResult {
         this.trades = new ArrayList<>();
         this.snapshots = new ArrayList<>();
         this.signalObservations = new ArrayList<>();
+        this.warmupDiagnostics = new ArrayList<>();
     }
     
     /**
@@ -69,6 +72,12 @@ public class BacktestResult {
     public void addSignalObservation(SignalObservation observation) {
         if (observation != null) {
             signalObservations.add(observation);
+        }
+    }
+
+    public void addWarmupDiagnostic(WarmupDiagnostic diagnostic) {
+        if (diagnostic != null) {
+            warmupDiagnostics.add(diagnostic);
         }
     }
     
@@ -281,6 +290,18 @@ public class BacktestResult {
     public List<Trade> getTrades() { return new ArrayList<>(trades); }
     public List<PortfolioSnapshot> getSnapshots() { return new ArrayList<>(snapshots); }
     public List<SignalObservation> getSignalObservations() { return new ArrayList<>(signalObservations); }
+    public List<WarmupDiagnostic> getWarmupDiagnostics() { return new ArrayList<>(warmupDiagnostics); }
+
+    public record WarmupDiagnostic(
+            String symbol,
+            LocalDate sessionDate,
+            String timeframe,
+            boolean enabled,
+            int requestedBars,
+            int loadedBars,
+            LocalDateTime firstWarmupTime,
+            LocalDateTime lastWarmupTime) {
+    }
 
     public record SignalObservation(
             String symbol,

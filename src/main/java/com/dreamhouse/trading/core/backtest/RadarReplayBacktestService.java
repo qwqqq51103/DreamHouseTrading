@@ -7,10 +7,12 @@ import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.model.Bar;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
+import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -156,6 +158,10 @@ public class RadarReplayBacktestService {
         MarketScannerService.ScanRequest effectiveRequest = scanRequest != null
                 ? scanRequest
                 : MarketScannerService.ScanRequest.createDefault();
+        Timeframe replayTimeframe = effectiveRequest.getTimeframe() != null
+                ? effectiveRequest.getTimeframe()
+                : Timeframe.M1;
+        recordWarmupDiagnostic(result, symbol, warmupBars, session.get(0), replayTimeframe, effectiveRequest);
 
         double cash = initialCapital;
         OpenPosition open = null;
@@ -168,9 +174,6 @@ public class RadarReplayBacktestService {
         LocalDateTime lastEntryTime = null;
         java.util.Set<String> entryBuckets = new java.util.HashSet<>();
 
-        Timeframe replayTimeframe = effectiveRequest.getTimeframe() != null
-                ? effectiveRequest.getTimeframe()
-                : Timeframe.M1;
         int minimumWarmupBars = Math.min(Math.max(20, replayTimeframe.getMinutes() >= 5 ? 12 : 30), bars.size());
         int lastEntryIndexExclusive = Math.max(0, bars.size() - 1);
         for (int index = sessionStartIndex; index < bars.size(); index++) {
@@ -224,7 +227,8 @@ public class RadarReplayBacktestService {
                     && decisionTime.toLocalTime().isBefore(FORCE_CLOSE_TIME)) {
                 rollingFeed.setVisibleBarCount(index + 1);
                 MarketScannerService.ScanRequest rollingRequest = effectiveRequest.copy()
-                        .barCount(Math.min(effectiveRequest.getBarCount(), index + 1));
+                        .barCount(Math.min(effectiveRequest.getBarCount(), index + 1))
+                        .asOfTime(decisionTime);
                 MarketScanResult scanResult = scanner.scan(symbol, rollingRequest);
                 DecisionResult decision = scanResult != null ? scanResult.getDecisionResult() : null;
                 if (decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
@@ -304,6 +308,41 @@ public class RadarReplayBacktestService {
                 .sorted(java.util.Comparator.comparing(Bar::getTimestamp))
                 .forEach(bar -> unique.put(bar.getTimestamp(), bar));
         return new ArrayList<>(unique.values());
+    }
+
+    private void recordWarmupDiagnostic(
+            BacktestResult result,
+            String symbol,
+            List<Bar> warmupBars,
+            Bar firstSessionBar,
+            Timeframe timeframe,
+            MarketScannerService.ScanRequest request) {
+        RadarStrategyConfig radar = request != null ? request.getRadarStrategyConfig() : null;
+        boolean enabled = radar != null && radar.isBacktestCrossDayWarmupEnabled();
+        int requestedBars = 0;
+        if (enabled) {
+            int minimumForSlowAverage = Math.max(0, radar.getSlowMovingAveragePeriod() * 3);
+            requestedBars = Math.max(radar.getBacktestWarmupBarCount(), minimumForSlowAverage);
+        }
+        List<Bar> loadedWarmup = warmupBars == null
+                ? List.of()
+                : warmupBars.stream()
+                        .filter(bar -> bar != null && bar.getTimestamp() != null)
+                        .sorted(Comparator.comparing(Bar::getTimestamp))
+                        .toList();
+        LocalDateTime firstWarmupTime = loadedWarmup.isEmpty() ? null : loadedWarmup.get(0).getTimestamp();
+        LocalDateTime lastWarmupTime = loadedWarmup.isEmpty() ? null : loadedWarmup.get(loadedWarmup.size() - 1).getTimestamp();
+        result.addWarmupDiagnostic(new BacktestResult.WarmupDiagnostic(
+                symbol,
+                firstSessionBar != null && firstSessionBar.getTimestamp() != null
+                        ? firstSessionBar.getTimestamp().toLocalDate()
+                        : null,
+                timeframe != null ? timeframe.name() : "",
+                enabled,
+                requestedBars,
+                loadedWarmup.size(),
+                firstWarmupTime,
+                lastWarmupTime));
     }
 
     private Trade createBuyTrade(

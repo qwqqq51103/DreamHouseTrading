@@ -44,7 +44,7 @@ class FinMindKBarSqlImporterTest {
                     LocalDate.of(2026, 5, 12));
 
             assertThat(result.successSymbols()).isEqualTo(1);
-            assertThat(result.totalInsertedBars()).isEqualTo(9);
+            assertThat(result.totalInsertedBars()).isEqualTo(10);
             assertThat(gateway.lastRequest.getDataset()).isEqualTo(FinMindDataset.TAIWAN_STOCK_K_BAR);
             assertThat(gateway.lastRequest.getDataId()).isEqualTo("2330");
             assertThat(gateway.lastRequest.getStartDate()).isEqualTo(LocalDate.of(2026, 5, 12));
@@ -66,6 +66,18 @@ class FinMindKBarSqlImporterTest {
             assertThat(m5Bars.get(0).getLow()).isEqualTo(99.0);
             assertThat(m5Bars.get(0).getClose()).isEqualTo(104.0);
             assertThat(m5Bars.get(0).getVolume()).isEqualTo(150L);
+
+            List<Bar> dailyBars = repository.findCandlesByTimeRange(
+                    "2330.TW",
+                    "D1",
+                    LocalDate.of(2026, 5, 12).atStartOfDay(),
+                    LocalDate.of(2026, 5, 12).atTime(23, 59));
+            assertThat(dailyBars).hasSize(1);
+            assertThat(dailyBars.get(0).getOpen()).isEqualTo(100.0);
+            assertThat(dailyBars.get(0).getHigh()).isEqualTo(105.0);
+            assertThat(dailyBars.get(0).getLow()).isEqualTo(99.0);
+            assertThat(dailyBars.get(0).getClose()).isEqualTo(104.0);
+            assertThat(dailyBars.get(0).getVolume()).isEqualTo(150L);
         }
     }
 

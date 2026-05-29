@@ -140,7 +140,8 @@ public class FinMindKBarSqlImporter {
                 .build());
         List<Bar> oneMinuteBars = parseKBars(root != null ? root.path("data") : null);
         if (oneMinuteBars.isEmpty()) {
-            return SymbolImportResult.empty(symbol);
+            SymbolImportResult dailyOnly = importDailyOnly(symbol, date);
+            return dailyOnly.success() ? dailyOnly : SymbolImportResult.empty(symbol);
         }
 
         Map<String, Integer> insertedByInterval = new LinkedHashMap<>();
@@ -153,7 +154,87 @@ public class FinMindKBarSqlImporter {
             insertedByInterval.put(entry.getValue(), inserted);
             insertedTotal += inserted;
         }
+        int dailyInserted = importDailyCandle(symbol, date, oneMinuteBars);
+        insertedByInterval.put("D1", dailyInserted);
+        insertedTotal += dailyInserted;
         return SymbolImportResult.success(symbol, insertedTotal, insertedByInterval);
+    }
+
+    public SymbolImportResult importDailyOnly(String symbol, LocalDate date) throws SQLException {
+        int inserted = importDailyCandle(symbol, date, List.of());
+        if (inserted <= 0) {
+            return SymbolImportResult.empty(symbol);
+        }
+        return SymbolImportResult.success(symbol, inserted, Map.of("D1", inserted));
+    }
+
+    private int importDailyCandle(String symbol, LocalDate date, List<Bar> intradayBars) throws SQLException {
+        List<Bar> dailyBars;
+        if (intradayBars != null && !intradayBars.isEmpty()) {
+            dailyBars = List.of(aggregateDailyBar(date, intradayBars));
+        } else {
+            dailyBars = fetchDailyPriceBar(symbol, date);
+        }
+        if (dailyBars.isEmpty()) {
+            return 0;
+        }
+        return repository.replaceCandlesForDate(symbol, "D1", date, dailyBars);
+    }
+
+    private List<Bar> fetchDailyPriceBar(String symbol, LocalDate date) {
+        try {
+            JsonNode root = finMindGateway.queryData(FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_PRICE)
+                    .dataId(toFinMindStockId(symbol))
+                    .startDate(date)
+                    .endDate(date)
+                    .build());
+            return parseDailyPriceBars(root != null ? root.path("data") : null);
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    public List<Bar> parseDailyPriceBars(JsonNode dataArray) {
+        List<Bar> bars = new ArrayList<>();
+        if (dataArray == null || !dataArray.isArray()) {
+            return bars;
+        }
+        for (JsonNode row : dataArray) {
+            if (row.hasNonNull("minute")) {
+                continue;
+            }
+            LocalDate date = parseDate(row.path("date").asText(null));
+            if (date == null) {
+                continue;
+            }
+            double open = readDouble(row, "open", "Open");
+            double high = readDouble(row, "max", "high", "Max", "High");
+            double low = readDouble(row, "min", "low", "Min", "Low");
+            double close = readDouble(row, "close", "Close");
+            long volume = Math.round(readDouble(row, "Trading_Volume", "volume", "Volume"));
+            if (open <= 0.0 || high <= 0.0 || low <= 0.0 || close <= 0.0) {
+                continue;
+            }
+            bars.add(new Bar(date.atStartOfDay(), open, high, low, close, Math.max(0L, volume)));
+        }
+        bars.sort(Comparator.comparing(Bar::getTimestamp));
+        return bars;
+    }
+
+    private Bar aggregateDailyBar(LocalDate date, List<Bar> intradayBars) {
+        List<Bar> sorted = intradayBars.stream()
+                .filter(bar -> bar != null && bar.getTimestamp() != null)
+                .sorted(Comparator.comparing(Bar::getTimestamp))
+                .toList();
+        if (sorted.isEmpty()) {
+            return new Bar(date.atStartOfDay(), 0, 0, 0, 0, 0);
+        }
+        double open = sorted.get(0).getOpen();
+        double high = sorted.stream().mapToDouble(Bar::getHigh).max().orElse(open);
+        double low = sorted.stream().mapToDouble(Bar::getLow).min().orElse(open);
+        double close = sorted.get(sorted.size() - 1).getClose();
+        long volume = sorted.stream().mapToLong(Bar::getVolume).sum();
+        return new Bar(date.atStartOfDay(), open, high, low, close, Math.max(0L, volume));
     }
 
     public List<Bar> parseKBars(JsonNode dataArray) {

@@ -707,6 +707,15 @@ public class MainFrameWithDocking extends JFrame {
         JTextArea message = new JTextArea("""
                 DreamHouseTrading
 
+                2026-05-29 replay fix:
+                - SQL 雷達開盤重播在 ticks 模式會依 replay time 即時聚合 partial K 棒，避免使用盤後完整 M5 K 的未來資料。
+                - 比對實盤自動監控時，請使用 TICKS_AGGREGATED 並確認掃描間隔 / 秒偏移與實盤一致。
+
+                SQL 雷達重播更新：
+                - 可選資料來源模式：固定 ticks 聚合、固定 candlesticks、或 AUTO。
+                - 比對盤中實盤雷達時建議使用固定 ticks 聚合，避免盤後補入 candlesticks 後重播結果改變。
+                - 雷達重播 CSV 會記錄策略名稱、完整設定摘要、資料來源模式、實際載入來源、開單/阻擋原因與加分明細。
+
                 Java Swing 台股交易分析與模擬平台
                 版本：0.2.x
 
@@ -735,6 +744,16 @@ public class MainFrameWithDocking extends JFrame {
 
     private void showDayTradeIndicatorGuideDialog() {
         JTextArea message = new JTextArea("""
+                2026-05-29 replay fix:
+                - TICKS_AGGREGATED 重播會用 replay time 以前的 SQL ticks 聚合 partial K 棒，避免 09:30:20 看到 09:30~09:34:59 的未來完整 K。
+                - 如果只用 candlesticks，重播只能使用已收完 K 線，不能精準模擬盤中 partial K。
+
+                SQL 雷達重播與資料來源：
+                - 固定 ticks 聚合：最接近盤中實盤雷達，適合檢查為何實盤有/沒有開單。
+                - 固定 candlesticks：適合檢查盤後補入的分 K 資料。
+                - AUTO：candlesticks 完整時優先使用 candlesticks，否則用 ticks 聚合；同一天盤後補資料前後可能跑出不同結果。
+                - 匯出的 CSV 會記錄資料來源、策略設定、加分明細、OPEN_LONG、阻擋原因與交易事件。
+
                 當沖指標設定詳細說明
 
                 一、資料來源
@@ -2307,7 +2326,8 @@ public class MainFrameWithDocking extends JFrame {
             .decisionConfig(resolveRadarDecisionConfig(mode))
             .radarStrategyConfig(monitorConfig != null
                     ? monitorConfig.getRadarStrategyConfig()
-                    : RadarStrategyConfig.createDefault());
+                    : RadarStrategyConfig.createDefault())
+            .asOfTime(LocalDateTime.now());
     }
 
     private MarketContextSnapshot buildMarketContextWithIndustryUniverse(List<String> symbols, TradeMode mode) {
@@ -2964,37 +2984,42 @@ public class MainFrameWithDocking extends JFrame {
                         .initialCapital(1_000_000.0);
                 Map<String, List<Bar>> sessionBarsBySymbol = new LinkedHashMap<>();
                 Map<String, List<Bar>> warmupBarsBySymbol = new LinkedHashMap<>();
-                List<BacktestResult> replayResults = new ArrayList<>();
+                Map<String, List<Tick>> replayTicksBySymbol = new LinkedHashMap<>();
+                Map<String, MarketDataCollectorFeed.SessionBarLoadResult> sourceBySymbol = new LinkedHashMap<>();
                 try (MarketDataCollectorRepository repository = new MarketDataCollectorRepository(
                         dataSourceManager.getMarketCollectorJdbcUrl(),
                         dataSourceManager.getMarketCollectorUser(),
                         dataSourceManager.getMarketCollectorPassword())) {
                     MarketDataCollectorFeed sqlFeed = new MarketDataCollectorFeed(repository, java.time.Duration.ofDays(1));
-                    RadarReplayBacktestService replayService = createRadarReplayService();
                     for (String symbol : config.symbols()) {
-                        List<Bar> bars = sqlFeed.fetchHistoricalBars(symbol, timeframe, 1000, config.date());
+                        MarketDataCollectorFeed.SessionBarLoadResult loadResult = sqlFeed.fetchSessionBarsWithSource(
+                                symbol,
+                                timeframe,
+                                config.date(),
+                                config.sourceMode());
+                        replayTicksBySymbol.put(symbol, repository.findSessionTicks(symbol, config.date()));
+                        List<Bar> bars = loadResult.bars();
                         if (bars == null || bars.size() < 2) {
+                            sourceBySymbol.put(symbol, loadResult);
                             continue;
                         }
                         List<Bar> warmupBars = fetchSqlRadarBacktestWarmupBars(sqlFeed, symbol, timeframe, config.date(), request);
                         sessionBarsBySymbol.put(symbol, bars);
                         warmupBarsBySymbol.put(symbol, warmupBars);
-                        replayResults.add(replayService.replay(symbol, warmupBars, bars, request));
+                        sourceBySymbol.put(symbol, loadResult);
                     }
                 }
                 if (sessionBarsBySymbol.isEmpty()) {
                     throw new IllegalStateException("指定日期沒有可重播的 SQL K 線資料：" + config.date());
                 }
-                BacktestResult combinedResult = replayResults.isEmpty()
-                        ? new BacktestResult(config.date().atTime(config.startTime()), config.date().atTime(config.endTime()), 1_000_000.0)
-                        : combineBacktestResults(replayResults);
                 return new SqlRadarOpeningReplaySession(
                         config,
                         timeframe,
                         request,
                         sessionBarsBySymbol,
                         warmupBarsBySymbol,
-                        groupTradesBySymbol(combinedResult.getTrades()));
+                        replayTicksBySymbol,
+                        sourceBySymbol);
             }
 
             @Override
@@ -3029,6 +3054,14 @@ public class MainFrameWithDocking extends JFrame {
         JTextField dateField = new JTextField(selectedQueryDate.toString(), 12);
         JTextField startField = new JTextField("09:00", 8);
         JTextField endField = new JTextField("13:30", 8);
+        int defaultScanInterval = monitorConfig != null ? monitorConfig.getScanIntervalSeconds() : 30;
+        int defaultScanOffset = inferReplayScanOffsetSeconds(selectedQueryDate, defaultScanInterval);
+        JSpinner scanInterval = new JSpinner(new SpinnerNumberModel(defaultScanInterval, 3, 60, 1));
+        JSpinner scanOffset = new JSpinner(new SpinnerNumberModel(defaultScanOffset, 0, 59, 1));
+        JComboBox<MarketDataCollectorFeed.SessionBarSourceMode> sourceMode = new JComboBox<>(
+                MarketDataCollectorFeed.SessionBarSourceMode.values());
+        sourceMode.setSelectedItem(MarketDataCollectorFeed.SessionBarSourceMode.TICKS_AGGREGATED);
+        sourceMode.setToolTipText("比對盤中實盤雷達請固定使用 ticks 聚合；AUTO 會在 SQL candlesticks 完整時改用 candlesticks。");
         JComboBox<String> speed = new JComboBox<>(new String[]{"慢速（1000ms/步）", "正常（500ms/步）", "快速（200ms/步）", "極快（50ms/步）"});
         speed.setSelectedIndex(1);
 
@@ -3041,6 +3074,12 @@ public class MainFrameWithDocking extends JFrame {
         panel.add(startField);
         panel.add(new JLabel("結束時間"));
         panel.add(endField);
+        panel.add(new JLabel("掃描間隔（秒）"));
+        panel.add(scanInterval);
+        panel.add(new JLabel("掃描秒偏移"));
+        panel.add(scanOffset);
+        panel.add(new JLabel("資料來源模式"));
+        panel.add(sourceMode);
         panel.add(new JLabel("播放速度"));
         panel.add(speed);
 
@@ -3073,11 +3112,46 @@ public class MainFrameWithDocking extends JFrame {
                 default -> 500;
             };
             selectedQueryDate = date;
-            return new SqlRadarReplayConfig(date, start, end, delayMs, symbols);
+            int selectedScanInterval = Math.max(3, ((Number) scanInterval.getValue()).intValue());
+            int selectedScanOffset = Math.floorMod(((Number) scanOffset.getValue()).intValue(), selectedScanInterval);
+            MarketDataCollectorFeed.SessionBarSourceMode selectedMode =
+                    (MarketDataCollectorFeed.SessionBarSourceMode) sourceMode.getSelectedItem();
+            return new SqlRadarReplayConfig(date, start, end, delayMs, selectedScanInterval, selectedScanOffset, symbols, selectedMode);
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this, "日期或時間格式錯誤，日期請用 yyyy-MM-dd，時間請用 HH:mm。", "SQL 雷達開盤重播", JOptionPane.WARNING_MESSAGE);
             return null;
         }
+    }
+
+    private int inferReplayScanOffsetSeconds(LocalDate date, int scanIntervalSeconds) {
+        if (date == null) {
+            return 0;
+        }
+        int interval = Math.max(1, scanIntervalSeconds);
+        Path ordersPath = Path.of(
+                "logs",
+                "paper-trades",
+                "orders_" + date.format(DateTimeFormatter.BASIC_ISO_DATE) + ".csv");
+        if (!Files.exists(ordersPath)) {
+            return 0;
+        }
+        try {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+            for (String line : Files.readAllLines(ordersPath, StandardCharsets.UTF_8)) {
+                if (line == null || line.startsWith("event_time,") || !line.contains(",auto-monitor,")) {
+                    continue;
+                }
+                String[] columns = line.split(",", 4);
+                if (columns.length == 0 || columns[0].isBlank()) {
+                    continue;
+                }
+                LocalDateTime eventTime = LocalDateTime.parse(columns[0].trim(), formatter);
+                return Math.floorMod(eventTime.getSecond(), interval);
+            }
+        } catch (Exception ignored) {
+            return 0;
+        }
+        return 0;
     }
 
     private List<String> resolveSqlRadarReplaySymbols(String scope) {
@@ -3109,7 +3183,17 @@ public class MainFrameWithDocking extends JFrame {
             LocalTime startTime,
             LocalTime endTime,
             int delayMs,
-            List<String> symbols) {
+            int scanIntervalSeconds,
+            int scanOffsetSeconds,
+            List<String> symbols,
+            MarketDataCollectorFeed.SessionBarSourceMode sourceMode) {
+        private SqlRadarReplayConfig {
+            scanIntervalSeconds = Math.max(3, scanIntervalSeconds);
+            scanOffsetSeconds = Math.floorMod(scanOffsetSeconds, scanIntervalSeconds);
+            sourceMode = sourceMode != null
+                    ? sourceMode
+                    : MarketDataCollectorFeed.SessionBarSourceMode.TICKS_AGGREGATED;
+        }
     }
 
     private record SqlRadarReplayStep(
@@ -3128,13 +3212,26 @@ public class MainFrameWithDocking extends JFrame {
         private final Timeframe timeframe;
         private final MarketScannerService.ScanRequest request;
         private final ReplayBarFeed replayFeed;
-        private final Map<String, List<Trade>> tradesBySymbol;
-        private final List<Trade> allReplayTrades;
+        private final Map<String, List<Bar>> warmupBarsBySymbol;
+        private final Map<String, List<Tick>> replayTicksBySymbol;
+        private final Map<String, MarketDataCollectorFeed.SessionBarLoadResult> sourceBySymbol;
         private final Path replayLogPath;
+        private final Path replayDetailLogPath;
         private final javax.swing.Timer timer;
-        private LocalTime cursor;
+        private LocalDateTime cursor;
         private boolean running;
         private boolean stepInProgress;
+        private final Map<String, ReplayOpenPosition> liveReplayOpenPositions = new HashMap<>();
+        private final Map<String, LocalDateTime> liveReplayLastSignalTime = new HashMap<>();
+        private final Map<String, LocalDateTime> liveReplayStopLossCooldownUntil = new HashMap<>();
+        private final Set<String> liveReplayEntryBuckets = new HashSet<>();
+        private final List<Trade> liveReplayTrades = new ArrayList<>();
+        private LocalDateTime liveReplayLastEntryTime;
+        private int liveReplayEntryCount;
+        private double liveReplayRealizedPnl;
+        private int liveReplayStopLossCount;
+        private int liveReplayConsecutiveLosses;
+        private boolean liveReplayTradingHalted;
 
         SqlRadarOpeningReplaySession(
                 SqlRadarReplayConfig config,
@@ -3142,15 +3239,18 @@ public class MainFrameWithDocking extends JFrame {
                 MarketScannerService.ScanRequest request,
                 Map<String, List<Bar>> sessionBarsBySymbol,
                 Map<String, List<Bar>> warmupBarsBySymbol,
-                Map<String, List<Trade>> tradesBySymbol) {
+                Map<String, List<Tick>> replayTicksBySymbol,
+                Map<String, MarketDataCollectorFeed.SessionBarLoadResult> sourceBySymbol) {
             this.config = config;
             this.timeframe = timeframe != null ? timeframe : Timeframe.M5;
             this.request = request != null ? request : MarketScannerService.ScanRequest.createDefault();
-            this.replayFeed = new ReplayBarFeed(sessionBarsBySymbol, warmupBarsBySymbol);
-            this.tradesBySymbol = tradesBySymbol != null ? tradesBySymbol : Map.of();
-            this.allReplayTrades = flattenTrades(this.tradesBySymbol);
+            this.replayFeed = new ReplayBarFeed(sessionBarsBySymbol, warmupBarsBySymbol, replayTicksBySymbol, this.timeframe);
+            this.warmupBarsBySymbol = normalizeReplayBars(warmupBarsBySymbol);
+            this.replayTicksBySymbol = normalizeReplayTicks(replayTicksBySymbol);
+            this.sourceBySymbol = sourceBySymbol != null ? new LinkedHashMap<>(sourceBySymbol) : Map.of();
             this.replayLogPath = createReplayLogPath(config);
-            this.cursor = config.startTime();
+            this.replayDetailLogPath = createReplayDetailLogPath(this.replayLogPath);
+            this.cursor = config.date().atTime(config.startTime()).plusSeconds(config.scanOffsetSeconds());
             this.timer = new javax.swing.Timer(Math.max(50, config.delayMs()), event -> runStep());
             this.timer.setRepeats(false);
         }
@@ -3158,7 +3258,6 @@ public class MainFrameWithDocking extends JFrame {
         void start() {
             running = true;
             latestSqlRadarBacktestTrades.clear();
-            latestSqlRadarBacktestTrades.putAll(tradesBySymbol);
             opportunityRadarDock.clearResults();
             initializeReplayLog();
             showDockablePanel("executionStatus", "執行狀態");
@@ -3180,13 +3279,13 @@ public class MainFrameWithDocking extends JFrame {
             if (!running || stepInProgress) {
                 return;
             }
-            if (cursor.isAfter(config.endTime())) {
+            if (cursor.toLocalTime().isAfter(config.endTime())) {
                 stop();
                 statusBar.setText("SQL 雷達開盤重播完成：" + config.date() + "，" + config.symbols().size() + " 檔");
                 return;
             }
             stepInProgress = true;
-            LocalDateTime replayTime = config.date().atTime(cursor);
+            LocalDateTime replayTime = cursor;
             SwingWorker<SqlRadarReplayStep, Void> worker = new SwingWorker<>() {
                 @Override
                 protected SqlRadarReplayStep doInBackground() {
@@ -3201,17 +3300,18 @@ public class MainFrameWithDocking extends JFrame {
                     for (String symbol : config.symbols()) {
                         MarketScanResult result = scanner.scan(symbol, request.copy()
                                 .marketContext(context)
-                                .useMarketContextBars(true));
+                                .useMarketContextBars(false)
+                                .asOfTime(replayTime));
                         if (result != null) {
                             results.add(result.withScannedAt(replayTime));
                         }
                     }
+                    results.sort(Comparator.naturalOrder());
+                    List<Trade> replayTrades = advanceLiveEquivalentReplay(replayTime, results);
                     String chartSymbol = resolveReplayChartSymbol();
                     List<Bar> chartBars = replayFeed.visibleSessionBars(chartSymbol);
-                    List<Trade> markerTrades = tradesBySymbol.getOrDefault(chartSymbol, List.of()).stream()
-                            .filter(trade -> !trade.getTimestamp().isAfter(replayTime))
-                            .toList();
-                    List<Trade> replayTrades = allReplayTrades.stream()
+                    List<Trade> markerTrades = replayTrades.stream()
+                            .filter(trade -> chartSymbol.equals(trade.getSymbol()))
                             .filter(trade -> !trade.getTimestamp().isAfter(replayTime))
                             .toList();
                     int openLongSignals = (int) results.stream()
@@ -3238,7 +3338,7 @@ public class MainFrameWithDocking extends JFrame {
                     try {
                         SqlRadarReplayStep step = get();
                         applyReplayStep(step);
-                        cursor = cursor.plusMinutes(Math.max(1, timeframe.getMinutes()));
+                        cursor = cursor.plusSeconds(Math.max(3, config.scanIntervalSeconds()));
                     } catch (Exception e) {
                         Throwable cause = e.getCause() != null ? e.getCause() : e;
                         stop();
@@ -3265,11 +3365,13 @@ public class MainFrameWithDocking extends JFrame {
         private void applyReplayStep(SqlRadarReplayStep step) {
             if (step.results() != null) {
                 opportunityRadarDock.updateScanResults(step.results());
-                latestScanResults.clear();
-                for (MarketScanResult result : step.results()) {
-                    latestScanResults.put(result.getSymbol(), result);
+                    latestScanResults.clear();
+                    for (MarketScanResult result : step.results()) {
+                        latestScanResults.put(result.getSymbol(), result);
+                    }
+                    latestSqlRadarBacktestTrades.clear();
+                    latestSqlRadarBacktestTrades.putAll(groupTradesBySymbol(step.replayTrades()));
                 }
-            }
             updateMarketContextDocks(step.context());
             if (step.chartBars() != null && !step.chartBars().isEmpty()) {
                 chartDock.loadHistoricalData(step.chartBars());
@@ -3289,12 +3391,342 @@ public class MainFrameWithDocking extends JFrame {
                     replayLogPath));
         }
 
-        private List<Trade> flattenTrades(Map<String, List<Trade>> tradesBySymbol) {
-            return tradesBySymbol.values().stream()
-                    .flatMap(List::stream)
-                    .filter(trade -> trade != null && trade.getTimestamp() != null)
-                    .sorted(Comparator.comparing(Trade::getTimestamp))
+        private List<Trade> advanceLiveEquivalentReplay(LocalDateTime replayTime, List<MarketScanResult> results) {
+            Map<String, MarketScanResult> resultBySymbol = (results != null ? results : List.<MarketScanResult>of()).stream()
+                    .collect(java.util.stream.Collectors.toMap(
+                            MarketScanResult::getSymbol,
+                            result -> result,
+                            (left, right) -> left,
+                            LinkedHashMap::new));
+            closeLiveReplayPositions(replayTime, resultBySymbol);
+            for (MarketScanResult result : results != null ? results : List.<MarketScanResult>of()) {
+                if (result == null || !result.hasTradeSignal()) {
+                    continue;
+                }
+                String symbol = result.getSymbol();
+                if (!isNewLiveReplaySignal(symbol, replayTime)) {
+                    continue;
+                }
+                liveReplayLastSignalTime.put(symbol, replayTime);
+                String blockReason = resolveLiveReplayEntryBlockReason(symbol, replayTime);
+                if (blockReason != null) {
+                    continue;
+                }
+                double price = latestReplayPrice(symbol, replayTime);
+                if (price <= 0.0) {
+                    continue;
+                }
+                Trade buy = createLiveReplayBuy(
+                        replayTime,
+                        symbol,
+                        DAY_TRADE_LOT_SIZE,
+                        price,
+                        result.getSuggestedStopLoss(),
+                        result.getSuggestedTakeProfit(),
+                        firstNonBlank(result.getReason(), result.getLongBonusSummary()));
+                liveReplayTrades.add(buy);
+                liveReplayOpenPositions.put(symbol, new ReplayOpenPosition(
+                        symbol,
+                        DAY_TRADE_LOT_SIZE,
+                        price,
+                        result.getSuggestedStopLoss(),
+                        result.getSuggestedTakeProfit(),
+                        buy));
+                liveReplayEntryCount++;
+                liveReplayLastEntryTime = replayTime;
+                liveReplayEntryBuckets.add(fiveMinuteBacktestBucket(replayTime));
+            }
+            return liveReplayTrades.stream()
+                    .filter(trade -> !trade.getTimestamp().isAfter(replayTime))
+                    .sorted(Comparator.comparing(Trade::getTimestamp)
+                            .thenComparing(Trade::getSymbol)
+                            .thenComparing(trade -> trade.getType().name()))
                     .toList();
+        }
+
+        private void closeLiveReplayPositions(LocalDateTime replayTime, Map<String, MarketScanResult> resultBySymbol) {
+            if (liveReplayOpenPositions.isEmpty()) {
+                return;
+            }
+            List<String> symbols = new ArrayList<>(liveReplayOpenPositions.keySet());
+            for (String symbol : symbols) {
+                ReplayOpenPosition open = liveReplayOpenPositions.get(symbol);
+                ReplayExit exit = resolveLiveReplayExit(open, replayTime, resultBySymbol != null ? resultBySymbol.get(symbol) : null);
+                if (exit == null) {
+                    continue;
+                }
+                Trade sell = createLiveReplaySell(
+                        replayTime,
+                        symbol,
+                        open.quantity(),
+                        exit.price(),
+                        open.stopLoss(),
+                        open.takeProfit(),
+                        exit.reason());
+                liveReplayTrades.add(sell);
+                liveReplayOpenPositions.remove(symbol);
+                double pnl = sell.getNetProceeds() - open.entryTrade().getTotalCost();
+                liveReplayRealizedPnl += pnl;
+                if (pnl < 0.0) {
+                    liveReplayConsecutiveLosses++;
+                } else if (pnl > 0.0) {
+                    liveReplayConsecutiveLosses = 0;
+                }
+                if (exit.reason().toUpperCase(Locale.ROOT).contains("STOP")) {
+                    liveReplayStopLossCount++;
+                    if (monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()) {
+                        registerLiveReplayCooldown(symbol, replayTime, monitorConfig.getStopLossCooldownMinutes());
+                    }
+                }
+                if (monitorConfig != null && monitorConfig.getPostExitCooldownMinutes() > 0) {
+                    registerLiveReplayCooldown(symbol, replayTime, monitorConfig.getPostExitCooldownMinutes());
+                }
+                if (isLiveReplayTradingHalted()) {
+                    liveReplayTradingHalted = true;
+                }
+            }
+        }
+
+        private void registerLiveReplayCooldown(String symbol, LocalDateTime replayTime, int minutes) {
+            if (symbol == null || symbol.isBlank() || replayTime == null || minutes <= 0) {
+                return;
+            }
+            LocalDateTime until = replayTime.plusMinutes(minutes);
+            LocalDateTime existing = liveReplayStopLossCooldownUntil.get(symbol);
+            if (existing == null || until.isAfter(existing)) {
+                liveReplayStopLossCooldownUntil.put(symbol, until);
+            }
+        }
+
+        private ReplayExit resolveLiveReplayExit(ReplayOpenPosition open, LocalDateTime replayTime, MarketScanResult scanResult) {
+            if (open == null) {
+                return null;
+            }
+            Bar latest = latestReplayBar(open.symbol(), replayTime);
+            if (latest == null) {
+                return null;
+            }
+            long holdingMinutes = replayTime != null && open.entryTrade().getTimestamp() != null
+                    ? Duration.between(open.entryTrade().getTimestamp(), replayTime).toMinutes()
+                    : 0;
+            double price = latest.getClose();
+            if (holdingMinutes >= 3
+                    && scanResult != null
+                    && scanResult.getVwap() != null
+                    && scanResult.getVwap() > 0.0
+                    && price < scanResult.getVwap()) {
+                return new ReplayExit(price, "EXIT_VWAP_BREAK");
+            }
+            double risk = open.stopLoss() != null ? Math.max(0.0, open.entryPrice() - open.stopLoss()) : 0.0;
+            if (holdingMinutes >= 5
+                    && scanResult != null
+                    && Boolean.FALSE.equals(scanResult.getVolumeSustain())
+                    && risk > 0.0
+                    && price < open.entryPrice() + risk * 0.50) {
+                return new ReplayExit(price, "EXIT_VOLUME_FAIL");
+            }
+            if (open.stopLoss() != null && latest.getLow() <= open.stopLoss()) {
+                return new ReplayExit(open.stopLoss(), "EXIT_STOP_LOSS");
+            }
+            if (open.takeProfit() != null && latest.getHigh() >= open.takeProfit()) {
+                return new ReplayExit(open.takeProfit(), "EXIT_TAKE_PROFIT");
+            }
+            if (replayTime != null && !replayTime.toLocalTime().isBefore(DAY_TRADE_FORCE_CLOSE_TIME)) {
+                return new ReplayExit(latest.getClose(), "EXIT_TIME_FORCE");
+            }
+            return null;
+        }
+
+        private String resolveLiveReplayEntryBlockReason(String symbol, LocalDateTime replayTime) {
+            if (liveReplayTradingHalted) {
+                return "live-equivalent replay trading halted";
+            }
+            if (symbol == null || symbol.isBlank() || liveReplayOpenPositions.containsKey(symbol)) {
+                return "position already open";
+            }
+            LocalTime time = replayTime != null ? replayTime.toLocalTime() : LocalTime.now(TAIPEI_ZONE);
+            if (!time.isBefore(DAY_TRADE_FORCE_CLOSE_TIME)) {
+                return "force close window";
+            }
+            if (monitorConfig != null && monitorConfig.getLatestAutoEntryTime() != null
+                    && !time.isBefore(monitorConfig.getLatestAutoEntryTime())) {
+                return "latest entry time reached";
+            }
+            if (monitorConfig != null && monitorConfig.isEarlyEntryBlockEnabled()) {
+                LocalTime start = monitorConfig.getEarlyEntryBlockStart();
+                LocalTime end = monitorConfig.getEarlyEntryBlockEnd();
+                if (start != null && end != null && start.isBefore(end)
+                        && !time.isBefore(start) && time.isBefore(end)) {
+                    return "early entry block";
+                }
+            }
+            LocalDateTime cooldownUntil = liveReplayStopLossCooldownUntil.get(symbol);
+            if (cooldownUntil != null) {
+                if (replayTime != null && replayTime.isBefore(cooldownUntil)) {
+                    return "stop loss cooldown";
+                }
+                liveReplayStopLossCooldownUntil.remove(symbol);
+            }
+            if (monitorConfig != null && liveReplayEntryCount >= monitorConfig.getDailyMaxAutoTrades()) {
+                return "daily max auto trades reached";
+            }
+            if (monitorConfig != null && monitorConfig.getEntryPacingMinutes() > 0 && liveReplayLastEntryTime != null
+                    && replayTime != null
+                    && replayTime.isBefore(liveReplayLastEntryTime.plusMinutes(monitorConfig.getEntryPacingMinutes()))) {
+                return "entry pacing";
+            }
+            if (monitorConfig != null && monitorConfig.isOneEntryPerFiveMinuteBar()
+                    && replayTime != null
+                    && liveReplayEntryBuckets.contains(fiveMinuteBacktestBucket(replayTime))) {
+                return "one entry per M5";
+            }
+            int maxPositions = monitorDecisionConfig != null
+                    ? Math.max(1, monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions())
+                    : 1;
+            if (liveReplayOpenPositions.size() >= maxPositions) {
+                return "max positions reached";
+            }
+            return null;
+        }
+
+        private boolean isNewLiveReplaySignal(String symbol, LocalDateTime replayTime) {
+            LocalDateTime last = liveReplayLastSignalTime.get(symbol);
+            if (last == null || replayTime == null) {
+                return true;
+            }
+            int interval = monitorConfig != null ? Math.max(0, monitorConfig.getMinSignalIntervalMinutes()) : 0;
+            return Duration.between(last, replayTime).toMinutes() >= interval;
+        }
+
+        private boolean isLiveReplayTradingHalted() {
+            if (monitorConfig == null || !monitorConfig.isDisableTradingAfterLossLimit()) {
+                return false;
+            }
+            return liveReplayRealizedPnl <= monitorConfig.getDailyMaxLoss()
+                    || (monitorConfig.getDailyMaxStopLossCount() > 0
+                    && liveReplayStopLossCount >= monitorConfig.getDailyMaxStopLossCount())
+                    || (monitorConfig.getConsecutiveLossLimit() > 0
+                    && liveReplayConsecutiveLosses >= monitorConfig.getConsecutiveLossLimit());
+        }
+
+        private double latestReplayPrice(String symbol, LocalDateTime replayTime) {
+            Tick tick = latestReplayTick(symbol, replayTime);
+            if (tick != null && tick.getPrice() > 0.0) {
+                return tick.getPrice();
+            }
+            Bar latest = latestReplayBar(symbol, replayTime);
+            return latest != null ? latest.getClose() : 0.0;
+        }
+
+        private Tick latestReplayTick(String symbol, LocalDateTime replayTime) {
+            if (symbol == null || replayTime == null) {
+                return null;
+            }
+            List<Tick> ticks = replayTicksBySymbol.get(normalizeReplaySymbol(symbol));
+            if ((ticks == null || ticks.isEmpty()) && symbol.contains(".")) {
+                ticks = replayTicksBySymbol.get(normalizeReplaySymbol(symbol.substring(0, symbol.indexOf('.'))));
+            }
+            if ((ticks == null || ticks.isEmpty()) && !symbol.contains(".")) {
+                ticks = replayTicksBySymbol.get(normalizeReplaySymbol(symbol + ".TW"));
+            }
+            if (ticks == null || ticks.isEmpty()) {
+                return null;
+            }
+            Tick latest = null;
+            for (Tick tick : ticks) {
+                if (tick == null || tick.getTimestamp() == null || tick.getTimestamp().isAfter(replayTime)) {
+                    break;
+                }
+                latest = tick;
+            }
+            return latest;
+        }
+
+        private Bar latestReplayBar(String symbol, LocalDateTime replayTime) {
+            List<Bar> bars = scannerBarsForLog(symbol, replayTime);
+            return bars.isEmpty() ? null : bars.get(bars.size() - 1);
+        }
+
+        private Trade createLiveReplayBuy(
+                LocalDateTime timestamp,
+                String symbol,
+                int quantity,
+                double price,
+                Double stopLoss,
+                Double takeProfit,
+                String reason) {
+            double slippageCost = price * quantity * 0.0005;
+            return new Trade(timestamp, symbol, TradeType.BUY, quantity, price, 0.001425,
+                    0.0, slippageCost, stopLoss, takeProfit, reason);
+        }
+
+        private Trade createLiveReplaySell(
+                LocalDateTime timestamp,
+                String symbol,
+                int quantity,
+                double price,
+                Double stopLoss,
+                Double takeProfit,
+                String reason) {
+            double slippageCost = price * quantity * 0.0005;
+            return new Trade(timestamp, symbol, TradeType.SELL, quantity, price, 0.001425,
+                    0.0015, slippageCost, stopLoss, takeProfit, reason);
+        }
+
+        private record ReplayOpenPosition(
+                String symbol,
+                int quantity,
+                double entryPrice,
+                Double stopLoss,
+                Double takeProfit,
+                Trade entryTrade) {
+        }
+
+        private record ReplayExit(double price, String reason) {
+        }
+
+        private Map<String, List<Bar>> normalizeReplayBars(Map<String, List<Bar>> source) {
+            Map<String, List<Bar>> normalized = new LinkedHashMap<>();
+            if (source == null) {
+                return normalized;
+            }
+            for (Map.Entry<String, List<Bar>> entry : source.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
+                List<Bar> bars = entry.getValue() != null
+                        ? entry.getValue().stream()
+                                .filter(bar -> bar != null && bar.getTimestamp() != null)
+                                .sorted(Comparator.comparing(Bar::getTimestamp))
+                                .toList()
+                        : List.of();
+                normalized.put(normalizeReplaySymbol(entry.getKey()), bars);
+            }
+            return normalized;
+        }
+
+        private Map<String, List<Tick>> normalizeReplayTicks(Map<String, List<Tick>> source) {
+            Map<String, List<Tick>> normalized = new LinkedHashMap<>();
+            if (source == null) {
+                return normalized;
+            }
+            for (Map.Entry<String, List<Tick>> entry : source.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
+                List<Tick> ticks = entry.getValue() != null
+                        ? entry.getValue().stream()
+                                .filter(tick -> tick != null && tick.getTimestamp() != null)
+                                .sorted(Comparator.comparing(Tick::getTimestamp))
+                                .toList()
+                        : List.of();
+                normalized.put(normalizeReplaySymbol(entry.getKey()), ticks);
+            }
+            return normalized;
+        }
+
+        private String normalizeReplaySymbol(String symbol) {
+            return symbol != null ? symbol.trim().toUpperCase(Locale.ROOT) : "";
         }
 
         private Path createReplayLogPath(SqlRadarReplayConfig config) {
@@ -3302,11 +3734,28 @@ public class MainFrameWithDocking extends JFrame {
             return Path.of("logs", "radar-replay", "radar_replay_" + config.date() + "_" + timestamp + ".csv");
         }
 
+        private Path createReplayDetailLogPath(Path summaryPath) {
+            String fileName = summaryPath.getFileName().toString();
+            String detailName = fileName.endsWith(".csv")
+                    ? fileName.substring(0, fileName.length() - 4) + "_symbols.csv"
+                    : fileName + "_symbols.csv";
+            return summaryPath.resolveSibling(detailName);
+        }
+
         private void initializeReplayLog() {
             try {
                 Files.createDirectories(replayLogPath.getParent());
-                String header = "replay_time,scanned_symbols,open_long_signals,blocked_signals,replay_trades,trade_events,top_candidates\n";
+                String header = "\ufeffreplay_time,replay_date,timeframe,source_mode,replay_scan_interval_sec,replay_scan_offset_sec,loaded_data_sources,strategy_name,strategy_details,"
+                        + "scanned_symbols,open_long_signals,blocked_signals,replay_trades,trade_events,top_candidates,"
+                        + "open_long_candidates,blocked_candidates,score_components,warmup_summary\n";
                 Files.writeString(replayLogPath, header, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                String detailHeader = "\ufeffreplay_time,replay_date,timeframe,source_mode,replay_scan_interval_sec,replay_scan_offset_sec,symbol,actual_source,bars,candles,ticks,expected_bars,"
+                        + "scanner_bar_source,scanner_bars,visible_session_bars,last_visible_session_bar_time,"
+                        + "warmup_enabled,warmup_requested_bars,warmup_loaded_bars,warmup_first,warmup_last,"
+                        + "strategy_name,score,confidence,action,block_reason,reason,market_decision,trade_mode,"
+                        + "vwap,vwap_slope,volume_sustain,atr_stop_loss,atr_take_profit,long_bonus,score_components\n";
+                Files.writeString(replayDetailLogPath, detailHeader, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             } catch (IOException e) {
                 statusBar.setText("SQL 雷達重播日誌建立失敗：" + e.getMessage());
@@ -3335,18 +3784,205 @@ public class MainFrameWithDocking extends JFrame {
                                 + ":" + (result.getDecisionResult() != null ? result.getDecisionResult().getAction().name() : "NO_DECISION")
                                 + ":" + firstNonBlank(result.getBlockReason(), result.getReason()))
                         .collect(java.util.stream.Collectors.joining(" | "));
+                String openLongCandidates = results.stream()
+                        .filter(result -> result.getDecisionResult() != null
+                                && result.getDecisionResult().getAction() == DecisionResult.Action.OPEN_LONG)
+                        .map(result -> result.getSymbol()
+                                + ":score=" + String.format(Locale.US, "%.3f", result.getScore())
+                                + ":confidence=" + String.format(Locale.US, "%.3f", result.getConfidence())
+                                + ":reason=" + result.getReason()
+                                + ":bonus=" + result.getLongBonusSummary())
+                        .collect(java.util.stream.Collectors.joining(" | "));
+                String blockedCandidates = results.stream()
+                        .filter(result -> result.getBlockReason() != null && !result.getBlockReason().isBlank())
+                        .map(result -> result.getSymbol()
+                                + ":score=" + String.format(Locale.US, "%.3f", result.getScore())
+                                + ":block=" + result.getBlockReason())
+                        .collect(java.util.stream.Collectors.joining(" | "));
+                String scoreComponents = results.stream()
+                        .sorted(Comparator.naturalOrder())
+                        .limit(10)
+                        .map(result -> result.getSymbol() + ":" + result.getScoreComponentSummary())
+                        .collect(java.util.stream.Collectors.joining(" | "));
                 String line = csv(replayTime.toString()) + ","
+                        + csv(config.date().toString()) + ","
+                        + csv(timeframe.name()) + ","
+                        + csv(config.sourceMode().name()) + ","
+                        + config.scanIntervalSeconds() + ","
+                        + config.scanOffsetSeconds() + ","
+                        + csv(dataSourceSummary()) + ","
+                        + csv(monitorStrategyName) + ","
+                        + csv(buildMonitorStrategyDetails()) + ","
                         + results.size() + ","
                         + openLongSignals + ","
                         + blockedSignals + ","
                         + replayTrades.size() + ","
                         + csv(tradeEvents) + ","
-                        + csv(topCandidates) + "\n";
+                        + csv(topCandidates) + ","
+                        + csv(openLongCandidates) + ","
+                        + csv(blockedCandidates) + ","
+                        + csv(scoreComponents) + ","
+                        + csv(warmupSummary()) + "\n";
                 Files.writeString(replayLogPath, line, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                appendReplayDetailLog(replayTime, results);
             } catch (IOException e) {
                 statusBar.setText("SQL 雷達重播日誌寫入失敗：" + e.getMessage());
             }
+        }
+
+        private String dataSourceSummary() {
+            if (sourceBySymbol.isEmpty()) {
+                return "";
+            }
+            Map<String, Long> counts = sourceBySymbol.values().stream()
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            MarketDataCollectorFeed.SessionBarLoadResult::actualSource,
+                            LinkedHashMap::new,
+                            java.util.stream.Collectors.counting()));
+            String examples = sourceBySymbol.entrySet().stream()
+                    .limit(8)
+                    .map(entry -> entry.getValue().toSummary(entry.getKey()))
+                    .collect(java.util.stream.Collectors.joining(" | "));
+            return counts.entrySet().stream()
+                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                    .collect(java.util.stream.Collectors.joining("; "))
+                    + (examples.isBlank() ? "" : "; examples=" + examples);
+        }
+
+        private String warmupSummary() {
+            int requested = requestedWarmupBars();
+            boolean enabled = isWarmupEnabled();
+            long loadedSymbols = warmupBarsBySymbol.values().stream()
+                    .filter(bars -> bars != null && !bars.isEmpty())
+                    .count();
+            int minLoaded = warmupBarsBySymbol.values().stream()
+                    .mapToInt(bars -> bars != null ? bars.size() : 0)
+                    .min()
+                    .orElse(0);
+            int maxLoaded = warmupBarsBySymbol.values().stream()
+                    .mapToInt(bars -> bars != null ? bars.size() : 0)
+                    .max()
+                    .orElse(0);
+            String examples = warmupBarsBySymbol.entrySet().stream()
+                    .limit(8)
+                    .map(entry -> entry.getKey() + "=" + (entry.getValue() != null ? entry.getValue().size() : 0))
+                    .collect(java.util.stream.Collectors.joining(" | "));
+            return "enabled=" + enabled
+                    + "; requested=" + requested
+                    + "; loaded_symbols=" + loadedSymbols + "/" + warmupBarsBySymbol.size()
+                    + "; loaded_range=" + minLoaded + "-" + maxLoaded
+                    + (examples.isBlank() ? "" : "; examples=" + examples);
+        }
+
+        private void appendReplayDetailLog(LocalDateTime replayTime, List<MarketScanResult> results) throws IOException {
+            StringBuilder detail = new StringBuilder();
+            for (MarketScanResult result : results) {
+                MarketDataCollectorFeed.SessionBarLoadResult source = sourceFor(result.getSymbol());
+                List<Bar> warmupBars = warmupFor(result.getSymbol());
+                List<Bar> visibleSessionBars = replayFeed.visibleSessionBars(result.getSymbol());
+                List<Bar> scannerBars = scannerBarsForLog(result.getSymbol(), replayTime);
+                DecisionResult decision = result.getDecisionResult();
+                detail.append(csv(replayTime.toString())).append(',')
+                        .append(csv(config.date().toString())).append(',')
+                        .append(csv(timeframe.name())).append(',')
+                        .append(csv(config.sourceMode().name())).append(',')
+                        .append(config.scanIntervalSeconds()).append(',')
+                        .append(config.scanOffsetSeconds()).append(',')
+                        .append(csv(result.getSymbol())).append(',')
+                        .append(csv(source != null ? source.actualSource() : "")).append(',')
+                        .append(source != null ? source.bars().size() : 0).append(',')
+                        .append(source != null ? source.candleCount() : 0).append(',')
+                        .append(source != null ? source.tickCount() : 0).append(',')
+                        .append(source != null ? source.expectedBars() : 0).append(',')
+                        .append(csv("REPLAY_FEED")).append(',')
+                        .append(scannerBars.size()).append(',')
+                        .append(visibleSessionBars.size()).append(',')
+                        .append(csv(visibleSessionBars.isEmpty() ? "" : visibleSessionBars.get(visibleSessionBars.size() - 1).getTimestamp().toString())).append(',')
+                        .append(isWarmupEnabled()).append(',')
+                        .append(requestedWarmupBars()).append(',')
+                        .append(warmupBars.size()).append(',')
+                        .append(csv(warmupBars.isEmpty() ? "" : warmupBars.get(0).getTimestamp().toString())).append(',')
+                        .append(csv(warmupBars.isEmpty() ? "" : warmupBars.get(warmupBars.size() - 1).getTimestamp().toString())).append(',')
+                        .append(csv(monitorStrategyName)).append(',')
+                        .append(String.format(Locale.US, "%.3f", result.getScore())).append(',')
+                        .append(String.format(Locale.US, "%.3f", result.getConfidence())).append(',')
+                        .append(csv(decision != null ? decision.getAction().name() : "NO_DECISION")).append(',')
+                        .append(csv(result.getBlockReason())).append(',')
+                        .append(csv(result.getReason())).append(',')
+                        .append(csv(result.getMarketDecision() != null ? result.getMarketDecision().name() : "")).append(',')
+                        .append(csv(result.getTradeMode() != null ? result.getTradeMode().name() : "")).append(',')
+                        .append(csv(formatNullable(result.getVwap()))).append(',')
+                        .append(csv(formatNullable(result.getVwapSlopePercent()))).append(',')
+                        .append(csv(result.getVolumeSustain() != null ? result.getVolumeSustain().toString() : "")).append(',')
+                        .append(csv(formatNullable(result.getAtrStopLoss()))).append(',')
+                        .append(csv(formatNullable(result.getAtrTakeProfit()))).append(',')
+                        .append(csv(result.getLongBonusSummary())).append(',')
+                        .append(csv(result.getScoreComponentSummary())).append('\n');
+            }
+            Files.writeString(replayDetailLogPath, detail.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        }
+
+        private List<Bar> scannerBarsForLog(String symbol, LocalDateTime replayTime) {
+            List<Bar> bars = replayFeed.fetchHistoricalBars(symbol, timeframe, request.getBarCount()).stream()
+                    .filter(bar -> bar != null && bar.getTimestamp() != null)
+                    .sorted(Comparator.comparing(Bar::getTimestamp))
+                    .toList();
+            return bars;
+        }
+
+        private MarketDataCollectorFeed.SessionBarLoadResult sourceFor(String symbol) {
+            if (symbol == null) {
+                return null;
+            }
+            MarketDataCollectorFeed.SessionBarLoadResult source = sourceBySymbol.get(symbol);
+            if (source != null) {
+                return source;
+            }
+            String normalized = symbol.trim().toUpperCase(Locale.ROOT);
+            source = sourceBySymbol.get(normalized);
+            if (source != null) {
+                return source;
+            }
+            for (Map.Entry<String, MarketDataCollectorFeed.SessionBarLoadResult> entry : sourceBySymbol.entrySet()) {
+                String key = entry.getKey();
+                if (key != null && key.trim().equalsIgnoreCase(normalized)) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
+
+        private List<Bar> warmupFor(String symbol) {
+            if (symbol == null) {
+                return List.of();
+            }
+            List<Bar> bars = warmupBarsBySymbol.get(symbol);
+            if (bars != null) {
+                return bars;
+            }
+            String normalized = normalizeReplaySymbol(symbol);
+            bars = warmupBarsBySymbol.get(normalized);
+            return bars != null ? bars : List.of();
+        }
+
+        private boolean isWarmupEnabled() {
+            RadarStrategyConfig radar = request != null ? request.getRadarStrategyConfig() : null;
+            return radar != null && radar.isBacktestCrossDayWarmupEnabled();
+        }
+
+        private int requestedWarmupBars() {
+            RadarStrategyConfig radar = request != null ? request.getRadarStrategyConfig() : null;
+            if (radar == null || !radar.isBacktestCrossDayWarmupEnabled()) {
+                return 0;
+            }
+            int minimumForSlowAverage = Math.max(0, radar.getSlowMovingAveragePeriod() * 3);
+            return Math.max(radar.getBacktestWarmupBarCount(), minimumForSlowAverage);
+        }
+
+        private String formatNullable(Double value) {
+            return value != null && Double.isFinite(value) ? String.format(Locale.US, "%.4f", value) : "";
         }
 
         private String csv(String value) {
@@ -3362,11 +3998,19 @@ public class MainFrameWithDocking extends JFrame {
     private static class ReplayBarFeed implements MarketDataFeed {
         private final Map<String, List<Bar>> sessionBarsBySymbol;
         private final Map<String, List<Bar>> warmupBarsBySymbol;
+        private final Map<String, List<Tick>> sessionTicksBySymbol;
+        private final Timeframe defaultTimeframe;
         private LocalDateTime replayTime = LocalDateTime.now();
 
-        ReplayBarFeed(Map<String, List<Bar>> sessionBarsBySymbol, Map<String, List<Bar>> warmupBarsBySymbol) {
+        ReplayBarFeed(
+                Map<String, List<Bar>> sessionBarsBySymbol,
+                Map<String, List<Bar>> warmupBarsBySymbol,
+                Map<String, List<Tick>> sessionTicksBySymbol,
+                Timeframe defaultTimeframe) {
             this.sessionBarsBySymbol = normalizeBarMap(sessionBarsBySymbol);
             this.warmupBarsBySymbol = normalizeBarMap(warmupBarsBySymbol);
+            this.sessionTicksBySymbol = normalizeTickMap(sessionTicksBySymbol);
+            this.defaultTimeframe = defaultTimeframe != null ? defaultTimeframe : Timeframe.M5;
         }
 
         void setReplayTime(LocalDateTime replayTime) {
@@ -3379,9 +4023,18 @@ public class MainFrameWithDocking extends JFrame {
         }
 
         List<Bar> visibleSessionBars(String symbol) {
+            return visibleSessionBars(symbol, defaultTimeframe);
+        }
+
+        List<Bar> visibleSessionBars(String symbol, Timeframe timeframe) {
             String key = normalizeSymbolKey(symbol);
+            List<Tick> ticks = sessionTicksBySymbol.getOrDefault(key, List.of());
+            if (!ticks.isEmpty()) {
+                return aggregateVisibleTicks(ticks, timeframe != null ? timeframe : defaultTimeframe);
+            }
+            int minutes = Math.max(1, timeframe != null ? timeframe.getMinutes() : defaultTimeframe.getMinutes());
             return sessionBarsBySymbol.getOrDefault(key, List.of()).stream()
-                    .filter(bar -> !bar.getTimestamp().isAfter(replayTime))
+                    .filter(bar -> !bar.getTimestamp().plusMinutes(minutes).isAfter(replayTime))
                     .toList();
         }
 
@@ -3408,7 +4061,7 @@ public class MainFrameWithDocking extends JFrame {
 
         @Override
         public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
-            List<Bar> visibleSession = visibleSessionBars(symbol);
+            List<Bar> visibleSession = visibleSessionBars(symbol, timeframe);
             List<Bar> visible = new ArrayList<>();
             visible.addAll(warmupBarsBySymbol.getOrDefault(normalizeSymbolKey(symbol), List.of()));
             visible.addAll(visibleSession);
@@ -3417,6 +4070,48 @@ public class MainFrameWithDocking extends JFrame {
                 return new ArrayList<>(visible.subList(visible.size() - safeCount, visible.size()));
             }
             return visible;
+        }
+
+        private List<Bar> aggregateVisibleTicks(List<Tick> ticks, Timeframe timeframe) {
+            if (ticks == null || ticks.isEmpty() || timeframe == null) {
+                return List.of();
+            }
+            Map<LocalDateTime, MutableReplayBar> grouped = new LinkedHashMap<>();
+            long previousVolume = -1L;
+            for (Tick tick : ticks) {
+                if (tick == null || tick.getTimestamp() == null || tick.getTimestamp().isAfter(replayTime)) {
+                    break;
+                }
+                LocalDateTime bucketTime = floorToTimeframe(tick.getTimestamp(), timeframe);
+                MutableReplayBar bar = grouped.computeIfAbsent(bucketTime, ignored -> new MutableReplayBar(bucketTime, tick.getPrice()));
+                long volumeContribution = resolveVolumeContribution(previousVolume, tick.getVolume());
+                bar.add(tick.getPrice(), volumeContribution);
+                previousVolume = tick.getVolume();
+            }
+            return grouped.values().stream()
+                    .map(MutableReplayBar::toBar)
+                    .toList();
+        }
+
+        private static LocalDateTime floorToTimeframe(LocalDateTime timestamp, Timeframe timeframe) {
+            LocalDateTime minute = timestamp.withSecond(0).withNano(0);
+            int frameMinutes = Math.max(1, timeframe.getMinutes());
+            int minuteOfDay = minute.getHour() * 60 + minute.getMinute();
+            int flooredMinuteOfDay = minuteOfDay - (minuteOfDay % frameMinutes);
+            return minute.toLocalDate().atStartOfDay().plusMinutes(flooredMinuteOfDay);
+        }
+
+        private static long resolveVolumeContribution(long previousVolume, long currentVolume) {
+            if (currentVolume <= 0) {
+                return 0L;
+            }
+            if (previousVolume < 0) {
+                return currentVolume;
+            }
+            if (currentVolume >= previousVolume) {
+                return currentVolume - previousVolume;
+            }
+            return currentVolume;
         }
 
         private static Map<String, List<Bar>> normalizeBarMap(Map<String, List<Bar>> source) {
@@ -3439,8 +4134,56 @@ public class MainFrameWithDocking extends JFrame {
             return normalized;
         }
 
+        private static Map<String, List<Tick>> normalizeTickMap(Map<String, List<Tick>> source) {
+            Map<String, List<Tick>> normalized = new LinkedHashMap<>();
+            if (source == null) {
+                return normalized;
+            }
+            for (Map.Entry<String, List<Tick>> entry : source.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
+                List<Tick> ticks = entry.getValue() != null
+                        ? entry.getValue().stream()
+                                .filter(tick -> tick != null && tick.getTimestamp() != null)
+                                .sorted(Comparator.comparing(Tick::getTimestamp))
+                                .toList()
+                        : List.of();
+                normalized.put(normalizeSymbolKey(entry.getKey()), ticks);
+            }
+            return normalized;
+        }
+
         private static String normalizeSymbolKey(String symbol) {
             return symbol != null ? symbol.trim().toUpperCase(Locale.ROOT) : "";
+        }
+
+        private static class MutableReplayBar {
+            private final LocalDateTime timestamp;
+            private final double open;
+            private double high;
+            private double low;
+            private double close;
+            private long volume;
+
+            private MutableReplayBar(LocalDateTime timestamp, double firstPrice) {
+                this.timestamp = timestamp;
+                this.open = firstPrice;
+                this.high = firstPrice;
+                this.low = firstPrice;
+                this.close = firstPrice;
+            }
+
+            private void add(double price, long volumeContribution) {
+                high = Math.max(high, price);
+                low = Math.min(low, price);
+                close = price;
+                volume += Math.max(0L, volumeContribution);
+            }
+
+            private Bar toBar() {
+                return new Bar(timestamp, open, high, low, close, volume);
+            }
         }
     }
 
@@ -3682,6 +4425,9 @@ public class MainFrameWithDocking extends JFrame {
         for (BacktestResult result : results) {
             for (BacktestResult.SignalObservation observation : result.getSignalObservations()) {
                 combined.addSignalObservation(observation);
+            }
+            for (BacktestResult.WarmupDiagnostic diagnostic : result.getWarmupDiagnostics()) {
+                combined.addWarmupDiagnostic(diagnostic);
             }
         }
         combined.addSnapshot(start, initialCapital, initialCapital, 0.0, 0);
@@ -5403,6 +6149,7 @@ public class MainFrameWithDocking extends JFrame {
                     例：13:05 代表 13:05 後不再 OPEN_LONG，但仍可掃描與平倉。""");
             case "雷達最低進場分數" -> htmlTooltip("""
                     MarketScanner 最終多頭分數需達到此值才允許進場。
+                    這是做多門檻後的第二道進場分數門檻。
                     例：0.50 代表總分低於 0.50 時直接略過。""");
             case "量能突破遇 RSI 超買時禁止追高" -> htmlTooltip("""
                     當放量突破同時 RSI 過熱時，阻擋 OPEN_LONG。

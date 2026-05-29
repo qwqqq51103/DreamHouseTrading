@@ -1,10 +1,14 @@
 package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.MarketDataFeed;
+import com.dreamhouse.trading.core.MarketDataListener;
+import com.dreamhouse.trading.core.MarketDataCollectorFeed;
 import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.DecisionConfig;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
+import com.dreamhouse.trading.core.model.Bar;
+import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 import com.dreamhouse.trading.core.finmind.FinMindAccessDeniedException;
 import com.dreamhouse.trading.core.finmind.FinMindQuotaExceededException;
 import com.dreamhouse.trading.core.scanner.MarketContextSnapshot;
@@ -14,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -63,7 +68,17 @@ public class SignalMonitorService {
         this.dataFeed = dataFeed;
         this.config = config != null ? config : SignalMonitorConfig.createDefault();
         this.decisionConfig = decisionConfig != null ? decisionConfig : DecisionConfig.createDefault();
-        this.scannerService = new MarketScannerService(dataFeed);
+        this.scannerService = new MarketScannerService(createScannerFeed(this.dataFeed, this.config));
+    }
+
+    private MarketDataFeed createScannerFeed(MarketDataFeed source, SignalMonitorConfig monitorConfig) {
+        if (source instanceof MarketDataCollectorFeed collectorFeed
+                && monitorConfig != null
+                && monitorConfig.getRadarStrategyConfig() != null
+                && monitorConfig.getRadarStrategyConfig().isBacktestCrossDayWarmupEnabled()) {
+            return new WarmupAwareMarketDataFeed(collectorFeed, monitorConfig.getRadarStrategyConfig());
+        }
+        return source;
     }
 
     public synchronized void start(Collection<String> symbols) {
@@ -215,7 +230,9 @@ public class SignalMonitorService {
                 .barCount(resolveBarCount(mode))
                 .decisionConfig(decisionConfig)
                 .radarStrategyConfig(config.getRadarStrategyConfig())
-                .marketContext(marketContext);
+                .marketContext(marketContext)
+                .useMarketContextBars(false)
+                .asOfTime(LocalDateTime.now());
     }
 
     private MarketContextSnapshot buildMarketContext() {
@@ -333,5 +350,104 @@ public class SignalMonitorService {
 
     public SignalMonitorConfig getConfig() {
         return config;
+    }
+
+    private static class WarmupAwareMarketDataFeed implements MarketDataFeed {
+        private final MarketDataCollectorFeed delegate;
+        private final RadarStrategyConfig radarConfig;
+
+        private WarmupAwareMarketDataFeed(MarketDataCollectorFeed delegate, RadarStrategyConfig radarConfig) {
+            this.delegate = delegate;
+            this.radarConfig = radarConfig;
+        }
+
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+            delegate.subscribe(symbol, listener);
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+            delegate.unsubscribe(symbol, listener);
+        }
+
+        @Override
+        public void start() {
+            delegate.start();
+        }
+
+        @Override
+        public void stop() {
+            delegate.stop();
+        }
+
+        @Override
+        public boolean isConnected() {
+            return delegate.isConnected();
+        }
+
+        @Override
+        public void pause() {
+            delegate.pause();
+        }
+
+        @Override
+        public void resume() {
+            delegate.resume();
+        }
+
+        @Override
+        public boolean isPaused() {
+            return delegate.isPaused();
+        }
+
+        @Override
+        public void loadHistoricalData(String symbol, Timeframe timeframe) {
+            delegate.loadHistoricalData(symbol, timeframe);
+        }
+
+        @Override
+        public void loadHistoricalData(String symbol, Timeframe timeframe, int barCount) {
+            delegate.loadHistoricalData(symbol, timeframe, barCount);
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            List<Bar> sessionBars = delegate.fetchHistoricalBars(symbol, timeframe, barCount);
+            if (sessionBars.isEmpty()
+                    || radarConfig == null
+                    || !radarConfig.isBacktestCrossDayWarmupEnabled()
+                    || !isIntraday(timeframe)) {
+                return sessionBars;
+            }
+            int warmupCount = requestedWarmupBars(radarConfig);
+            if (warmupCount <= 0) {
+                return sessionBars;
+            }
+            List<Bar> warmupBars = delegate.fetchWarmupBarsBeforeSession(
+                    symbol,
+                    timeframe,
+                    LocalDate.now(),
+                    warmupCount);
+            if (warmupBars.isEmpty()) {
+                return sessionBars;
+            }
+            List<Bar> combined = new ArrayList<>(warmupBars.size() + sessionBars.size());
+            combined.addAll(warmupBars);
+            combined.addAll(sessionBars);
+            return combined;
+        }
+
+        private int requestedWarmupBars(RadarStrategyConfig radar) {
+            int minimumForSlowAverage = Math.max(0, radar.getSlowMovingAveragePeriod() * 3);
+            return Math.max(radar.getBacktestWarmupBarCount(), minimumForSlowAverage);
+        }
+
+        private boolean isIntraday(Timeframe timeframe) {
+            return switch (timeframe) {
+                case M1, M5, M15, M30, H1 -> true;
+                default -> false;
+            };
+        }
     }
 }

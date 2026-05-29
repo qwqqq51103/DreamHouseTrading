@@ -6,12 +6,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.swing.SwingUtilities;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -41,6 +47,8 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     private static final long POLL_INTERVAL_SECONDS = 10;
     private static final Set<Timeframe> INTRADAY_TIMEFRAMES =
             EnumSet.of(Timeframe.M1, Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1);
+    private static final Object STALE_WARN_LOG_LOCK = new Object();
+    private static final DateTimeFormatter STALE_WARN_FILE_DATE = DateTimeFormatter.BASIC_ISO_DATE;
 
     private final MarketDataCollectorRepository repository;
     private final Duration staleThreshold;
@@ -52,6 +60,54 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     private ScheduledFuture<?> pollTask;
     private volatile boolean connected;
     private volatile boolean paused;
+
+    public enum SessionBarSourceMode {
+        AUTO("自動：candlesticks 完整時優先，否則 ticks 聚合"),
+        TICKS_AGGREGATED("固定使用 ticks 聚合"),
+        CANDLES_ONLY("固定使用 candlesticks");
+
+        private final String description;
+
+        SessionBarSourceMode(String description) {
+            this.description = description;
+        }
+
+        public String description() {
+            return description;
+        }
+
+        @Override
+        public String toString() {
+            return description;
+        }
+    }
+
+    public record SessionBarLoadResult(
+            List<Bar> bars,
+            SessionBarSourceMode requestedMode,
+            String actualSource,
+            int candleCount,
+            int tickCount,
+            int expectedBars) {
+
+        public SessionBarLoadResult {
+            bars = bars != null ? List.copyOf(bars) : List.of();
+            requestedMode = requestedMode != null ? requestedMode : SessionBarSourceMode.AUTO;
+            actualSource = actualSource != null ? actualSource : "";
+            candleCount = Math.max(candleCount, 0);
+            tickCount = Math.max(tickCount, 0);
+            expectedBars = Math.max(expectedBars, 0);
+        }
+
+        public String toSummary(String symbol) {
+            String safeSymbol = symbol != null ? symbol : "";
+            return safeSymbol + "=" + actualSource
+                    + "(bars=" + bars.size()
+                    + ",candles=" + candleCount
+                    + ",ticks=" + tickCount
+                    + ",expected=" + expectedBars + ")";
+        }
+    }
 
     public MarketDataCollectorFeed() {
         this(createDefaultRepository(), DEFAULT_STALE_THRESHOLD, true);
@@ -185,6 +241,7 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
                         freshness.latest(),
                         freshness.lagSeconds(),
                         staleThreshold.toSeconds());
+                writeStaleWarningLog(symbol, freshness, staleThreshold, now, "SKIP_SCAN");
                 return List.of();
             }
             logger.debug(
@@ -208,19 +265,76 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
     }
 
     public List<Bar> fetchSessionBars(String symbol, Timeframe timeframe, LocalDate date) {
+        return fetchSessionBars(symbol, timeframe, date, SessionBarSourceMode.AUTO);
+    }
+
+    public List<Bar> fetchSessionBars(
+            String symbol,
+            Timeframe timeframe,
+            LocalDate date,
+            SessionBarSourceMode mode) {
+        return fetchSessionBarsWithSource(symbol, timeframe, date, mode).bars();
+    }
+
+    public SessionBarLoadResult fetchSessionBarsWithSource(
+            String symbol,
+            Timeframe timeframe,
+            LocalDate date,
+            SessionBarSourceMode mode) {
         LocalDate sessionDate = date != null ? date : LocalDate.now(TAIPEI_ZONE);
+        SessionBarSourceMode sourceMode = mode != null ? mode : SessionBarSourceMode.AUTO;
         List<Bar> candles = findSessionCandlesWithIntervalAliases(symbol, timeframe, sessionDate);
         int expectedBars = expectedSessionBarCount(timeframe, sessionDate);
+        if (sourceMode == SessionBarSourceMode.CANDLES_ONLY) {
+            return new SessionBarLoadResult(
+                    candles,
+                    sourceMode,
+                    candles.size() >= expectedBars ? "CANDLES_COMPLETE" : "CANDLES_INCOMPLETE",
+                    candles.size(),
+                    0,
+                    expectedBars);
+        }
+
+        if (sourceMode == SessionBarSourceMode.TICKS_AGGREGATED) {
+            List<Tick> ticks = repository.findSessionTicks(symbol, sessionDate);
+            List<Bar> bars = aggregateTicks(ticks, timeframe);
+            return new SessionBarLoadResult(
+                    bars,
+                    sourceMode,
+                    bars.size() >= expectedBars ? "TICKS_AGGREGATED_COMPLETE" : "TICKS_AGGREGATED_INCOMPLETE",
+                    candles.size(),
+                    ticks.size(),
+                    expectedBars);
+        }
+
         if (!candles.isEmpty() && candles.size() >= expectedBars) {
-            return candles;
+            return new SessionBarLoadResult(
+                    candles,
+                    sourceMode,
+                    "AUTO_CANDLES_COMPLETE",
+                    candles.size(),
+                    0,
+                    expectedBars);
         }
 
         List<Tick> ticks = repository.findSessionTicks(symbol, sessionDate);
         List<Bar> bars = aggregateTicks(ticks, timeframe);
         if (!bars.isEmpty()) {
-            return bars;
+            return new SessionBarLoadResult(
+                    bars,
+                    sourceMode,
+                    "AUTO_TICKS_AGGREGATED",
+                    candles.size(),
+                    ticks.size(),
+                    expectedBars);
         }
-        return candles;
+        return new SessionBarLoadResult(
+                candles,
+                sourceMode,
+                candles.isEmpty() ? "AUTO_NO_DATA" : "AUTO_CANDLES_INCOMPLETE",
+                candles.size(),
+                ticks.size(),
+                expectedBars);
     }
 
     public List<Bar> fetchWarmupBarsBeforeSession(String symbol, Timeframe timeframe, LocalDate date, int barCount) {
@@ -271,6 +385,52 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
         }
         long lagSeconds = Math.max(0L, Duration.between(latest, LocalDateTime.now(TAIPEI_ZONE)).toSeconds());
         return new DataFreshness(latest, lagSeconds, lagSeconds > staleThreshold.toSeconds());
+    }
+
+    private void writeStaleWarningLog(
+            String symbol,
+            DataFreshness freshness,
+            Duration threshold,
+            LocalDateTime detectedAt,
+            String action) {
+        LocalDateTime safeDetectedAt = detectedAt != null ? detectedAt : LocalDateTime.now(TAIPEI_ZONE);
+        Path logPath = Path.of(
+                "logs",
+                "market-data-warnings",
+                "collector_stale_warnings_" + safeDetectedAt.toLocalDate().format(STALE_WARN_FILE_DATE) + ".csv");
+        synchronized (STALE_WARN_LOG_LOCK) {
+            try {
+                Files.createDirectories(logPath.getParent());
+                boolean newFile = Files.notExists(logPath) || Files.size(logPath) == 0L;
+                StringBuilder line = new StringBuilder();
+                if (newFile) {
+                    line.append('\ufeff');
+                    line.append("detected_at,symbol,latest_tick_time,lag_seconds,threshold_seconds,action,message\n");
+                }
+                String message = String.format(
+                        "%s local collector data is stale; latest=%s, lag=%ds, threshold=%ds; skipping scan instead of calling FinMind",
+                        symbol,
+                        freshness.latest(),
+                        freshness.lagSeconds(),
+                        threshold.toSeconds());
+                line.append(csv(safeDetectedAt.toString())).append(',')
+                        .append(csv(symbol)).append(',')
+                        .append(csv(freshness.latest() != null ? freshness.latest().toString() : "")).append(',')
+                        .append(freshness.lagSeconds()).append(',')
+                        .append(threshold.toSeconds()).append(',')
+                        .append(csv(action)).append(',')
+                        .append(csv(message)).append('\n');
+                Files.writeString(logPath, line.toString(), StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                logger.debug("Failed to write collector stale warning log: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static String csv(String value) {
+        String safe = value != null ? value : "";
+        return "\"" + safe.replace("\"", "\"\"") + "\"";
     }
 
     List<Bar> aggregateTicks(List<Tick> ticks, Timeframe timeframe) {
@@ -415,7 +575,8 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
             effectiveEnd = now;
         }
         long elapsedMinutes = Math.max(0L, Duration.between(marketOpen, effectiveEnd).toMinutes());
-        return (int) (elapsedMinutes / Math.max(1, timeframe.getMinutes())) + 1;
+        int frameMinutes = Math.max(1, timeframe.getMinutes());
+        return Math.max(1, (int) Math.ceil(elapsedMinutes / (double) frameMinutes));
     }
 
     private long resolveVolumeContribution(long previousVolume, long currentVolume) {
