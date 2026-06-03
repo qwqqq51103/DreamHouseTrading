@@ -1,23 +1,21 @@
 package com.dreamhouse.trading.core.execution;
 
+import com.dreamhouse.trading.core.decision.DecisionResult;
+
 import java.time.LocalDateTime;
 
 /**
- * 執行結果
- * 記錄交易執行的結果資訊
+ * Standard execution response.
  */
 public class ExecutionResult {
 
-    /**
-     * 執行狀態
-     */
     public enum Status {
-        SUCCESS("成功"),
-        FAILED("失敗"),
-        PARTIAL("部分成交"),
-        PENDING("待成交"),
-        CANCELLED("已取消"),
-        REJECTED("已拒絕");
+        SUCCESS("Success"),
+        FAILED("Failed"),
+        PARTIAL("Partial"),
+        PENDING("Pending"),
+        CANCELLED("Cancelled"),
+        REJECTED("Rejected");
 
         private final String displayName;
 
@@ -34,72 +32,150 @@ public class ExecutionResult {
     private final String orderId;
     private final String symbol;
     private final OrderType orderType;
+    private final OrderSide orderSide;
+    private final OrderStatus orderStatus;
     private final int requestedQuantity;
     private final int executedQuantity;
     private final double requestedPrice;
     private final double executedPrice;
+    private final Double stopLoss;
+    private final Double takeProfit;
+    private final double realizedPnL;
     private final double commission;
+    private final double tax;
     private final LocalDateTime executionTime;
+    private final String positionId;
     private final String message;
+    private final String decisionReason;
+    private final DecisionResult.DecisionSource decisionSource;
+    private final boolean autoManaged;
     private final Exception error;
 
-    /**
-     * 建構子（使用 Builder 模式）
-     */
     private ExecutionResult(Builder builder) {
         this.status = builder.status;
         this.orderId = builder.orderId;
         this.symbol = builder.symbol;
         this.orderType = builder.orderType;
+        this.orderSide = builder.orderSide;
+        this.orderStatus = builder.orderStatus;
         this.requestedQuantity = builder.requestedQuantity;
         this.executedQuantity = builder.executedQuantity;
         this.requestedPrice = builder.requestedPrice;
         this.executedPrice = builder.executedPrice;
+        this.stopLoss = builder.stopLoss;
+        this.takeProfit = builder.takeProfit;
+        this.realizedPnL = builder.realizedPnL;
         this.commission = builder.commission;
+        this.tax = builder.tax;
         this.executionTime = builder.executionTime;
+        this.positionId = builder.positionId;
         this.message = builder.message;
+        this.decisionReason = builder.decisionReason;
+        this.decisionSource = builder.decisionSource;
+        this.autoManaged = builder.autoManaged;
         this.error = builder.error;
     }
 
-    // Getters
+    public Status getStatus() {
+        return status;
+    }
 
-    public Status getStatus() { return status; }
-    public String getOrderId() { return orderId; }
-    public String getSymbol() { return symbol; }
-    public OrderType getOrderType() { return orderType; }
-    public int getRequestedQuantity() { return requestedQuantity; }
-    public int getExecutedQuantity() { return executedQuantity; }
-    public double getRequestedPrice() { return requestedPrice; }
-    public double getExecutedPrice() { return executedPrice; }
-    public double getCommission() { return commission; }
-    public LocalDateTime getExecutionTime() { return executionTime; }
-    public String getMessage() { return message; }
-    public Exception getError() { return error; }
+    public String getOrderId() {
+        return orderId;
+    }
 
-    /**
-     * 是否成功
-     */
+    public String getSymbol() {
+        return symbol;
+    }
+
+    public OrderType getOrderType() {
+        return orderType;
+    }
+
+    public OrderSide getOrderSide() {
+        return orderSide;
+    }
+
+    public OrderStatus getOrderStatus() {
+        return orderStatus;
+    }
+
+    public int getRequestedQuantity() {
+        return requestedQuantity;
+    }
+
+    public int getExecutedQuantity() {
+        return executedQuantity;
+    }
+
+    public double getRequestedPrice() {
+        return requestedPrice;
+    }
+
+    public double getExecutedPrice() {
+        return executedPrice;
+    }
+
+    public Double getStopLoss() {
+        return stopLoss;
+    }
+
+    public Double getTakeProfit() {
+        return takeProfit;
+    }
+
+    public double getRealizedPnL() {
+        return realizedPnL;
+    }
+
+    public double getCommission() {
+        return commission;
+    }
+
+    public double getTax() {
+        return tax;
+    }
+
+    public LocalDateTime getExecutionTime() {
+        return executionTime;
+    }
+
+    public String getPositionId() {
+        return positionId;
+    }
+
+    public String getMessage() {
+        return message;
+    }
+
+    public String getDecisionReason() {
+        return decisionReason;
+    }
+
+    public DecisionResult.DecisionSource getDecisionSource() {
+        return decisionSource;
+    }
+
+    public boolean isAutoManaged() {
+        return autoManaged;
+    }
+
+    public Exception getError() {
+        return error;
+    }
+
     public boolean isSuccess() {
         return status == Status.SUCCESS;
     }
 
-    /**
-     * 是否失敗
-     */
     public boolean isFailed() {
         return status == Status.FAILED || status == Status.REJECTED;
     }
 
-    /**
-     * 是否部分成交
-     */
     public boolean isPartial() {
         return status == Status.PARTIAL;
     }
 
-    /**
-     * 獲取成交率
-     */
     public double getFillRate() {
         if (requestedQuantity == 0) {
             return 0.0;
@@ -107,43 +183,51 @@ public class ExecutionResult {
         return (double) executedQuantity / requestedQuantity;
     }
 
-    /**
-     * 獲取滑價（實際成交價與請求價的差異）
-     */
     public double getSlippage() {
         return executedPrice - requestedPrice;
     }
 
-    /**
-     * 獲取總成交金額
-     */
     public double getTotalAmount() {
         return executedQuantity * executedPrice;
     }
 
     @Override
     public String toString() {
-        return String.format("ExecutionResult[%s %s %s: %d@%.2f, status=%s]",
-                orderId, symbol, orderType.getShortCode(),
-                executedQuantity, executedPrice, status.getDisplayName());
+        return String.format(
+                "ExecutionResult[%s %s %s %s: %d@%.2f, status=%s/%s]",
+                orderId,
+                symbol,
+                orderSide,
+                orderType.getShortCode(),
+                executedQuantity,
+                executedPrice,
+                status.getDisplayName(),
+                orderStatus);
     }
 
-    /**
-     * Builder 類別
-     */
     public static class Builder {
         private Status status = Status.SUCCESS;
         private String orderId = "";
         private String symbol = "";
         private OrderType orderType = OrderType.MARKET;
-        private int requestedQuantity = 0;
-        private int executedQuantity = 0;
-        private double requestedPrice = 0.0;
-        private double executedPrice = 0.0;
-        private double commission = 0.0;
+        private OrderSide orderSide = OrderSide.BUY;
+        private OrderStatus orderStatus = OrderStatus.FILLED;
+        private int requestedQuantity;
+        private int executedQuantity;
+        private double requestedPrice;
+        private double executedPrice;
+        private Double stopLoss;
+        private Double takeProfit;
+        private double realizedPnL;
+        private double commission;
+        private double tax;
         private LocalDateTime executionTime = LocalDateTime.now();
+        private String positionId = "";
         private String message = "";
-        private Exception error = null;
+        private String decisionReason = "";
+        private DecisionResult.DecisionSource decisionSource = DecisionResult.DecisionSource.MANUAL;
+        private boolean autoManaged;
+        private Exception error;
 
         public Builder status(Status status) {
             this.status = status;
@@ -162,6 +246,16 @@ public class ExecutionResult {
 
         public Builder orderType(OrderType orderType) {
             this.orderType = orderType;
+            return this;
+        }
+
+        public Builder orderSide(OrderSide orderSide) {
+            this.orderSide = orderSide;
+            return this;
+        }
+
+        public Builder orderStatus(OrderStatus orderStatus) {
+            this.orderStatus = orderStatus;
             return this;
         }
 
@@ -185,8 +279,28 @@ public class ExecutionResult {
             return this;
         }
 
+        public Builder stopLoss(Double stopLoss) {
+            this.stopLoss = stopLoss;
+            return this;
+        }
+
+        public Builder takeProfit(Double takeProfit) {
+            this.takeProfit = takeProfit;
+            return this;
+        }
+
+        public Builder realizedPnL(double realizedPnL) {
+            this.realizedPnL = realizedPnL;
+            return this;
+        }
+
         public Builder commission(double commission) {
             this.commission = commission;
+            return this;
+        }
+
+        public Builder tax(double tax) {
+            this.tax = tax;
             return this;
         }
 
@@ -195,14 +309,35 @@ public class ExecutionResult {
             return this;
         }
 
+        public Builder positionId(String positionId) {
+            this.positionId = positionId;
+            return this;
+        }
+
         public Builder message(String message) {
             this.message = message;
+            return this;
+        }
+
+        public Builder decisionReason(String decisionReason) {
+            this.decisionReason = decisionReason;
+            return this;
+        }
+
+        public Builder decisionSource(DecisionResult.DecisionSource decisionSource) {
+            this.decisionSource = decisionSource != null ? decisionSource : DecisionResult.DecisionSource.MANUAL;
+            return this;
+        }
+
+        public Builder autoManaged(boolean autoManaged) {
+            this.autoManaged = autoManaged;
             return this;
         }
 
         public Builder error(Exception error) {
             this.error = error;
             this.status = Status.FAILED;
+            this.orderStatus = OrderStatus.REJECTED;
             this.message = error.getMessage();
             return this;
         }
@@ -212,9 +347,6 @@ public class ExecutionResult {
         }
     }
 
-    /**
-     * 快速創建成功結果
-     */
     public static ExecutionResult success(String orderId, String symbol, int quantity, double price) {
         return new Builder()
                 .status(Status.SUCCESS)
@@ -224,18 +356,17 @@ public class ExecutionResult {
                 .executedQuantity(quantity)
                 .requestedPrice(price)
                 .executedPrice(price)
+                .orderStatus(OrderStatus.FILLED)
                 .build();
     }
 
-    /**
-     * 快速創建失敗結果
-     */
     public static ExecutionResult failure(String orderId, String symbol, String message) {
         return new Builder()
                 .status(Status.FAILED)
                 .orderId(orderId)
                 .symbol(symbol)
                 .message(message)
+                .orderStatus(OrderStatus.REJECTED)
                 .build();
     }
 }

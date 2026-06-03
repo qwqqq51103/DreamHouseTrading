@@ -146,7 +146,10 @@ public class ChartView extends JPanel {
 
         // K 線渲染器
         CandlestickRenderer candleRenderer = new CandlestickRenderer();
-        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_SMALLEST);
+        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_AVERAGE);
+        candleRenderer.setAutoWidthFactor(0.95);
+        candleRenderer.setAutoWidthGap(0.02);
+        candleRenderer.setDrawVolume(false);
         candleRenderer.setUpPaint(new Color(34, 177, 76));   // 綠漲
         candleRenderer.setDownPaint(new Color(237, 28, 36)); // 紅跌
 
@@ -159,14 +162,6 @@ public class ChartView extends JPanel {
         smaRenderer.setSeriesStroke(0, new BasicStroke(2.0f));
         pricePlot.setRenderer(1, smaRenderer);
         pricePlot.mapDatasetToRangeAxis(1, 0);
-
-        // 啟用十字線
-        pricePlot.setDomainCrosshairVisible(true);
-        pricePlot.setRangeCrosshairVisible(true);
-        pricePlot.setDomainCrosshairPaint(Color.GRAY);
-        pricePlot.setRangeCrosshairPaint(Color.GRAY);
-        pricePlot.setDomainCrosshairStroke(new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0, new float[]{5, 3}, 0));
-        pricePlot.setRangeCrosshairStroke(new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0, new float[]{5, 3}, 0));
 
         pricePlot.setBackgroundPaint(new Color(30, 30, 30));
         pricePlot.setDomainGridlinePaint(new Color(60, 60, 60));

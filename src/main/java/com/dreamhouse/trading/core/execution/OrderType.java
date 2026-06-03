@@ -1,46 +1,16 @@
 package com.dreamhouse.trading.core.execution;
 
 /**
- * 訂單類型
- * 定義各種交易訂單類型
+ * Execution order type.
  */
 public enum OrderType {
-
-    /**
-     * 市價單
-     * 以當前市價立即成交
-     */
-    MARKET("市價單", "MKT"),
-
-    /**
-     * 限價單
-     * 指定價格成交
-     */
-    LIMIT("限價單", "LMT"),
-
-    /**
-     * 停損單
-     * 價格觸及停損價時以市價出場
-     */
-    STOP("停損單", "STP"),
-
-    /**
-     * 停損限價單
-     * 價格觸及停損價時以限價出場
-     */
-    STOP_LIMIT("停損限價單", "STP_LMT"),
-
-    /**
-     * 移動停損單
-     * 跟隨價格移動的停損單
-     */
-    TRAILING_STOP("移動停損單", "TSL"),
-
-    /**
-     * 條件單
-     * 滿足特定條件時觸發
-     */
-    CONDITIONAL("條件單", "COND");
+    MARKET("Market", "MKT"),
+    LIMIT("Limit", "LMT"),
+    STOP("Stop", "STP"),
+    TAKE_PROFIT("Take Profit", "TP"),
+    STOP_LIMIT("Stop Limit", "STP_LMT"),
+    TRAILING_STOP("Trailing Stop", "TSL"),
+    CONDITIONAL("Conditional", "COND");
 
     private final String displayName;
     private final String shortCode;
@@ -58,25 +28,16 @@ public enum OrderType {
         return shortCode;
     }
 
-    /**
-     * 是否為市價單類型（立即成交）
-     */
     public boolean isMarketOrder() {
-        return this == MARKET || this == STOP || this == TRAILING_STOP;
+        return this == MARKET || this == STOP || this == TRAILING_STOP || this == TAKE_PROFIT;
     }
 
-    /**
-     * 是否為限價單類型（需要指定價格）
-     */
     public boolean isLimitOrder() {
         return this == LIMIT || this == STOP_LIMIT;
     }
 
-    /**
-     * 是否為停損單類型
-     */
     public boolean isStopOrder() {
-        return this == STOP || this == STOP_LIMIT || this == TRAILING_STOP;
+        return this == STOP || this == STOP_LIMIT || this == TRAILING_STOP || this == TAKE_PROFIT;
     }
 
     @Override

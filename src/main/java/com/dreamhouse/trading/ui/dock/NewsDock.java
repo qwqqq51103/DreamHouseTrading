@@ -33,6 +33,7 @@ public class NewsDock extends JPanel {
         tableModel = new EventTableModel<>(news, new NewsTableFormat());
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
+        table.setAutoCreateRowSorter(true);
         table.setRowHeight(28);
         
         // 點擊開啟 URL
@@ -41,8 +42,12 @@ public class NewsDock extends JPanel {
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
                     int row = table.getSelectedRow();
-                    if (row >= 0 && row < news.size()) {
-                        NewsRow newsRow = news.get(row);
+                    if (row >= 0) {
+                        int modelRow = table.convertRowIndexToModel(row);
+                        if (modelRow < 0 || modelRow >= news.size()) {
+                            return;
+                        }
+                        NewsRow newsRow = news.get(modelRow);
                         try {
                             Desktop.getDesktop().browse(new java.net.URI(newsRow.url));
                         } catch (Exception ex) {

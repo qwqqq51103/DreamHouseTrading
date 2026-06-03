@@ -219,12 +219,6 @@ public class MainFrameAdvanced extends JFrame {
         callbacks.onSymbolChange = this::changeSymbol;
         callbacks.onTimeframeChange = this::changeTimeframe;
         callbacks.onIndicatorChange = this::changeIndicator;
-        callbacks.onZoomIn = () -> chartDock.zoomIn();
-        callbacks.onZoomOut = () -> chartDock.zoomOut();
-        callbacks.onZoomReset = () -> chartDock.resetZoom();
-        callbacks.onCrosshairToggle = () -> chartDock.toggleCrosshair();
-        callbacks.onTrendlineToggle = this::toggleTrendline;
-        callbacks.onHorizontalLineToggle = this::toggleHorizontalLine;
         
         return ToolBarFactory.createToolBar(callbacks);
     }
@@ -278,14 +272,6 @@ public class MainFrameAdvanced extends JFrame {
         }
     }
     
-    private void toggleTrendline() {
-        JOptionPane.showMessageDialog(this, "趨勢線繪製功能（可擴展實作）");
-    }
-    
-    private void toggleHorizontalLine() {
-        JOptionPane.showMessageDialog(this, "水平線繪製功能（可擴展實作）");
-    }
-    
     private void setTheme(boolean light) {
         try {
             if (light) {
@@ -335,33 +321,6 @@ public class MainFrameAdvanced extends JFrame {
             public void actionPerformed(ActionEvent e) {
                 setTheme(!isDark);
                 isDark = !isDark;
-            }
-        });
-        
-        // Ctrl+=: Zoom In
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
-        actionMap.put("zoomIn", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.zoomIn();
-            }
-        });
-        
-        // Ctrl+-: Zoom Out
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut");
-        actionMap.put("zoomOut", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.zoomOut();
-            }
-        });
-        
-        // Ctrl+0: Zoom Reset
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset");
-        actionMap.put("zoomReset", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                chartDock.resetZoom();
             }
         });
     }

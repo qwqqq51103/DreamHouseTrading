@@ -1,6 +1,11 @@
 package com.dreamhouse.trading.core;
 
 import com.dreamhouse.trading.core.model.*;
+import com.dreamhouse.trading.core.finmind.FinMindApiUsage;
+import com.dreamhouse.trading.core.finmind.FinMindClient;
+import com.dreamhouse.trading.core.finmind.FinMindDataset;
+import com.dreamhouse.trading.core.finmind.FinMindException;
+import com.dreamhouse.trading.core.finmind.FinMindGateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -13,8 +18,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -36,6 +43,7 @@ public class FinMindFeed implements MarketDataFeed {
 
     private final String apiToken;
     private final HttpClient httpClient;
+    private final FinMindGateway finMindClient;
     private final ObjectMapper objectMapper;
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
@@ -50,7 +58,12 @@ public class FinMindFeed implements MarketDataFeed {
     private java.time.LocalDate queryDate = java.time.LocalDate.now(); // 查詢日期
 
     public FinMindFeed(String apiToken) {
+        this(apiToken, new FinMindClient(apiToken));
+    }
+
+    public FinMindFeed(String apiToken, FinMindGateway finMindClient) {
         this.apiToken = apiToken != null && !apiToken.trim().isEmpty() ? apiToken : "";
+        this.finMindClient = finMindClient != null ? finMindClient : new FinMindClient(this.apiToken);
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(15))
@@ -70,7 +83,7 @@ public class FinMindFeed implements MarketDataFeed {
             new Thread(() -> {
                 try {
                     Thread.sleep(2000); // 延遲2秒後測試
-                    testToken();
+                    logger.info("Skipping automatic FinMind token validation to avoid API quota usage.");
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -94,6 +107,9 @@ public class FinMindFeed implements MarketDataFeed {
 
     @Override
     public void subscribe(String symbol, MarketDataListener listener) {
+        if (symbol == null || symbol.isBlank() || listener == null) {
+            return;
+        }
         listeners.computeIfAbsent(symbol, k -> new CopyOnWriteArrayList<>()).add(listener);
         logger.info("訂閱商品: {}", symbol);
 
@@ -144,6 +160,10 @@ public class FinMindFeed implements MarketDataFeed {
     @Override
     public void start() {
         connected = true;
+        logger.info("FinMindFeed automatic startup loading is disabled to avoid API quota usage. Use the FinMind API panel for manual calls.");
+        if (Boolean.TRUE.equals(Boolean.TRUE)) {
+            return;
+        }
         logger.info("啟動 FinMind 數據源...");
 
         // 1. 先加載歷史數據
@@ -261,6 +281,25 @@ public class FinMindFeed implements MarketDataFeed {
         return queryDate;
     }
 
+    @Override
+    public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        if (symbol == null || symbol.isBlank()) {
+            return List.of();
+        }
+        Timeframe effectiveTimeframe = timeframe != null ? timeframe : Timeframe.D1;
+        int effectiveBarCount = Math.max(1, barCount);
+        List<Bar> bars = switch (effectiveTimeframe) {
+            case D1 -> fetchDailyBars(symbol, effectiveBarCount);
+            case W1 -> fetchWeeklyBars(symbol, effectiveBarCount);
+            case M1, M5, M15, M30, H1 -> fetchMinuteBars(symbol, effectiveTimeframe, effectiveBarCount);
+        };
+        return normalizeAndLimitBars(bars, effectiveBarCount);
+    }
+
+    public FinMindApiUsage fetchApiUsage() {
+        return finMindClient.fetchApiUsage();
+    }
+
     /**
      * 加載歷史數據
      */
@@ -276,7 +315,12 @@ public class FinMindFeed implements MarketDataFeed {
             }
 
             // 1. 加載歷史 K 線
-            loadHistoricalDataForSymbol(symbol, Timeframe.M1, 50);
+            try {
+                notifyBarsAsTicks(symbol, fetchHistoricalBars(symbol, Timeframe.M1, 50));
+            } catch (FinMindException e) {
+                logger.warn("{} - FinMind startup historical bars failed: {}", symbol, e.getMessage());
+                generateFallbackHistoricalData(symbol, Timeframe.M1, 50);
+            }
 
             // 2. 加載逐筆成交數據（Sponsor 會員）
             try {
@@ -390,7 +434,12 @@ public class FinMindFeed implements MarketDataFeed {
     public void loadHistoricalData(String symbol, Timeframe timeframe, int barCount) {
         new Thread(() -> {
             // 1. 加載歷史 K 線
-            loadHistoricalDataForSymbol(symbol, timeframe, barCount);
+            try {
+                notifyBarsAsTicks(symbol, fetchHistoricalBars(symbol, timeframe, barCount));
+            } catch (FinMindException e) {
+                logger.warn("{} - FinMind historical bars failed: {}", symbol, e.getMessage());
+                generateFallbackHistoricalData(symbol, timeframe, barCount);
+            }
 
             // 2. 加載逐筆成交數據（Sponsor 會員）
             try {
@@ -414,11 +463,238 @@ public class FinMindFeed implements MarketDataFeed {
      * 為特定商品加載歷史數據
      * Sponsor 會員：使用 TaiwanStockKBar (分K線) 或 TaiwanStockPrice (日線)
      */
+    private List<Bar> fetchDailyBars(String symbol, int barCount) {
+        LocalDate endDate = queryDate;
+        LocalDate startDate = endDate.minusDays(Math.max(30, barCount * 2L));
+        JsonNode root = finMindClient.queryDataset(
+                FinMindDataset.TAIWAN_STOCK_PRICE,
+                convertToFinMindSymbol(symbol),
+                startDate,
+                endDate);
+        return parseDailyPriceBars(root.path("data"));
+    }
+
+    private List<Bar> fetchWeeklyBars(String symbol, int barCount) {
+        LocalDate endDate = queryDate;
+        LocalDate startDate = endDate.minusDays(Math.max(90, barCount * 10L));
+        try {
+            JsonNode root = finMindClient.queryDataset(
+                    FinMindDataset.TAIWAN_STOCK_WEEK_PRICE,
+                    convertToFinMindSymbol(symbol),
+                    startDate,
+                    endDate);
+            return parseWeeklyPriceBars(root.path("data"));
+        } catch (FinMindException e) {
+            logger.warn("{} - weekly K API failed, fallback to daily aggregation: {}", symbol, e.getMessage());
+            JsonNode root = finMindClient.queryDataset(
+                    FinMindDataset.TAIWAN_STOCK_PRICE,
+                    convertToFinMindSymbol(symbol),
+                    startDate,
+                    endDate);
+            return aggregateDailyBarsToWeekly(parseDailyPriceBars(root.path("data")));
+        }
+    }
+
+    private List<Bar> fetchMinuteBars(String symbol, Timeframe timeframe, int barCount) {
+        JsonNode root = finMindClient.queryData(
+                com.dreamhouse.trading.core.finmind.FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_K_BAR)
+                        .dataId(convertToFinMindSymbol(symbol))
+                        .startDate(queryDate)
+                        .build());
+        List<Bar> oneMinuteBars = parseKBarBars(root.path("data"));
+        if (timeframe == Timeframe.M1) {
+            return oneMinuteBars;
+        }
+        return aggregateBarModels(oneMinuteBars, timeframe.getMinutes());
+    }
+
+    private List<Bar> parseDailyPriceBars(JsonNode dataArray) {
+        List<Bar> bars = new ArrayList<>();
+        if (dataArray == null || !dataArray.isArray()) {
+            return bars;
+        }
+        for (JsonNode node : dataArray) {
+            LocalDate date = parseDate(node.path("date").asText(null));
+            if (date == null) {
+                continue;
+            }
+            bars.add(new Bar(
+                    date.atTime(9, 0),
+                    node.path("open").asDouble(),
+                    node.path("max").asDouble(),
+                    node.path("min").asDouble(),
+                    node.path("close").asDouble(),
+                    node.path("Trading_Volume").asLong()));
+        }
+        return bars;
+    }
+
+    private List<Bar> parseWeeklyPriceBars(JsonNode dataArray) {
+        List<Bar> bars = new ArrayList<>();
+        if (dataArray == null || !dataArray.isArray()) {
+            return bars;
+        }
+        for (JsonNode node : dataArray) {
+            LocalDate date = parseDate(node.path("date").asText(null));
+            if (date == null) {
+                continue;
+            }
+            bars.add(new Bar(
+                    date.atTime(9, 0),
+                    node.path("open").asDouble(),
+                    node.path("max").asDouble(),
+                    node.path("min").asDouble(),
+                    node.path("close").asDouble(),
+                    node.path("trading_volume").asLong()));
+        }
+        return bars;
+    }
+
+    private List<Bar> parseKBarBars(JsonNode dataArray) {
+        List<Bar> bars = new ArrayList<>();
+        if (dataArray == null || !dataArray.isArray()) {
+            return bars;
+        }
+        for (JsonNode node : dataArray) {
+            LocalDate date = parseDate(node.path("date").asText(null));
+            if (date == null) {
+                continue;
+            }
+            LocalDateTime timestamp = parseMinuteTimestamp(date, node.path("minute").asText("09:00"));
+            bars.add(new Bar(
+                    timestamp,
+                    node.path("open").asDouble(),
+                    node.path("high").asDouble(),
+                    node.path("low").asDouble(),
+                    node.path("close").asDouble(),
+                    Math.round(node.path("volume").asDouble())));
+        }
+        return bars;
+    }
+
+    private List<Bar> normalizeAndLimitBars(List<Bar> bars, int barCount) {
+        Map<LocalDateTime, Bar> deduped = new TreeMap<>();
+        for (Bar bar : bars) {
+            if (bar != null && bar.getTimestamp() != null) {
+                deduped.put(bar.getTimestamp(), bar);
+            }
+        }
+        List<Bar> sorted = new ArrayList<>(deduped.values());
+        int start = Math.max(0, sorted.size() - barCount);
+        return new ArrayList<>(sorted.subList(start, sorted.size()));
+    }
+
+    private List<Bar> aggregateBarModels(List<Bar> sourceBars, int periodMinutes) {
+        List<Bar> sorted = normalizeAndLimitBars(sourceBars, Integer.MAX_VALUE);
+        List<Bar> aggregated = new ArrayList<>();
+        Bar current = null;
+        LocalDateTime currentWindow = null;
+        for (Bar bar : sorted) {
+            LocalDateTime window = alignToTimeWindow(bar.getTimestamp(), periodMinutes);
+            if (current == null || !window.equals(currentWindow)) {
+                if (current != null) {
+                    aggregated.add(current);
+                }
+                currentWindow = window;
+                current = new Bar(window, bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(), bar.getVolume());
+            } else {
+                current = new Bar(
+                        currentWindow,
+                        current.getOpen(),
+                        Math.max(current.getHigh(), bar.getHigh()),
+                        Math.min(current.getLow(), bar.getLow()),
+                        bar.getClose(),
+                        current.getVolume() + bar.getVolume());
+            }
+        }
+        if (current != null) {
+            aggregated.add(current);
+        }
+        return aggregated;
+    }
+
+    private List<Bar> aggregateDailyBarsToWeekly(List<Bar> dailyBars) {
+        List<Bar> sorted = normalizeAndLimitBars(dailyBars, Integer.MAX_VALUE);
+        List<Bar> weekly = new ArrayList<>();
+        Bar current = null;
+        LocalDate currentWeek = null;
+        for (Bar bar : sorted) {
+            LocalDate weekStart = bar.getTimestamp().toLocalDate()
+                    .minusDays(bar.getTimestamp().getDayOfWeek().getValue() - 1L);
+            if (current == null || !weekStart.equals(currentWeek)) {
+                if (current != null) {
+                    weekly.add(current);
+                }
+                currentWeek = weekStart;
+                current = new Bar(weekStart.atTime(9, 0), bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(), bar.getVolume());
+            } else {
+                current = new Bar(
+                        current.getTimestamp(),
+                        current.getOpen(),
+                        Math.max(current.getHigh(), bar.getHigh()),
+                        Math.min(current.getLow(), bar.getLow()),
+                        bar.getClose(),
+                        current.getVolume() + bar.getVolume());
+            }
+        }
+        if (current != null) {
+            weekly.add(current);
+        }
+        return weekly;
+    }
+
+    private void notifyBarsAsTicks(String symbol, List<Bar> bars) {
+        List<MarketDataListener> symbolListeners = listeners.get(symbol);
+        if (symbolListeners == null || bars == null) {
+            return;
+        }
+        for (Bar bar : bars) {
+            lastPrices.put(symbol, bar.getClose());
+            generateTicksFromBar(symbol, bar.getTimestamp(), bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(),
+                    bar.getVolume(), symbolListeners);
+        }
+    }
+
+    private LocalDate parseDate(String text) {
+        try {
+            return text != null && !text.isBlank() ? LocalDate.parse(text) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private LocalDateTime parseMinuteTimestamp(LocalDate date, String minuteText) {
+        String safeMinute = minuteText != null && !minuteText.isBlank() ? minuteText.trim() : "09:00";
+        try {
+            if (safeMinute.length() == 5) {
+                return LocalDateTime.parse(date + " " + safeMinute + ":00",
+                        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+            if (safeMinute.length() >= 8) {
+                return LocalDateTime.parse(date + " " + safeMinute.substring(0, 8),
+                        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+        } catch (Exception e) {
+            logger.debug("Cannot parse FinMind minute '{}': {}", safeMinute, e.getMessage());
+        }
+        return date.atTime(9, 0);
+    }
+
     private void loadHistoricalDataForSymbol(String symbol, Timeframe timeframe, int barCount) {
         logger.info("正在加載 {} 的 {} 根 {} 歷史數據...", symbol, barCount, timeframe.getLabel());
 
         List<MarketDataListener> symbolListeners = listeners.get(symbol);
         if (symbolListeners == null) return;
+
+        if (finMindClient != null) {
+            try {
+                notifyBarsAsTicks(symbol, fetchHistoricalBars(symbol, timeframe, barCount));
+            } catch (FinMindException e) {
+                logger.warn("{} - FinMind historical bars failed: {}", symbol, e.getMessage());
+                generateFallbackHistoricalData(symbol, timeframe, barCount);
+            }
+            return;
+        }
 
         // ⭐ 盤中時段且查詢今日的分時K線：直接使用即時快照組合K線
         if (isMarketOpen() &&
@@ -909,20 +1185,44 @@ public class FinMindFeed implements MarketDataFeed {
      * 更新即時數據
      */
     private void updateRealTimeData() {
+        if (Boolean.TRUE.equals(Boolean.TRUE)) {
+            logger.warn("FinMindFeed realtime snapshot polling is disabled. Use MarketDataCollectorFeed for intraday radar data.");
+            return;
+        }
         if (paused || !connected) {
             return;
         }
 
-        for (String symbol : listeners.keySet()) {
+        Set<String> subscribedSymbols = new LinkedHashSet<>(listeners.keySet());
+        if (subscribedSymbols.isEmpty()) {
+            return;
+        }
+
+        try {
+            JsonNode root = objectMapper.createObjectNode();
+            JsonNode dataArray = root.path("data");
+            if (dataArray.isArray()) {
+                int notified = 0;
+                for (JsonNode snapshot : dataArray) {
+                    String subscribedSymbol = findSubscribedSymbol(snapshot.path("stock_id").asText(""));
+                    if (subscribedSymbol != null) {
+                        notifyRealtimeSnapshot(subscribedSymbol, snapshot);
+                        notified++;
+                    }
+                }
+                if (notified > 0) {
+                    logger.info("FinMind batch snapshot updated {} subscribed symbols", notified);
+                    return;
+                }
+            }
+            logger.warn("FinMind batch snapshot returned no subscribed symbols; falling back to per-symbol snapshot");
+        } catch (Exception e) {
+            logger.warn("FinMind batch snapshot failed, falling back to per-symbol snapshot: {}", e.getMessage());
+        }
+
+        for (String symbol : subscribedSymbols) {
             try {
                 fetchAndNotifyRealTimeData(symbol);
-
-                // 避免超過限流
-                Thread.sleep(2000);
-
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
             } catch (Exception e) {
                 logger.error("獲取 {} 即時數據失敗: {}", symbol, e.getMessage());
             }
@@ -930,16 +1230,31 @@ public class FinMindFeed implements MarketDataFeed {
     }
 
     /**
-     * 獲取並通知即時數據（使用 taiwan_stock_tick_snapshot）
+     * Realtime FinMind snapshot calls are disabled in DreamHouseTrading.
      * Sponsor 會員專屬，約 10 秒更新一次的盤中即時快照
      */
     private void fetchAndNotifyRealTimeData(String symbol) {
+        if (Boolean.TRUE.equals(Boolean.TRUE)) {
+            logger.warn("{} realtime snapshot fetch is disabled in DreamHouseTrading. Use MarketDataCollectorFeed.", symbol);
+            return;
+        }
         try {
+            if (finMindClient != null) {
+                logger.warn("{} FinMind snapshot calls are disabled in DreamHouseTrading", symbol);
+                return;
+            }
+
+            try {
+                logger.warn("{} FinMind snapshot calls are disabled in DreamHouseTrading", symbol);
+                return;
+            } catch (Exception clientException) {
+                logger.warn("{} - FinMindClient snapshot failed, falling back to legacy request: {}", symbol, clientException.getMessage());
+            }
             String stockId = convertToFinMindSymbol(symbol);
 
-            // ⭐ 使用 taiwan_stock_tick_snapshot 獲取即時快照（Sponsor 專屬）
+            // Realtime FinMind snapshot calls are disabled in DreamHouseTrading.
             // 規則：盤中使用 Bearer token 在 headers，參數是 data_id
-            String url = API_BASE_URL + "/taiwan_stock_tick_snapshot" +
+            String url = API_BASE_URL + "/disabled_realtime_snapshot" +
                         "?data_id=" + URLEncoder.encode(stockId, StandardCharsets.UTF_8);
 
             logger.info("{} - 請求即時快照 API: {}", symbol, url);
@@ -973,7 +1288,7 @@ public class FinMindFeed implements MarketDataFeed {
     }
 
     /**
-     * 解析並通知即時快照數據（taiwan_stock_tick_snapshot）
+     * 解析並通知即時快照數據
      */
     private void parseAndNotifyRealTimeSnapshot(String symbol, String jsonResponse) {
         try {
@@ -1064,8 +1379,65 @@ public class FinMindFeed implements MarketDataFeed {
 
     /**
      * 從即時快照生成真實的五檔掛單
-     * 注意：taiwan_stock_tick_snapshot 只提供最佳買賣價，不是完整五檔
+     * 注意：即時快照只提供最佳買賣價，不是完整五檔
      */
+    private String findSubscribedSymbol(String stockId) {
+        String normalizedStockId = convertToFinMindSymbol(stockId);
+        for (String subscribed : listeners.keySet()) {
+            if (convertToFinMindSymbol(subscribed).equals(normalizedStockId)) {
+                return subscribed;
+            }
+        }
+        return null;
+    }
+
+    private void notifyRealtimeSnapshot(String symbol, JsonNode snapshot) {
+        double close = snapshot.path("close").asDouble();
+        double open = snapshot.path("open").asDouble();
+        double high = snapshot.path("high").asDouble();
+        double low = snapshot.path("low").asDouble();
+        long volume = snapshot.path("volume").asLong();
+        double buyPrice = snapshot.path("buy_price").asDouble();
+        long buyVolume = snapshot.path("buy_volume").asLong();
+        double sellPrice = snapshot.path("sell_price").asDouble();
+        long sellVolume = snapshot.path("sell_volume").asLong();
+        int tickType = snapshot.path("TickType").asInt(0);
+
+        if (close <= 0) {
+            logger.warn("{} - invalid FinMind snapshot close={}", symbol, close);
+            return;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        lastPrices.put(symbol, close);
+        realtimeBarBuilder.addSnapshot(symbol, now, open, high, low, close, volume);
+
+        Tick tick = new Tick(symbol, now, close, volume);
+        Trade trade = null;
+        if (tickType == 1) {
+            trade = new Trade(now, close, volume, Trade.Side.BID);
+        } else if (tickType == 2) {
+            trade = new Trade(now, close, volume, Trade.Side.ASK);
+        }
+        List<DepthLevel> depth = generateRealDepth(buyPrice, buyVolume, sellPrice, sellVolume);
+        List<MarketDataListener> symbolListeners = listeners.get(symbol);
+        if (symbolListeners == null) {
+            return;
+        }
+        Trade finalTrade = trade;
+        SwingUtilities.invokeLater(() -> {
+            for (MarketDataListener listener : symbolListeners) {
+                listener.onTick(tick);
+                if (finalTrade != null) {
+                    listener.onTrade(finalTrade);
+                }
+                if (depth != null && !depth.isEmpty()) {
+                    listener.onDepthUpdate(depth);
+                }
+            }
+        });
+    }
+
     private List<DepthLevel> generateRealDepth(double buyPrice, long buyVolume,
                                                double sellPrice, long sellVolume) {
         List<DepthLevel> depth = new ArrayList<>();
@@ -1099,6 +1471,10 @@ public class FinMindFeed implements MarketDataFeed {
         if (apiToken.isEmpty()) {
             logger.warn("未設定 API Token");
             return false;
+        }
+
+        if (finMindClient != null) {
+            return finMindClient.testToken();
         }
 
         try {
@@ -1195,6 +1571,16 @@ public class FinMindFeed implements MarketDataFeed {
         try {
             String stockId = convertToFinMindSymbol(symbol);
             String today = LocalDateTime.now().format(DATE_FORMATTER);
+
+            if (finMindClient != null) {
+                JsonNode root = finMindClient.queryData(
+                        com.dreamhouse.trading.core.finmind.FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_PRICE_TICK)
+                                .dataId(stockId)
+                                .startDate(LocalDate.now())
+                                .build());
+                parseTickData(symbol, root.toString());
+                return;
+            }
 
             // ⭐ TaiwanStockPriceTick 只能請求一天數據
             String url = DATA_ENDPOINT +
@@ -1350,6 +1736,16 @@ public class FinMindFeed implements MarketDataFeed {
             // ⭐ 獲取最近 7 天的新聞
             // 注意：TaiwanStockNews 不接受 end_date 參數（API 限制）
             LocalDateTime startDate = LocalDateTime.now().minusDays(7);
+
+            if (finMindClient != null) {
+                JsonNode root = finMindClient.queryData(
+                        com.dreamhouse.trading.core.finmind.FinMindRequest.dataset(FinMindDataset.TAIWAN_STOCK_NEWS)
+                                .dataId(stockId)
+                                .startDate(startDate.toLocalDate())
+                                .build());
+                parseNewsData(symbol, root.toString());
+                return;
+            }
 
             String url = DATA_ENDPOINT +
                         "?dataset=TaiwanStockNews" +

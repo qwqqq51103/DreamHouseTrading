@@ -67,6 +67,12 @@ datasource.properties
 
 # Data files
 data/
+logs/paper-trades/*.csv
+logs/radar-replay/*.csv
+logs/market-data-warnings/*.csv
+logs/ui-layout/*.log
+config/*.properties
+config/ui-layout.xml
 
 # Local agent / issue exports
 .github-issues/

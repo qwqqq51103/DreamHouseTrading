@@ -37,15 +37,21 @@ public class IEXCloudFeed implements MarketDataFeed {
     private final ObjectMapper objectMapper;
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, Double> lastPrices = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+    private ScheduledExecutorService executor;
     private final Random random = new Random();
+    private final boolean loadOnStart;
 
-    private boolean connected = false;
+    private volatile boolean connected = false;
     private boolean paused = false;
     private ScheduledFuture<?> updateTask;
 
     public IEXCloudFeed(String apiKey) {
+        this(apiKey, true);
+    }
+
+    IEXCloudFeed(String apiKey, boolean loadOnStart) {
         this.apiKey = apiKey != null && !apiKey.trim().isEmpty() ? apiKey : "demo";
+        this.loadOnStart = loadOnStart;
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(10))
@@ -55,7 +61,7 @@ public class IEXCloudFeed implements MarketDataFeed {
         this.objectMapper.findAndRegisterModules();
 
         logger.info("IEXCloudFeed initialized with API key: {}",
-                   apiKey.equals("demo") ? "demo" : "***");
+                   this.apiKey.equals("demo") ? "demo" : "***");
     }
 
     @Override
@@ -80,37 +86,66 @@ public class IEXCloudFeed implements MarketDataFeed {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
         connected = true;
         logger.info("Starting IEX Cloud feed...");
+        ensureExecutor();
+
+        if (!loadOnStart) {
+            return;
+        }
 
         // 背景加載歷史數據
-        new Thread(() -> {
+        executor.execute(() -> {
             loadHistoricalData();
+            if (!connected || executor == null || executor.isShutdown()) {
+                return;
+            }
 
             // 開始定期更新實時數據
-            updateTask = executor.scheduleAtFixedRate(
-                this::updateRealTimeData,
-                0,
-                UPDATE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS
-            );
-        }, "IEXCloud-Startup").start();
+            try {
+                updateTask = executor.scheduleAtFixedRate(
+                    this::updateRealTimeData,
+                    0,
+                    UPDATE_INTERVAL_MS,
+                    TimeUnit.MILLISECONDS
+                );
+            } catch (RejectedExecutionException e) {
+                if (connected) {
+                    logger.warn("IEX Cloud update scheduling rejected", e);
+                }
+            }
+        });
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         connected = false;
 
         if (updateTask != null) {
             updateTask.cancel(false);
+            updateTask = null;
         }
 
         if (executor != null) {
-            executor.shutdown();
+            executor.shutdownNow();
+            try {
+                if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    logger.debug("IEX Cloud executor did not terminate within timeout");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            executor = null;
         }
 
         logger.info("IEX Cloud feed stopped");
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
+        }
     }
 
     @Override

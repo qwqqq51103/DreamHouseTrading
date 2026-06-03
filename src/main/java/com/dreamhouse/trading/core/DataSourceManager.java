@@ -1,22 +1,20 @@
 package com.dreamhouse.trading.core;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.Properties;
 
 /**
- * 數據源管理器
- * 負責創建和切換不同的市場數據源
+ * Manages the active market data source and its local configuration.
  */
 public class DataSourceManager {
 
     public enum DataSourceType {
-        SIMULATOR("模擬數據", "Simulated Data"),
+        MARKET_COLLECTOR("MarketDataCollector", "MarketDataCollector"),
         FINMIND("FinMind", "FinMind"),
-        YAHOO_FINANCE("Yahoo Finance", "Yahoo Finance"),
-        ALPHA_VANTAGE("Alpha Vantage", "Alpha Vantage"),
-        FINNHUB("Finnhub", "Finnhub"),
-        IEX_CLOUD("IEX Cloud", "IEX Cloud"),
-        POLYGON("Polygon.io", "Polygon.io");
+        YAHOO_FINANCE("Yahoo Finance", "Yahoo Finance");
 
         private final String displayNameZh;
         private final String displayNameEn;
@@ -30,17 +28,21 @@ public class DataSourceManager {
             return useChinese ? displayNameZh : displayNameEn;
         }
 
-        public String getDisplayNameZh() { return displayNameZh; }
-        public String getDisplayNameEn() { return displayNameEn; }
+        public String getDisplayNameZh() {
+            return displayNameZh;
+        }
+
+        public String getDisplayNameEn() {
+            return displayNameEn;
+        }
     }
 
     private static final String CONFIG_FILE = "datasource.properties";
     private static final String PROP_DATASOURCE_TYPE = "datasource.type";
     private static final String PROP_FINMIND_API_TOKEN = "finmind.apitoken";
-    private static final String PROP_ALPHAVANTAGE_API_KEY = "alphavantage.apikey";
-    private static final String PROP_FINNHUB_API_KEY = "finnhub.apikey";
-    private static final String PROP_IEXCLOUD_API_KEY = "iexcloud.apikey";
-    private static final String PROP_POLYGON_API_KEY = "polygon.apikey";
+    private static final String PROP_MARKET_COLLECTOR_JDBC_URL = "marketcollector.jdbc.url";
+    private static final String PROP_MARKET_COLLECTOR_USER = "marketcollector.jdbc.user";
+    private static final String PROP_MARKET_COLLECTOR_PASSWORD = "marketcollector.jdbc.password";
 
     private DataSourceType currentType;
     private MarketDataFeed currentFeed;
@@ -48,14 +50,9 @@ public class DataSourceManager {
 
     public DataSourceManager() {
         loadConfig();
-        currentType = DataSourceType.valueOf(
-            config.getProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name())
-        );
+        currentType = parseDataSourceType(config.getProperty(PROP_DATASOURCE_TYPE, DataSourceType.MARKET_COLLECTOR.name()));
     }
 
-    /**
-     * 獲取當前數據源
-     */
     public MarketDataFeed getCurrentDataSource() {
         if (currentFeed == null) {
             currentFeed = createDataSource(currentType);
@@ -63,188 +60,95 @@ public class DataSourceManager {
         return currentFeed;
     }
 
-    /**
-     * 切換數據源
-     */
     public synchronized MarketDataFeed switchDataSource(DataSourceType type) {
-        System.out.println("[DataSourceManager] 切換數據源: " + currentType + " -> " + type);
+        System.out.println("[DataSourceManager] Switching data source: " + currentType + " -> " + type);
 
-        // 停止當前數據源
         if (currentFeed != null && currentFeed.isConnected()) {
             currentFeed.stop();
         }
 
-        // 創建新數據源
-        currentType = type;
-        currentFeed = createDataSource(type);
+        currentType = type != null ? type : DataSourceType.MARKET_COLLECTOR;
+        currentFeed = createDataSource(currentType);
 
-        // 保存配置
-        config.setProperty(PROP_DATASOURCE_TYPE, type.name());
+        config.setProperty(PROP_DATASOURCE_TYPE, currentType.name());
         saveConfig();
 
         return currentFeed;
     }
 
-    /**
-     * 創建指定類型的數據源
-     */
     private MarketDataFeed createDataSource(DataSourceType type) {
-        switch (type) {
-            case SIMULATOR:
-                System.out.println("[DataSourceManager] 創建模擬數據源");
-                return new SimulatorFeed();
+        return switch (type) {
+            case MARKET_COLLECTOR -> createMarketCollectorFeed();
+            case FINMIND -> {
+                String apiToken = config.getProperty(PROP_FINMIND_API_TOKEN, "");
+                System.out.println("[DataSourceManager] Creating FinMind data source (API token: "
+                        + (apiToken.isBlank() ? "not configured" : "***") + ")");
+                yield new FinMindFeed(apiToken);
+            }
+            case YAHOO_FINANCE -> {
+                System.out.println("[DataSourceManager] Creating Yahoo Finance data source");
+                yield new YahooFinanceFeed();
+            }
+        };
+    }
 
-            case FINMIND:
-                String fmApiToken = config.getProperty(PROP_FINMIND_API_TOKEN, "");
-                System.out.println("[DataSourceManager] 創建FinMind數據源 (API Token: "
-                                 + (fmApiToken.isEmpty() ? "未設定" : "***") + ")");
-                return new FinMindFeed(fmApiToken);
-
-            case YAHOO_FINANCE:
-                System.out.println("[DataSourceManager] 創建Yahoo Finance數據源");
-                return new YahooFinanceFeed();
-
-            case ALPHA_VANTAGE:
-                String avApiKey = config.getProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
-                System.out.println("[DataSourceManager] 創建Alpha Vantage數據源 (API Key: "
-                                 + (avApiKey.equals("demo") ? "demo" : "***") + ")");
-                return new AlphaVantageFeed(avApiKey);
-
-            case FINNHUB:
-                String fhApiKey = config.getProperty(PROP_FINNHUB_API_KEY, "demo");
-                System.out.println("[DataSourceManager] 創建Finnhub數據源 (API Key: "
-                                 + (fhApiKey.equals("demo") ? "demo" : "***") + ")");
-                return new FinnhubFeed(fhApiKey);
-
-            case IEX_CLOUD:
-                String iexApiKey = config.getProperty(PROP_IEXCLOUD_API_KEY, "demo");
-                System.out.println("[DataSourceManager] 創建IEX Cloud數據源 (API Key: "
-                                 + (iexApiKey.equals("demo") ? "demo" : "***") + ")");
-                return new IEXCloudFeed(iexApiKey);
-
-            case POLYGON:
-                String polyApiKey = config.getProperty(PROP_POLYGON_API_KEY, "demo");
-                System.out.println("[DataSourceManager] 創建Polygon.io數據源 (API Key: "
-                                 + (polyApiKey.equals("demo") ? "demo" : "***") + ")");
-                return new PolygonFeed(polyApiKey);
-
-            default:
-                System.err.println("[DataSourceManager] 未知數據源類型: " + type);
-                return new SimulatorFeed();
+    private MarketDataFeed createMarketCollectorFeed() {
+        System.out.println("[DataSourceManager] Creating MarketDataCollector local data source");
+        try {
+            return new MarketDataCollectorFeed(new MarketDataCollectorRepository(
+                    getMarketCollectorJdbcUrl(),
+                    getMarketCollectorUser(),
+                    getMarketCollectorPassword()));
+        } catch (Exception e) {
+            System.err.println("[DataSourceManager] MarketDataCollector database unavailable: " + e.getMessage());
+            return new MarketDataCollectorFeed(MarketDataCollectorRepository.unavailable(e.getMessage()));
         }
     }
 
-    /**
-     * 獲取當前數據源類型
-     */
     public DataSourceType getCurrentType() {
         return currentType;
     }
 
-    /**
-     * 設置FinMind API Token
-     */
     public void setFinMindApiToken(String apiToken) {
-        config.setProperty(PROP_FINMIND_API_TOKEN, apiToken);
+        config.setProperty(PROP_FINMIND_API_TOKEN, apiToken != null ? apiToken.trim() : "");
         saveConfig();
-        System.out.println("[DataSourceManager] FinMind API Token已更新");
+        System.out.println("[DataSourceManager] FinMind API token updated");
 
         if (currentType == DataSourceType.FINMIND && currentFeed != null) {
             switchDataSource(DataSourceType.FINMIND);
         }
     }
 
-    /**
-     * 獲取FinMind API Token
-     */
     public String getFinMindApiToken() {
         return config.getProperty(PROP_FINMIND_API_TOKEN, "");
     }
 
-    /**
-     * 設置Alpha Vantage API密鑰
-     */
-    public void setAlphaVantageApiKey(String apiKey) {
-        config.setProperty(PROP_ALPHAVANTAGE_API_KEY, apiKey);
-        saveConfig();
-        System.out.println("[DataSourceManager] Alpha Vantage API密鑰已更新");
+    public String getMarketCollectorJdbcUrl() {
+        return config.getProperty(PROP_MARKET_COLLECTOR_JDBC_URL, MarketDataCollectorRepository.DEFAULT_JDBC_URL);
+    }
 
-        // 如果當前正在使用Alpha Vantage，需要重新創建
-        if (currentType == DataSourceType.ALPHA_VANTAGE && currentFeed != null) {
-            switchDataSource(DataSourceType.ALPHA_VANTAGE);
+    public String getMarketCollectorUser() {
+        return config.getProperty(PROP_MARKET_COLLECTOR_USER, MarketDataCollectorRepository.DEFAULT_USER);
+    }
+
+    public String getMarketCollectorPassword() {
+        return config.getProperty(PROP_MARKET_COLLECTOR_PASSWORD, MarketDataCollectorRepository.DEFAULT_PASSWORD);
+    }
+
+    public void setMarketCollectorConfig(String jdbcUrl, String user, String password) {
+        config.setProperty(PROP_MARKET_COLLECTOR_JDBC_URL,
+                isBlank(jdbcUrl) ? MarketDataCollectorRepository.DEFAULT_JDBC_URL : jdbcUrl.trim());
+        config.setProperty(PROP_MARKET_COLLECTOR_USER,
+                user != null ? user.trim() : MarketDataCollectorRepository.DEFAULT_USER);
+        config.setProperty(PROP_MARKET_COLLECTOR_PASSWORD,
+                password != null ? password : MarketDataCollectorRepository.DEFAULT_PASSWORD);
+        saveConfig();
+
+        if (currentType == DataSourceType.MARKET_COLLECTOR && currentFeed != null) {
+            switchDataSource(DataSourceType.MARKET_COLLECTOR);
         }
     }
 
-    /**
-     * 獲取Alpha Vantage API密鑰
-     */
-    public String getAlphaVantageApiKey() {
-        return config.getProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
-    }
-
-    /**
-     * 設置Finnhub API密鑰
-     */
-    public void setFinnhubApiKey(String apiKey) {
-        config.setProperty(PROP_FINNHUB_API_KEY, apiKey);
-        saveConfig();
-        System.out.println("[DataSourceManager] Finnhub API密鑰已更新");
-
-        if (currentType == DataSourceType.FINNHUB && currentFeed != null) {
-            switchDataSource(DataSourceType.FINNHUB);
-        }
-    }
-
-    /**
-     * 獲取Finnhub API密鑰
-     */
-    public String getFinnhubApiKey() {
-        return config.getProperty(PROP_FINNHUB_API_KEY, "demo");
-    }
-
-    /**
-     * 設置IEX Cloud API密鑰
-     */
-    public void setIEXCloudApiKey(String apiKey) {
-        config.setProperty(PROP_IEXCLOUD_API_KEY, apiKey);
-        saveConfig();
-        System.out.println("[DataSourceManager] IEX Cloud API密鑰已更新");
-
-        if (currentType == DataSourceType.IEX_CLOUD && currentFeed != null) {
-            switchDataSource(DataSourceType.IEX_CLOUD);
-        }
-    }
-
-    /**
-     * 獲取IEX Cloud API密鑰
-     */
-    public String getIEXCloudApiKey() {
-        return config.getProperty(PROP_IEXCLOUD_API_KEY, "demo");
-    }
-
-    /**
-     * 設置Polygon API密鑰
-     */
-    public void setPolygonApiKey(String apiKey) {
-        config.setProperty(PROP_POLYGON_API_KEY, apiKey);
-        saveConfig();
-        System.out.println("[DataSourceManager] Polygon API密鑰已更新");
-
-        if (currentType == DataSourceType.POLYGON && currentFeed != null) {
-            switchDataSource(DataSourceType.POLYGON);
-        }
-    }
-
-    /**
-     * 獲取Polygon API密鑰
-     */
-    public String getPolygonApiKey() {
-        return config.getProperty(PROP_POLYGON_API_KEY, "demo");
-    }
-
-    /**
-     * 加載配置
-     */
     private void loadConfig() {
         config = new Properties();
         File configFile = new File(CONFIG_FILE);
@@ -252,81 +156,81 @@ public class DataSourceManager {
         if (configFile.exists()) {
             try (FileInputStream fis = new FileInputStream(configFile)) {
                 config.load(fis);
-                System.out.println("[DataSourceManager] 配置已加載");
+                ensureDefaultProperties();
+                removeLegacyProperties();
+                saveConfig();
+                System.out.println("[DataSourceManager] Configuration loaded");
             } catch (IOException e) {
-                System.err.println("[DataSourceManager] 無法加載配置: " + e.getMessage());
+                System.err.println("[DataSourceManager] Failed to load configuration: " + e.getMessage());
+                ensureDefaultProperties();
+                removeLegacyProperties();
             }
         } else {
-            // 創建默認配置
-            config.setProperty(PROP_DATASOURCE_TYPE, DataSourceType.SIMULATOR.name());
-            config.setProperty(PROP_FINMIND_API_TOKEN, "");
-            config.setProperty(PROP_ALPHAVANTAGE_API_KEY, "demo");
-            config.setProperty(PROP_FINNHUB_API_KEY, "demo");
-            config.setProperty(PROP_IEXCLOUD_API_KEY, "demo");
-            config.setProperty(PROP_POLYGON_API_KEY, "demo");
+            ensureDefaultProperties();
+            removeLegacyProperties();
             saveConfig();
         }
     }
 
-    /**
-     * 保存配置
-     */
+    private void ensureDefaultProperties() {
+        DataSourceType parsedType = parseDataSourceType(config.getProperty(PROP_DATASOURCE_TYPE));
+        config.setProperty(PROP_DATASOURCE_TYPE, parsedType.name());
+        config.putIfAbsent(PROP_FINMIND_API_TOKEN, "");
+        config.putIfAbsent(PROP_MARKET_COLLECTOR_JDBC_URL, MarketDataCollectorRepository.DEFAULT_JDBC_URL);
+        config.putIfAbsent(PROP_MARKET_COLLECTOR_USER, MarketDataCollectorRepository.DEFAULT_USER);
+        config.putIfAbsent(PROP_MARKET_COLLECTOR_PASSWORD, MarketDataCollectorRepository.DEFAULT_PASSWORD);
+    }
+
+    private void removeLegacyProperties() {
+        config.remove("alphavantage.apikey");
+        config.remove("finnhub.apikey");
+        config.remove("iexcloud.apikey");
+        config.remove("polygon.apikey");
+    }
+
     private void saveConfig() {
         try (FileOutputStream fos = new FileOutputStream(CONFIG_FILE)) {
             config.store(fos, "DreamHouse Trading - Data Source Configuration");
-            System.out.println("[DataSourceManager] 配置已保存");
+            System.out.println("[DataSourceManager] Configuration saved");
         } catch (IOException e) {
-            System.err.println("[DataSourceManager] 無法保存配置: " + e.getMessage());
+            System.err.println("[DataSourceManager] Failed to save configuration: " + e.getMessage());
         }
     }
 
-    /**
-     * 檢查數據源是否需要API密鑰
-     */
     public boolean requiresApiKey(DataSourceType type) {
-        return type == DataSourceType.FINMIND ||
-               type == DataSourceType.ALPHA_VANTAGE ||
-               type == DataSourceType.FINNHUB ||
-               type == DataSourceType.IEX_CLOUD ||
-               type == DataSourceType.POLYGON;
+        return type == DataSourceType.FINMIND;
     }
 
-    /**
-     * 檢查API密鑰是否有效（不是空或demo）
-     */
     public boolean hasValidApiKey(DataSourceType type) {
         if (!requiresApiKey(type)) {
             return true;
         }
-
         String apiKey = getApiKey(type);
-        return apiKey != null && !apiKey.trim().isEmpty() && !apiKey.equals("demo");
+        return apiKey != null && !apiKey.trim().isEmpty();
     }
 
-    /**
-     * 根據類型獲取API密鑰
-     */
     public String getApiKey(DataSourceType type) {
-        return switch (type) {
-            case FINMIND -> getFinMindApiToken();
-            case ALPHA_VANTAGE -> getAlphaVantageApiKey();
-            case FINNHUB -> getFinnhubApiKey();
-            case IEX_CLOUD -> getIEXCloudApiKey();
-            case POLYGON -> getPolygonApiKey();
-            default -> "";
-        };
+        return type == DataSourceType.FINMIND ? getFinMindApiToken() : "";
     }
 
-    /**
-     * 根據類型設置API密鑰
-     */
     public void setApiKey(DataSourceType type, String apiKey) {
-        switch (type) {
-            case FINMIND -> setFinMindApiToken(apiKey);
-            case ALPHA_VANTAGE -> setAlphaVantageApiKey(apiKey);
-            case FINNHUB -> setFinnhubApiKey(apiKey);
-            case IEX_CLOUD -> setIEXCloudApiKey(apiKey);
-            case POLYGON -> setPolygonApiKey(apiKey);
+        if (type == DataSourceType.FINMIND) {
+            setFinMindApiToken(apiKey);
         }
+    }
+
+    private DataSourceType parseDataSourceType(String value) {
+        if (value == null || value.isBlank()) {
+            return DataSourceType.MARKET_COLLECTOR;
+        }
+        try {
+            return DataSourceType.valueOf(value);
+        } catch (Exception e) {
+            return DataSourceType.MARKET_COLLECTOR;
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 }

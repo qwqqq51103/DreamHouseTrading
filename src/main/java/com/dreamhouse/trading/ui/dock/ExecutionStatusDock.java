@@ -1,63 +1,78 @@
 package com.dreamhouse.trading.ui.dock;
 
+import com.dreamhouse.trading.core.StockNameResolver;
+import com.dreamhouse.trading.core.backtest.Position;
+import com.dreamhouse.trading.core.backtest.Trade;
+import com.dreamhouse.trading.core.backtest.TradeType;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
+import com.dreamhouse.trading.core.execution.OrderSide;
+import com.dreamhouse.trading.core.execution.OrderStatus;
+import com.dreamhouse.trading.core.execution.OrderType;
 
-import javax.swing.*;
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JProgressBar;
+import javax.swing.JScrollPane;
+import javax.swing.JTable;
+import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.ArrayDeque;
 
-/**
- * 執行狀態面板
- * 顯示訂單執行狀態與歷史記錄
- */
 public class ExecutionStatusDock extends JPanel {
 
-    // 執行引擎
+    private static final int MAX_DISPLAY_TRADES = 50;
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss");
+
     private ExecutionEngine executionEngine;
-
-    // 執行模式顯示
     private JLabel executionModeLabel;
-
-    // 統計顯示
     private JLabel totalOrdersLabel;
     private JLabel successOrdersLabel;
     private JLabel failedOrdersLabel;
     private JLabel successRateLabel;
+    private JLabel cashLabel;
+    private JLabel positionValueLabel;
+    private JLabel totalEquityLabel;
+    private JLabel realizedPnLLabel;
+    private JLabel unrealizedPnLLabel;
+    private JLabel totalPnLLabel;
+    private JLabel commissionLabel;
     private JProgressBar successRateBar;
-
-    // 訂單歷史表格
     private DefaultTableModel tableModel;
-    private JTable orderHistoryTable;
+    private final Map<String, Double> markPrices = new HashMap<>();
 
-    // 最大顯示筆數
-    private static final int MAX_DISPLAY_ORDERS = 50;
-
-    // DateTimeFormatter
-    private static final DateTimeFormatter TIME_FORMATTER =
-        DateTimeFormatter.ofPattern("MM-dd HH:mm:ss");
-
-    /**
-     * 建構子
-     */
     public ExecutionStatusDock() {
         setLayout(new BorderLayout(10, 10));
         setBorder(new EmptyBorder(10, 10, 10, 10));
         setBackground(new Color(40, 40, 40));
 
-        // 創建主面板
         JPanel mainPanel = new JPanel(new BorderLayout(0, 10));
         mainPanel.setBackground(new Color(40, 40, 40));
 
-        // 上方面板（模式 + 統計）
         JPanel topPanel = new JPanel();
         topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
         topPanel.setBackground(new Color(40, 40, 40));
@@ -66,47 +81,28 @@ public class ExecutionStatusDock extends JPanel {
         topPanel.add(createStatisticsPanel());
 
         mainPanel.add(topPanel, BorderLayout.NORTH);
-
-        // 下方面板（訂單歷史）
-        mainPanel.add(createOrderHistoryPanel(), BorderLayout.CENTER);
-
+        mainPanel.add(createTradeHistoryPanel(), BorderLayout.CENTER);
         add(mainPanel, BorderLayout.CENTER);
 
-        // 初始化顯示
         updateDisplay();
     }
 
-    /**
-     * 創建執行模式面板
-     */
     private JPanel createModePanel() {
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBackground(new Color(50, 50, 50));
-        TitledBorder border = BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(100, 100, 100)),
-                "⚙ 執行模式",
-                TitledBorder.LEFT,
-                TitledBorder.TOP,
-                new Font("Microsoft JhengHei", Font.BOLD, 14),
-                Color.WHITE
-        );
-        panel.setBorder(border);
+        panel.setBorder(createBorder("執行模式"));
 
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 10, 5, 10);
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-
+        GridBagConstraints gbc = createConstraints();
         gbc.gridx = 0;
         gbc.gridy = 0;
         gbc.weightx = 0.3;
-        JLabel label = new JLabel("當前模式：");
+        JLabel label = new JLabel("目前模式：");
         label.setForeground(Color.LIGHT_GRAY);
         panel.add(label, gbc);
 
         gbc.gridx = 1;
         gbc.weightx = 0.7;
-        executionModeLabel = new JLabel("未初始化");
+        executionModeLabel = new JLabel("尚未啟動");
         executionModeLabel.setForeground(Color.WHITE);
         executionModeLabel.setFont(new Font("Microsoft JhengHei", Font.BOLD, 14));
         panel.add(executionModeLabel, gbc);
@@ -114,83 +110,28 @@ public class ExecutionStatusDock extends JPanel {
         return panel;
     }
 
-    /**
-     * 創建統計面板
-     */
     private JPanel createStatisticsPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setBackground(new Color(50, 50, 50));
-        TitledBorder border = BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(100, 100, 100)),
-                "📊 執行統計",
-                TitledBorder.LEFT,
-                TitledBorder.TOP,
-                new Font("Microsoft JhengHei", Font.BOLD, 14),
-                Color.WHITE
-        );
-        panel.setBorder(border);
+        panel.setBorder(createBorder("執行統計"));
 
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 10, 5, 10);
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
+        GridBagConstraints gbc = createConstraints();
+        addStatRow(panel, gbc, 0, "訂單總數", totalOrdersLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 1, "成功訂單", successOrdersLabel = createValueLabel(new Color(80, 220, 120)));
+        addStatRow(panel, gbc, 2, "失敗訂單", failedOrdersLabel = createValueLabel(new Color(255, 110, 110)));
 
-        // 總訂單數
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.weightx = 0.3;
-        JLabel label1 = new JLabel("總訂單數：");
-        label1.setForeground(Color.LIGHT_GRAY);
-        panel.add(label1, gbc);
-
-        gbc.gridx = 1;
-        gbc.weightx = 0.7;
-        totalOrdersLabel = new JLabel("0");
-        totalOrdersLabel.setForeground(Color.WHITE);
-        panel.add(totalOrdersLabel, gbc);
-
-        // 成功訂單數
-        gbc.gridx = 0;
-        gbc.gridy = 1;
-        gbc.weightx = 0.3;
-        JLabel label2 = new JLabel("成功訂單：");
-        label2.setForeground(Color.LIGHT_GRAY);
-        panel.add(label2, gbc);
-
-        gbc.gridx = 1;
-        gbc.weightx = 0.7;
-        successOrdersLabel = new JLabel("0");
-        successOrdersLabel.setForeground(new Color(0, 255, 0));
-        panel.add(successOrdersLabel, gbc);
-
-        // 失敗訂單數
-        gbc.gridx = 0;
-        gbc.gridy = 2;
-        gbc.weightx = 0.3;
-        JLabel label3 = new JLabel("失敗訂單：");
-        label3.setForeground(Color.LIGHT_GRAY);
-        panel.add(label3, gbc);
-
-        gbc.gridx = 1;
-        gbc.weightx = 0.7;
-        failedOrdersLabel = new JLabel("0");
-        failedOrdersLabel.setForeground(new Color(255, 0, 0));
-        panel.add(failedOrdersLabel, gbc);
-
-        // 成功率
         gbc.gridx = 0;
         gbc.gridy = 3;
         gbc.weightx = 0.3;
-        JLabel label4 = new JLabel("成功率：");
-        label4.setForeground(Color.LIGHT_GRAY);
-        panel.add(label4, gbc);
+        JLabel rateLabel = new JLabel("成功率：");
+        rateLabel.setForeground(Color.LIGHT_GRAY);
+        panel.add(rateLabel, gbc);
 
         gbc.gridx = 1;
         gbc.weightx = 0.7;
         JPanel ratePanel = new JPanel(new BorderLayout(5, 0));
         ratePanel.setBackground(new Color(50, 50, 50));
-        successRateLabel = new JLabel("0%");
-        successRateLabel.setForeground(Color.WHITE);
+        successRateLabel = createValueLabel(Color.WHITE);
         successRateBar = new JProgressBar(0, 100);
         successRateBar.setStringPainted(false);
         successRateBar.setPreferredSize(new Dimension(150, 20));
@@ -198,221 +139,647 @@ public class ExecutionStatusDock extends JPanel {
         ratePanel.add(successRateBar, BorderLayout.CENTER);
         panel.add(ratePanel, gbc);
 
+        addStatRow(panel, gbc, 4, "可用現金", cashLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 5, "持倉市值", positionValueLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 6, "總資產估值", totalEquityLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 7, "已實現損益", realizedPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 8, "未實現損益", unrealizedPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 9, "總損益", totalPnLLabel = createValueLabel(Color.WHITE));
+        addStatRow(panel, gbc, 10, "累計手續費", commissionLabel = createValueLabel(Color.LIGHT_GRAY));
+
         return panel;
     }
 
-    /**
-     * 創建訂單歷史面板
-     */
-    private JPanel createOrderHistoryPanel() {
+    private JPanel createTradeHistoryPanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 5));
         panel.setBackground(new Color(50, 50, 50));
-        TitledBorder border = BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(100, 100, 100)),
-                "📋 訂單歷史（最近 " + MAX_DISPLAY_ORDERS + " 筆）",
-                TitledBorder.LEFT,
-                TitledBorder.TOP,
-                new Font("Microsoft JhengHei", Font.BOLD, 14),
-                Color.WHITE
-        );
-        panel.setBorder(border);
+        panel.setBorder(createBorder("交易紀錄（最近 " + MAX_DISPLAY_TRADES + " 筆）"));
 
-        // 創建表格模型
-        String[] columnNames = {"狀態", "時間", "商品", "類型", "數量", "價格", "訊息"};
+        String[] columnNames = {
+                "狀態", "交易ID", "商品", "方向", "開倉時間", "平倉時間", "數量",
+                "進場價", "出場/現價", "停損", "停利", "損益", "報酬率", "平倉原因", "原始理由"
+        };
         tableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return false;  // 所有單元格不可編輯
+                return false;
             }
         };
+        tableModel.setColumnIdentifiers(new Object[]{
+                "狀態", "交易ID", "股票代碼", "中文名稱", "方向", "開倉時間", "平倉時間", "數量",
+                "進場價", "出場/市價", "停損", "停利", "損益", "報酬率", "平倉訊息", "原因"
+        });
 
-        // 創建表格
-        orderHistoryTable = new JTable(tableModel);
-        orderHistoryTable.setBackground(new Color(40, 40, 40));
-        orderHistoryTable.setForeground(Color.LIGHT_GRAY);
-        orderHistoryTable.setGridColor(new Color(60, 60, 60));
-        orderHistoryTable.setSelectionBackground(new Color(70, 130, 180));
-        orderHistoryTable.setSelectionForeground(Color.WHITE);
-        orderHistoryTable.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
-        orderHistoryTable.getTableHeader().setBackground(new Color(60, 60, 60));
-        orderHistoryTable.getTableHeader().setForeground(Color.WHITE);
-        orderHistoryTable.getTableHeader().setFont(new Font("Microsoft JhengHei", Font.BOLD, 11));
-        orderHistoryTable.setRowHeight(25);
+        JTable tradeHistoryTable = new JTable(tableModel);
+        tradeHistoryTable.setAutoCreateRowSorter(true);
+        tradeHistoryTable.setBackground(new Color(40, 40, 40));
+        tradeHistoryTable.setForeground(Color.LIGHT_GRAY);
+        tradeHistoryTable.setGridColor(new Color(60, 60, 60));
+        tradeHistoryTable.setSelectionBackground(new Color(70, 130, 180));
+        tradeHistoryTable.setSelectionForeground(Color.WHITE);
+        tradeHistoryTable.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
+        tradeHistoryTable.getTableHeader().setBackground(new Color(60, 60, 60));
+        tradeHistoryTable.getTableHeader().setForeground(Color.WHITE);
+        tradeHistoryTable.getTableHeader().setFont(new Font("Microsoft JhengHei", Font.BOLD, 11));
+        tradeHistoryTable.setRowHeight(25);
+        tradeHistoryTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        configureColumns(tradeHistoryTable);
+        tradeHistoryTable.setDefaultRenderer(Object.class, new TradeRowRenderer());
 
-        // 設定列寬
-        orderHistoryTable.getColumnModel().getColumn(0).setPreferredWidth(60);   // 狀態
-        orderHistoryTable.getColumnModel().getColumn(1).setPreferredWidth(120);  // 時間
-        orderHistoryTable.getColumnModel().getColumn(2).setPreferredWidth(80);   // 商品
-        orderHistoryTable.getColumnModel().getColumn(3).setPreferredWidth(60);   // 類型
-        orderHistoryTable.getColumnModel().getColumn(4).setPreferredWidth(60);   // 數量
-        orderHistoryTable.getColumnModel().getColumn(5).setPreferredWidth(80);   // 價格
-        orderHistoryTable.getColumnModel().getColumn(6).setPreferredWidth(200);  // 訊息
-
-        // 自定義單元格渲染器（為狀態列添加顏色）
-        orderHistoryTable.getColumnModel().getColumn(0).setCellRenderer(new StatusCellRenderer());
-
-        // 滾動面板
-        JScrollPane scrollPane = new JScrollPane(orderHistoryTable);
+        JScrollPane scrollPane = new JScrollPane(tradeHistoryTable);
         scrollPane.setBorder(BorderFactory.createLineBorder(new Color(80, 80, 80)));
         panel.add(scrollPane, BorderLayout.CENTER);
-
         return panel;
     }
 
-    /**
-     * 設定執行引擎
-     */
+    private void configureColumns(JTable table) {
+        int[] widths = {74, 142, 86, 90, 60, 116, 116, 56, 76, 76, 76, 76, 92, 76, 190, 360};
+        for (int i = 0; i < widths.length; i++) {
+            table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
+        }
+    }
+
     public void setExecutionEngine(ExecutionEngine engine) {
         this.executionEngine = engine;
         updateDisplay();
     }
 
-    /**
-     * 更新顯示
-     */
+    public void updateMarketPrice(String symbol, double price) {
+        if (symbol == null || symbol.isBlank() || price <= 0.0) {
+            return;
+        }
+        markPrices.put(symbol, price);
+        updateDisplay();
+    }
+
+    public void updateMarketPrices(Map<String, Double> prices) {
+        if (prices == null || prices.isEmpty()) {
+            return;
+        }
+        prices.forEach((symbol, price) -> {
+            if (symbol != null && !symbol.isBlank() && price != null && price > 0.0) {
+                markPrices.put(symbol, price);
+            }
+        });
+        updateDisplay();
+    }
+
     public void updateDisplay() {
         SwingUtilities.invokeLater(() -> {
             if (executionEngine == null) {
-                executionModeLabel.setText("未初始化");
+                executionModeLabel.setText("尚未啟動");
                 executionModeLabel.setForeground(Color.GRAY);
                 totalOrdersLabel.setText("0");
                 successOrdersLabel.setText("0");
                 failedOrdersLabel.setText("0");
                 successRateLabel.setText("0%");
                 successRateBar.setValue(0);
+                resetPortfolioStats();
                 tableModel.setRowCount(0);
-            } else {
-                // 更新執行模式
-                ExecutionMode mode = executionEngine.getMode();
-                executionModeLabel.setText(getModeDisplayName(mode));
-                executionModeLabel.setForeground(getModeColor(mode));
-
-                // 獲取執行歷史
-                Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
-                List<ExecutionResult> results = new ArrayList<>(history.values());
-
-                // 計算統計
-                long totalOrders = results.size();
-                long successOrders = results.stream().filter(ExecutionResult::isSuccess).count();
-                long failedOrders = results.stream().filter(ExecutionResult::isFailed).count();
-                int successRate = totalOrders > 0 ? (int) ((successOrders * 100) / totalOrders) : 0;
-
-                // 更新統計顯示
-                totalOrdersLabel.setText(String.valueOf(totalOrders));
-                successOrdersLabel.setText(String.valueOf(successOrders));
-                failedOrdersLabel.setText(String.valueOf(failedOrders));
-                successRateLabel.setText(successRate + "%");
-                successRateBar.setValue(successRate);
-                successRateBar.setForeground(getSuccessRateColor(successRate));
-
-                // 更新訂單歷史表格
-                updateOrderHistoryTable(results);
+                return;
             }
+
+            ExecutionMode mode = executionEngine.getMode();
+            executionModeLabel.setText(mode.getDisplayName());
+            executionModeLabel.setForeground(getModeColor(mode));
+
+            List<ExecutionResult> results = getSortedExecutionResults();
+            long totalOrders = results.size();
+            long successOrders = results.stream().filter(ExecutionResult::isSuccess).count();
+            long failedOrders = results.stream().filter(ExecutionResult::isFailed).count();
+            int successRate = totalOrders > 0 ? (int) ((successOrders * 100) / totalOrders) : 0;
+
+            totalOrdersLabel.setText(String.valueOf(totalOrders));
+            successOrdersLabel.setText(String.valueOf(successOrders));
+            failedOrdersLabel.setText(String.valueOf(failedOrders));
+            successRateLabel.setText(successRate + "%");
+            successRateBar.setValue(successRate);
+            successRateBar.setForeground(getSuccessRateColor(successRate));
+            updatePortfolioStats();
+
+            updateTradeHistoryTable(buildTradeLifecycleRows(results));
         });
     }
 
-    /**
-     * 更新訂單歷史表格
-     */
-    private void updateOrderHistoryTable(List<ExecutionResult> results) {
+    public void showReplayTrades(List<Trade> trades) {
+        SwingUtilities.invokeLater(() -> {
+            List<Trade> safeTrades = trades != null ? trades : List.of();
+            executionModeLabel.setText("SQL雷達重播");
+            executionModeLabel.setForeground(new Color(100, 149, 237));
+            totalOrdersLabel.setText(String.valueOf(safeTrades.size()));
+            successOrdersLabel.setText(String.valueOf(safeTrades.size()));
+            failedOrdersLabel.setText("0");
+            successRateLabel.setText(safeTrades.isEmpty() ? "0%" : "100%");
+            successRateBar.setValue(safeTrades.isEmpty() ? 0 : 100);
+            successRateBar.setForeground(getSuccessRateColor(safeTrades.isEmpty() ? 0 : 100));
+
+            double realizedPnL = calculateReplayRealizedPnL(safeTrades);
+            cashLabel.setText("--");
+            positionValueLabel.setText("--");
+            totalEquityLabel.setText("--");
+            realizedPnLLabel.setText(formatPnL(realizedPnL));
+            unrealizedPnLLabel.setText("--");
+            totalPnLLabel.setText(formatPnL(realizedPnL));
+            commissionLabel.setText(formatMoney(safeTrades.stream().mapToDouble(Trade::getCommissionAmount).sum()));
+            realizedPnLLabel.setForeground(getPnLColor(realizedPnL));
+            totalPnLLabel.setForeground(getPnLColor(realizedPnL));
+
+            updateTradeHistoryTable(buildReplayLifecycleRows(safeTrades));
+        });
+    }
+
+    private List<ExecutionResult> getSortedExecutionResults() {
+        Map<String, ExecutionResult> history = executionEngine.getExecutionHistory();
+        List<ExecutionResult> results = new ArrayList<>(history.values());
+        results.sort(Comparator.comparing(
+                ExecutionResult::getExecutionTime,
+                Comparator.nullsLast(Comparator.naturalOrder())));
+        return results;
+    }
+
+    private List<TradeLifecycleRow> buildTradeLifecycleRows(List<ExecutionResult> results) {
+        Map<String, TradeLifecycleRow> trades = new LinkedHashMap<>();
+        List<TradeLifecycleRow> standaloneRows = new ArrayList<>();
+
+        for (ExecutionResult result : results) {
+            if (!result.isSuccess()) {
+                standaloneRows.add(TradeLifecycleRow.rejected(result));
+                continue;
+            }
+
+            if (result.getOrderSide() == OrderSide.BUY) {
+                String tradeId = nonBlank(result.getPositionId(), result.getOrderId());
+                trades.computeIfAbsent(tradeId, id -> new TradeLifecycleRow(id)).applyOpen(result);
+            } else if (result.getOrderSide() == OrderSide.SELL) {
+                String tradeId = nonBlank(result.getPositionId(), result.getOrderId());
+                trades.computeIfAbsent(tradeId, id -> new TradeLifecycleRow(id)).applyClose(result);
+            } else {
+                standaloneRows.add(TradeLifecycleRow.rejected(result));
+            }
+        }
+
+        List<TradeLifecycleRow> rows = new ArrayList<>(trades.values());
+        rows.addAll(standaloneRows);
+        rows.sort(Comparator.comparing(TradeLifecycleRow::getSortTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .reversed());
+        return rows;
+    }
+
+    private List<TradeLifecycleRow> buildReplayLifecycleRows(List<Trade> trades) {
+        Map<String, Queue<TradeLifecycleRow>> openBySymbol = new LinkedHashMap<>();
+        List<TradeLifecycleRow> rows = new ArrayList<>();
+        int tradeId = 1;
+        List<Trade> sorted = trades.stream()
+                .filter(trade -> trade != null && trade.getTimestamp() != null)
+                .sorted(Comparator.comparing(Trade::getTimestamp))
+                .toList();
+        for (Trade trade : sorted) {
+            if (trade.getType() == TradeType.BUY) {
+                TradeLifecycleRow row = new TradeLifecycleRow(String.format("REPLAY_%05d", tradeId++));
+                row.symbol = trade.getSymbol();
+                row.quantity = trade.getQuantity();
+                row.entryPrice = trade.getPrice();
+                row.stopLoss = trade.getStopLoss();
+                row.takeProfit = trade.getTakeProfit();
+                row.openTime = trade.getTimestamp();
+                row.reason = "SQL 雷達重播開倉";
+                row.totalCommission = trade.getCommissionAmount();
+                openBySymbol.computeIfAbsent(trade.getSymbol(), ignored -> new ArrayDeque<>()).add(row);
+                rows.add(row);
+            } else if (trade.getType() == TradeType.SELL) {
+                Queue<TradeLifecycleRow> queue = openBySymbol.get(trade.getSymbol());
+                TradeLifecycleRow row = queue != null ? queue.poll() : null;
+                if (row == null) {
+                    row = new TradeLifecycleRow(String.format("REPLAY_%05d", tradeId++));
+                    row.symbol = trade.getSymbol();
+                    row.quantity = trade.getQuantity();
+                    rows.add(row);
+                }
+                row.exitPrice = trade.getPrice();
+                row.stopLoss = trade.getStopLoss() != null ? trade.getStopLoss() : row.stopLoss;
+                row.takeProfit = trade.getTakeProfit() != null ? trade.getTakeProfit() : row.takeProfit;
+                row.closeTime = trade.getTimestamp();
+                row.closeReason = trade.getExitReason();
+                row.realizedPnL = row.entryPrice > 0.0
+                        ? trade.getNetProceeds() - (row.entryPrice * row.quantity) - row.totalCommission
+                        : 0.0;
+                row.totalCommission += trade.getCommissionAmount();
+                if (row.reason == null || row.reason.isBlank()) {
+                    row.reason = "SQL 雷達重播";
+                }
+            }
+        }
+        rows.sort(Comparator.comparing(TradeLifecycleRow::getSortTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .reversed());
+        return rows;
+    }
+
+    private double calculateReplayRealizedPnL(List<Trade> trades) {
+        Map<String, Queue<Trade>> openBySymbol = new HashMap<>();
+        double pnl = 0.0;
+        for (Trade trade : trades.stream()
+                .filter(trade -> trade != null && trade.getTimestamp() != null)
+                .sorted(Comparator.comparing(Trade::getTimestamp))
+                .toList()) {
+            if (trade.getType() == TradeType.BUY) {
+                openBySymbol.computeIfAbsent(trade.getSymbol(), ignored -> new ArrayDeque<>()).add(trade);
+            } else if (trade.getType() == TradeType.SELL) {
+                Queue<Trade> queue = openBySymbol.get(trade.getSymbol());
+                Trade buy = queue != null ? queue.poll() : null;
+                if (buy != null) {
+                    pnl += trade.getNetProceeds() - buy.getTotalCost();
+                }
+            }
+        }
+        return pnl;
+    }
+
+    private void updatePortfolioStats() {
+        if (executionEngine == null || executionEngine.getPortfolio() == null) {
+            resetPortfolioStats();
+            return;
+        }
+
+        Map<String, Double> effectiveMarkPrices = new HashMap<>();
+        double positionValue = 0.0;
+        for (Position position : executionEngine.getPortfolio().getPositions()) {
+            double markPrice = markPrices.getOrDefault(position.getSymbol(), position.getAveragePrice());
+            effectiveMarkPrices.put(position.getSymbol(), markPrice);
+            positionValue += position.getQuantity() * markPrice;
+        }
+
+        double cash = executionEngine.getPortfolio().getCash();
+        double totalEquity = cash + positionValue;
+        double realizedPnL = executionEngine.getPortfolio().getRealizedPnL();
+        double unrealizedPnL = executionEngine.getPortfolio().getUnrealizedPnL(effectiveMarkPrices);
+        double totalPnL = totalEquity - executionEngine.getPortfolio().getInitialCash();
+        double commission = executionEngine.getPortfolio().getTotalCommission();
+
+        cashLabel.setText(formatMoney(cash));
+        positionValueLabel.setText(formatMoney(positionValue));
+        totalEquityLabel.setText(formatMoney(totalEquity));
+        realizedPnLLabel.setText(formatPnL(realizedPnL));
+        unrealizedPnLLabel.setText(formatPnL(unrealizedPnL));
+        totalPnLLabel.setText(formatPnL(totalPnL));
+        commissionLabel.setText(formatMoney(commission));
+
+        realizedPnLLabel.setForeground(getPnLColor(realizedPnL));
+        unrealizedPnLLabel.setForeground(getPnLColor(unrealizedPnL));
+        totalPnLLabel.setForeground(getPnLColor(totalPnL));
+    }
+
+    private void resetPortfolioStats() {
+        cashLabel.setText("0.00");
+        positionValueLabel.setText("0.00");
+        totalEquityLabel.setText("0.00");
+        realizedPnLLabel.setText("0.00");
+        unrealizedPnLLabel.setText("0.00");
+        totalPnLLabel.setText("0.00");
+        commissionLabel.setText("0.00");
+        realizedPnLLabel.setForeground(Color.WHITE);
+        unrealizedPnLLabel.setForeground(Color.WHITE);
+        totalPnLLabel.setForeground(Color.WHITE);
+    }
+
+    private void updateTradeHistoryTable(List<TradeLifecycleRow> rows) {
         tableModel.setRowCount(0);
-
-        // 只顯示最近的訂單（倒序）
-        int startIndex = Math.max(0, results.size() - MAX_DISPLAY_ORDERS);
-        for (int i = results.size() - 1; i >= startIndex; i--) {
-            ExecutionResult result = results.get(i);
-
-            String status = getStatusIcon(result.getStatus());
-            String time = result.getExecutionTime() != null ?
-                    result.getExecutionTime().format(TIME_FORMATTER) : "--";
-            String symbol = result.getSymbol();
-            String type = result.getOrderType() != null ?
-                    result.getOrderType().getShortCode() : "--";
-            String quantity = String.valueOf(result.getExecutedQuantity());
-            String price = String.format("%.2f", result.getExecutedPrice());
-            String message = result.getMessage() != null ? result.getMessage() : "";
-
-            tableModel.addRow(new Object[]{status, time, symbol, type, quantity, price, message});
+        int endIndex = Math.min(rows.size(), MAX_DISPLAY_TRADES);
+        for (int i = 0; i < endIndex; i++) {
+            TradeLifecycleRow row = rows.get(i);
+            double displayPnL = row.calculateDisplayPnL(markPrices);
+            tableModel.addRow(new Object[]{
+                    row.getStatusText(),
+                    row.tradeId,
+                    valueOrDash(row.symbol),
+                    valueOrDash(StockNameResolver.resolveChineseName(row.symbol)),
+                    row.getDirectionText(),
+                    formatTime(row.openTime),
+                    formatTime(row.closeTime),
+                    row.quantity > 0 ? String.valueOf(row.quantity) : "--",
+                    formatPrice(row.entryPrice),
+                    row.getExitOrMarkPriceText(markPrices),
+                    formatNullablePrice(row.stopLoss),
+                    formatNullablePrice(row.takeProfit),
+                    formatPnL(displayPnL),
+                    formatPercent(row.calculateReturnRate(markPrices)),
+                    valueOrDash(row.getExitMessage(displayPnL)),
+                    valueOrDash(row.reason)
+            });
         }
     }
 
-    // ==================== 輔助方法 ====================
+    private String formatTime(LocalDateTime time) {
+        return time != null ? time.format(TIME_FORMATTER) : "--";
+    }
 
-    private String getModeDisplayName(ExecutionMode mode) {
-        if (mode == null) return "未知";
-        switch (mode) {
-            case BACKTEST: return "📊 回測模式";
-            case PAPER_TRADING: return "📝 模擬盤";
-            case LIVE_TRADING: return "💰 實盤交易";
-            case DRY_RUN: return "🧪 乾跑模式";
-            default: return "未知";
+    private String formatPrice(double price) {
+        return price > 0.0 ? String.format("%.2f", price) : "--";
+    }
+
+    private String formatNullablePrice(Double price) {
+        return price != null && price > 0.0 ? String.format("%.2f", price) : "--";
+    }
+
+    private String formatMoney(double value) {
+        return String.format("%.2f", value);
+    }
+
+    private String formatPnL(double value) {
+        if (Math.abs(value) < 0.005) {
+            return "0.00";
         }
+        return String.format("%+.2f", value);
+    }
+
+    private String formatPercent(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value) || Math.abs(value) < 0.00005) {
+            return "0.00%";
+        }
+        return String.format("%+.2f%%", value * 100.0);
+    }
+
+    private TitledBorder createBorder(String title) {
+        return BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(new Color(100, 100, 100)),
+                title,
+                TitledBorder.LEFT,
+                TitledBorder.TOP,
+                new Font("Microsoft JhengHei", Font.BOLD, 14),
+                Color.WHITE);
+    }
+
+    private GridBagConstraints createConstraints() {
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 10, 5, 10);
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        return gbc;
+    }
+
+    private void addStatRow(JPanel panel, GridBagConstraints gbc, int row, String labelText, JLabel valueLabel) {
+        gbc.gridx = 0;
+        gbc.gridy = row;
+        gbc.weightx = 0.3;
+        JLabel label = new JLabel(labelText + "：");
+        label.setForeground(Color.LIGHT_GRAY);
+        panel.add(label, gbc);
+
+        gbc.gridx = 1;
+        gbc.weightx = 0.7;
+        panel.add(valueLabel, gbc);
+    }
+
+    private JLabel createValueLabel(Color color) {
+        JLabel label = new JLabel("0");
+        label.setForeground(color);
+        return label;
     }
 
     private Color getModeColor(ExecutionMode mode) {
-        if (mode == null) return Color.GRAY;
-        switch (mode) {
-            case BACKTEST: return new Color(100, 149, 237);  // 藍色
-            case PAPER_TRADING: return new Color(255, 215, 0);  // 金色
-            case LIVE_TRADING: return new Color(255, 0, 0);  // 紅色
-            case DRY_RUN: return new Color(128, 128, 128);  // 灰色
-            default: return Color.GRAY;
-        }
-    }
-
-    private String getStatusIcon(ExecutionResult.Status status) {
-        switch (status) {
-            case SUCCESS: return "✓";
-            case FAILED: return "✗";
-            case PARTIAL: return "◐";
-            case PENDING: return "○";
-            case CANCELLED: return "⊘";
-            case REJECTED: return "⊗";
-            default: return "?";
-        }
+        return switch (mode) {
+            case BACKTEST -> new Color(100, 149, 237);
+            case PAPER_TRADING -> new Color(255, 215, 0);
+            case LIVE_TRADING -> new Color(255, 90, 90);
+            case DRY_RUN -> new Color(160, 160, 160);
+        };
     }
 
     private Color getSuccessRateColor(int rate) {
         if (rate >= 80) {
-            return new Color(0, 200, 0);  // 綠色
-        } else if (rate >= 60) {
-            return new Color(144, 238, 144);  // 淺綠色
-        } else if (rate >= 40) {
-            return new Color(255, 215, 0);  // 黃色
-        } else {
-            return new Color(255, 100, 0);  // 橘色
+            return new Color(0, 200, 0);
+        }
+        if (rate >= 60) {
+            return new Color(144, 238, 144);
+        }
+        if (rate >= 40) {
+            return new Color(255, 215, 0);
+        }
+        return new Color(255, 100, 0);
+    }
+
+    private Color getPnLColor(double value) {
+        if (value > 0.005) {
+            return new Color(90, 230, 130);
+        }
+        if (value < -0.005) {
+            return new Color(255, 120, 120);
+        }
+        return Color.WHITE;
+    }
+
+    private String valueOrDash(String value) {
+        return value == null || value.isBlank() ? "--" : value;
+    }
+
+    private String nonBlank(String preferred, String fallback) {
+        return preferred != null && !preferred.isBlank() ? preferred : fallback;
+    }
+
+    private static class TradeLifecycleRow {
+        private final String tradeId;
+        private String symbol;
+        private int quantity;
+        private double entryPrice;
+        private double exitPrice;
+        private Double stopLoss;
+        private Double takeProfit;
+        private double realizedPnL;
+        private double totalCommission;
+        private LocalDateTime openTime;
+        private LocalDateTime closeTime;
+        private String reason;
+        private String closeReason;
+        private String failedMessage;
+        private boolean rejected;
+
+        private TradeLifecycleRow(String tradeId) {
+            this.tradeId = tradeId;
+        }
+
+        private static TradeLifecycleRow rejected(ExecutionResult result) {
+            TradeLifecycleRow row = new TradeLifecycleRow(nonBlankStatic(result.getPositionId(), result.getOrderId()));
+            row.symbol = result.getSymbol();
+            row.quantity = result.getRequestedQuantity();
+            row.entryPrice = result.getRequestedPrice();
+            row.exitPrice = result.getExecutedPrice();
+            row.stopLoss = result.getStopLoss();
+            row.takeProfit = result.getTakeProfit();
+            row.totalCommission = result.getCommission();
+            row.openTime = result.getExecutionTime();
+            row.reason = result.getDecisionReason();
+            row.failedMessage = translateFailureMessage(result.getMessage());
+            row.rejected = true;
+            return row;
+        }
+
+        private void applyOpen(ExecutionResult result) {
+            symbol = result.getSymbol();
+            quantity = result.getExecutedQuantity();
+            entryPrice = result.getExecutedPrice();
+            stopLoss = result.getStopLoss();
+            takeProfit = result.getTakeProfit();
+            totalCommission += result.getCommission();
+            openTime = result.getExecutionTime();
+            reason = result.getDecisionReason();
+        }
+
+        private void applyClose(ExecutionResult result) {
+            if (symbol == null || symbol.isBlank()) {
+                symbol = result.getSymbol();
+            }
+            if (quantity <= 0) {
+                quantity = result.getExecutedQuantity();
+            }
+            exitPrice = result.getExecutedPrice();
+            stopLoss = result.getStopLoss() != null ? result.getStopLoss() : stopLoss;
+            takeProfit = result.getTakeProfit() != null ? result.getTakeProfit() : takeProfit;
+            realizedPnL += result.getRealizedPnL();
+            totalCommission += result.getCommission();
+            closeTime = result.getExecutionTime();
+            closeReason = result.getDecisionReason();
+            if (reason == null || reason.isBlank()) {
+                reason = result.getDecisionReason();
+            }
+        }
+
+        private String getStatusText() {
+            if (rejected) {
+                return "失敗";
+            }
+            return closeTime != null ? "已平倉" : "持倉中";
+        }
+
+        private String getDirectionText() {
+            return "做多";
+        }
+
+        private LocalDateTime getSortTime() {
+            if (closeTime != null) {
+                return closeTime;
+            }
+            return openTime;
+        }
+
+        private double calculateDisplayPnL(Map<String, Double> markPrices) {
+            if (rejected) {
+                return 0.0;
+            }
+            if (closeTime != null) {
+                return realizedPnL;
+            }
+            Double markPrice = markPrices.get(symbol);
+            if (markPrice == null || markPrice <= 0.0 || entryPrice <= 0.0 || quantity <= 0) {
+                return 0.0;
+            }
+            return (markPrice - entryPrice) * quantity - totalCommission;
+        }
+
+        private double calculateReturnRate(Map<String, Double> markPrices) {
+            if (entryPrice <= 0.0 || quantity <= 0) {
+                return 0.0;
+            }
+            return calculateDisplayPnL(markPrices) / (entryPrice * quantity);
+        }
+
+        private String getExitOrMarkPriceText(Map<String, Double> markPrices) {
+            if (exitPrice > 0.0) {
+                return String.format("%.2f", exitPrice);
+            }
+            Double markPrice = markPrices.get(symbol);
+            return markPrice != null && markPrice > 0.0 ? String.format("%.2f", markPrice) : "--";
+        }
+
+        private String getExitMessage(double displayPnL) {
+            if (rejected) {
+                return failedMessage;
+            }
+            if (closeTime == null) {
+                return "尚未平倉，損益為即時估算";
+            }
+            String reasonText = closeReason == null || closeReason.isBlank() ? "平倉完成" : closeReason;
+            return reasonText + "，損益 " + String.format("%+.2f", displayPnL);
+        }
+
+        private static String nonBlankStatic(String preferred, String fallback) {
+            return preferred != null && !preferred.isBlank() ? preferred : fallback;
+        }
+
+        private static String translateFailureMessage(String message) {
+            if (message == null || message.isBlank()) {
+                return "訂單失敗";
+            }
+            if (message.contains("Required cash")) {
+                return "資金不足，無法開倉";
+            }
+            if (message.contains("No position")) {
+                return "沒有可平倉部位";
+            }
+            if (message.contains("Short selling")) {
+                return "目前版本不支援放空";
+            }
+            if (message.contains("quantity")) {
+                return "訂單數量不正確";
+            }
+            if (message.contains("Decision")) {
+                return "決策結果不符合執行條件";
+            }
+            if (message.contains("Live trading")) {
+                return "目前不支援真實下單";
+            }
+            return message;
         }
     }
 
-    /**
-     * 狀態單元格渲染器
-     */
-    private static class StatusCellRenderer extends DefaultTableCellRenderer {
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                                                       boolean isSelected, boolean hasFocus,
-                                                       int row, int column) {
-            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+    private static class TradeRowRenderer extends DefaultTableCellRenderer {
+        private static final Color DEFAULT_BG = new Color(40, 40, 40);
+        private static final Color OPEN_BG = new Color(34, 56, 43);
+        private static final Color CLOSE_BG = new Color(43, 50, 62);
+        private static final Color FAILED_BG = new Color(64, 34, 34);
+        private static final Color SELECTED_BG = new Color(70, 130, 180);
+        private static final Color POSITIVE = new Color(90, 230, 130);
+        private static final Color NEGATIVE = new Color(255, 120, 120);
+        private static final Color CLOSED_TEXT = new Color(145, 190, 255);
 
-            if (!isSelected) {
-                String status = (String) value;
-                if ("✓".equals(status)) {
-                    c.setForeground(new Color(0, 255, 0));
-                } else if ("✗".equals(status) || "⊗".equals(status)) {
-                    c.setForeground(new Color(255, 0, 0));
-                } else if ("◐".equals(status)) {
-                    c.setForeground(new Color(255, 215, 0));
-                } else if ("○".equals(status)) {
-                    c.setForeground(new Color(135, 206, 250));
-                } else if ("⊘".equals(status)) {
-                    c.setForeground(Color.GRAY);
+        @Override
+        public Component getTableCellRendererComponent(
+                JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+            Component component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            String status = String.valueOf(table.getValueAt(row, 0));
+
+            if (isSelected) {
+                component.setBackground(SELECTED_BG);
+                component.setForeground(Color.WHITE);
+            } else {
+                if ("失敗".equals(status)) {
+                    component.setBackground(FAILED_BG);
+                } else if ("持倉中".equals(status)) {
+                    component.setBackground(OPEN_BG);
+                } else if ("已平倉".equals(status)) {
+                    component.setBackground(CLOSE_BG);
                 } else {
-                    c.setForeground(Color.LIGHT_GRAY);
+                    component.setBackground(DEFAULT_BG);
+                }
+
+                if ((column == 12 || column == 13) && value instanceof String text && text.startsWith("+")) {
+                    component.setForeground(POSITIVE);
+                } else if ((column == 12 || column == 13) && value instanceof String text && text.startsWith("-")) {
+                    component.setForeground(NEGATIVE);
+                } else if ("持倉中".equals(status) && column == 0) {
+                    component.setForeground(POSITIVE);
+                } else if ("已平倉".equals(status) && column == 0) {
+                    component.setForeground(CLOSED_TEXT);
+                } else if ("失敗".equals(status)) {
+                    component.setForeground(NEGATIVE);
+                } else {
+                    component.setForeground(Color.LIGHT_GRAY);
                 }
             }
 
-            setHorizontalAlignment(CENTER);
-            return c;
+            setHorizontalAlignment(column >= 7 && column <= 13 ? RIGHT : CENTER);
+            if (column == 14 || column == 15) {
+                setHorizontalAlignment(LEFT);
+            }
+            return component;
         }
     }
 }

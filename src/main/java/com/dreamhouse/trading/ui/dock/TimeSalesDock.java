@@ -28,6 +28,7 @@ public class TimeSalesDock extends JPanel {
         tableModel = new EventTableModel<>(trades, new TimeSalesTableFormat());
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
+        table.setAutoCreateRowSorter(true);
         table.setRowHeight(22);
         
         // 自訂渲染器
@@ -39,8 +40,9 @@ public class TimeSalesDock extends JPanel {
                     boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 
-                if (row < trades.size()) {
-                    TradeRow tradeRow = trades.get(row);
+                int modelRow = table.convertRowIndexToModel(row);
+                if (modelRow >= 0 && modelRow < trades.size()) {
+                    TradeRow tradeRow = trades.get(modelRow);
                     if (column == 3) { // Side 欄位
                         setForeground(tradeRow.side.equals("ASK") ? 
                             new Color(237, 28, 36) : new Color(34, 177, 76));

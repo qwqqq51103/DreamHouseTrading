@@ -1,5 +1,10 @@
 package com.dreamhouse.trading.core.backtest;
 
+import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
+import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
+
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +19,8 @@ public class BacktestResult {
     private final LocalDateTime startDate;
     private final LocalDateTime endDate;
     private final double initialCapital;
+    private TradeMode tradeMode = TradeMode.NO_TRADE;
+    private Timeframe timeframe = Timeframe.D1;
     
     // 績效數據
     private double finalValue;
@@ -35,6 +42,8 @@ public class BacktestResult {
     // 詳細記錄
     private final List<Trade> trades;
     private final List<PortfolioSnapshot> snapshots;
+    private final List<SignalObservation> signalObservations;
+    private final List<WarmupDiagnostic> warmupDiagnostics;
     
     /**
      * 構造函數
@@ -45,6 +54,8 @@ public class BacktestResult {
         this.initialCapital = initialCapital;
         this.trades = new ArrayList<>();
         this.snapshots = new ArrayList<>();
+        this.signalObservations = new ArrayList<>();
+        this.warmupDiagnostics = new ArrayList<>();
     }
     
     /**
@@ -60,6 +71,26 @@ public class BacktestResult {
     public void addSnapshot(LocalDateTime timestamp, double totalValue, double cash, 
                            double positionValue, int positionCount) {
         snapshots.add(new PortfolioSnapshot(timestamp, totalValue, cash, positionValue, positionCount));
+    }
+
+    public void addSignalObservation(SignalObservation observation) {
+        if (observation != null) {
+            signalObservations.add(observation);
+        }
+    }
+
+    public void addWarmupDiagnostic(WarmupDiagnostic diagnostic) {
+        if (diagnostic != null) {
+            warmupDiagnostics.add(diagnostic);
+        }
+    }
+
+    public void setTradeMode(TradeMode tradeMode) {
+        this.tradeMode = tradeMode != null ? tradeMode : TradeMode.NO_TRADE;
+    }
+
+    public void setTimeframe(Timeframe timeframe) {
+        this.timeframe = timeframe != null ? timeframe : Timeframe.D1;
     }
     
     /**
@@ -268,6 +299,111 @@ public class BacktestResult {
     public double getAvgWin() { return avgWin; }
     public double getAvgLoss() { return avgLoss; }
     public double getProfitFactor() { return profitFactor; }
+    public TradeMode getTradeMode() { return tradeMode; }
+    public Timeframe getTimeframe() { return timeframe; }
     public List<Trade> getTrades() { return new ArrayList<>(trades); }
     public List<PortfolioSnapshot> getSnapshots() { return new ArrayList<>(snapshots); }
+    public List<SignalObservation> getSignalObservations() { return new ArrayList<>(signalObservations); }
+    public List<WarmupDiagnostic> getWarmupDiagnostics() { return new ArrayList<>(warmupDiagnostics); }
+
+    public double getGrossProfit() {
+        return pairTrades().stream().mapToDouble(pair -> (pair.sell().getPrice() - pair.buy().getPrice()) * pair.buy().getQuantity()).sum();
+    }
+
+    public double getTotalCommission() {
+        return trades.stream().mapToDouble(Trade::getCommissionAmount).sum();
+    }
+
+    public double getTotalTax() {
+        return trades.stream().mapToDouble(Trade::getTaxAmount).sum();
+    }
+
+    public double getTotalSlippageCost() {
+        return trades.stream().mapToDouble(Trade::getSlippageCost).sum();
+    }
+
+    public double getNetProfit() {
+        return pairTrades().stream().mapToDouble(pair -> pair.sell().getNetProceeds() - pair.buy().getTotalCost()).sum();
+    }
+
+    public java.util.Map<String, Long> getExitReasonStatistics() {
+        return pairTrades().stream()
+                .map(pair -> pair.sell().getExitReason() != null && !pair.sell().getExitReason().isBlank()
+                        ? pair.sell().getExitReason()
+                        : "UNKNOWN")
+                .collect(java.util.stream.Collectors.groupingBy(
+                        reason -> reason,
+                        java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()));
+    }
+
+    public java.util.Map<String, Long> getBlockReasonStatistics() {
+        return signalObservations.stream()
+                .filter(SignalObservation::blocked)
+                .map(observation -> observation.reason() != null && !observation.reason().isBlank()
+                        ? observation.reason()
+                        : "UNKNOWN")
+                .collect(java.util.stream.Collectors.groupingBy(
+                        reason -> reason,
+                        java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()));
+    }
+
+    private List<TradePair> pairTrades() {
+        List<TradePair> pairs = new ArrayList<>();
+        Trade lastBuy = null;
+        for (Trade trade : trades) {
+            if (trade.getType() == TradeType.BUY) {
+                lastBuy = trade;
+            } else if (trade.getType() == TradeType.SELL && lastBuy != null) {
+                pairs.add(new TradePair(lastBuy, trade));
+                lastBuy = null;
+            }
+        }
+        return pairs;
+    }
+
+    private record TradePair(Trade buy, Trade sell) {
+    }
+
+    public record WarmupDiagnostic(
+            String symbol,
+            LocalDate sessionDate,
+            String timeframe,
+            boolean enabled,
+            int requestedBars,
+            int loadedBars,
+            LocalDateTime firstWarmupTime,
+            LocalDateTime lastWarmupTime) {
+    }
+
+    public record SignalObservation(
+            String symbol,
+            LocalDateTime timestamp,
+            String action,
+            boolean blocked,
+            String reason,
+            double score,
+            String marketDecision,
+            String marketRegime,
+            String internalMarketState,
+            String industry,
+            Double watchlistRankPercent,
+            Double vwap,
+            Double vwapSlopePercent,
+            Boolean volumeSustain,
+            Double relativeToBenchmarkPercent,
+            Double relativeToIndustryPercent,
+            List<RadarScoreComponent> scoreComponentDetails,
+            String scoreComponents,
+            String longBonusComponents,
+            double maxFavorablePercent,
+            double maxAdversePercent,
+            double closeReturnPercent) {
+        public SignalObservation {
+            scoreComponentDetails = scoreComponentDetails != null
+                    ? List.copyOf(scoreComponentDetails)
+                    : List.of();
+        }
+    }
 }

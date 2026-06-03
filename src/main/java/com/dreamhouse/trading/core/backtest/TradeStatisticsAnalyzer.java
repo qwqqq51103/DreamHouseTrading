@@ -16,7 +16,23 @@ public class TradeStatisticsAnalyzer {
         this.trades = new ArrayList<>(trades);
         this.result = result;
     }
-    
+
+    private void analyzeCostBreakdown(StatisticsReport report) {
+        for (TradePair pair : pairTrades()) {
+            report.grossProfit += (pair.sellTrade.getPrice() - pair.buyTrade.getPrice()) * pair.buyTrade.getQuantity();
+            report.commission += pair.buyTrade.getCommissionAmount() + pair.sellTrade.getCommissionAmount();
+            report.tax += pair.buyTrade.getTaxAmount() + pair.sellTrade.getTaxAmount();
+            report.slippageCost += pair.buyTrade.getSlippageCost() + pair.sellTrade.getSlippageCost();
+            report.netProfit += pair.sellTrade.getNetProceeds() - pair.buyTrade.getTotalCost();
+        }
+    }
+
+    private void analyzeBlockReasons(StatisticsReport report) {
+        if (result != null) {
+            report.blockReasonDistribution = result.getBlockReasonStatistics();
+        }
+    }
+
     /**
      * 生成完整的統計報告
      */
@@ -36,7 +52,9 @@ public class TradeStatisticsAnalyzer {
         
         // 計算風險收益比
         calculateRiskRewardRatio(report);
-        
+        analyzeCostBreakdown(report);
+        analyzeBlockReasons(report);
+
         // 生成優化建議
         generateOptimizationSuggestions(report);
         
@@ -300,6 +318,12 @@ public class TradeStatisticsAnalyzer {
         // 出場原因分布
         public Map<String, Integer> exitReasonDistribution = new LinkedHashMap<>();
         public Map<String, Double> exitReasonProfits = new HashMap<>();
+        public Map<String, Long> blockReasonDistribution = new LinkedHashMap<>();
+        public double grossProfit;
+        public double commission;
+        public double tax;
+        public double slippageCost;
+        public double netProfit;
         
         // 風險收益比
         public List<Double> riskRewardRatios = new ArrayList<>();

@@ -7,6 +7,8 @@ import org.junit.jupiter.api.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -23,12 +25,12 @@ class IEXCloudFeedTest {
 
     @BeforeEach
     void setUp() {
-        feed = new IEXCloudFeed(TEST_API_KEY);
+        feed = new IEXCloudFeed(TEST_API_KEY, false);
     }
 
     @AfterEach
     void tearDown() {
-        if (feed != null && feed.isConnected()) {
+        if (feed != null) {
             feed.stop();
         }
     }
@@ -165,7 +167,7 @@ class IEXCloudFeedTest {
     @Test
     @DisplayName("測試使用空 API 密鑰創建")
     void testCreateWithEmptyApiKey() {
-        IEXCloudFeed emptyKeyFeed = new IEXCloudFeed("");
+        IEXCloudFeed emptyKeyFeed = new IEXCloudFeed("", false);
         assertNotNull(emptyKeyFeed, "即使使用空密鑰也應該能創建實例");
     }
 
@@ -174,7 +176,7 @@ class IEXCloudFeedTest {
     void testCreateWithNullApiKey() {
         // 某些實現可能不允許 null API 密鑰
         try {
-            IEXCloudFeed nullKeyFeed = new IEXCloudFeed(null);
+            IEXCloudFeed nullKeyFeed = new IEXCloudFeed(null, false);
             assertNotNull(nullKeyFeed);
         } catch (NullPointerException e) {
             // 拋出 NPE 也是可接受的行為
@@ -215,10 +217,11 @@ class IEXCloudFeedTest {
     void testConcurrentSubscriptions() throws InterruptedException {
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(5);
+        ExecutorService executor = Executors.newFixedThreadPool(5);
 
         for (int i = 0; i < 5; i++) {
             final String symbol = "STOCK" + i;
-            new Thread(() -> {
+            executor.submit(() -> {
                 try {
                     startLatch.await();
                     MarketDataListener listener = new MarketDataListener() {
@@ -231,12 +234,15 @@ class IEXCloudFeedTest {
                 } finally {
                     doneLatch.countDown();
                 }
-            }).start();
+            });
         }
 
         startLatch.countDown();
+        executor.shutdown();
         assertTrue(doneLatch.await(5, TimeUnit.SECONDS),
             "所有訂閱應該在 5 秒內完成");
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS),
+            "測試用 executor 應該正常結束");
     }
 
     @Test

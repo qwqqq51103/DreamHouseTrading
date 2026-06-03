@@ -7,6 +7,8 @@ import org.junit.jupiter.api.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -23,12 +25,12 @@ class PolygonFeedTest {
 
     @BeforeEach
     void setUp() {
-        feed = new PolygonFeed(TEST_API_KEY);
+        feed = new PolygonFeed(TEST_API_KEY, false);
     }
 
     @AfterEach
     void tearDown() {
-        if (feed != null && feed.isConnected()) {
+        if (feed != null) {
             feed.stop();
         }
     }
@@ -165,7 +167,7 @@ class PolygonFeedTest {
     @Test
     @DisplayName("測試使用空 API 密鑰創建")
     void testCreateWithEmptyApiKey() {
-        PolygonFeed emptyKeyFeed = new PolygonFeed("");
+        PolygonFeed emptyKeyFeed = new PolygonFeed("", false);
         assertNotNull(emptyKeyFeed, "即使使用空密鑰也應該能創建實例");
     }
 
@@ -174,7 +176,7 @@ class PolygonFeedTest {
     void testCreateWithNullApiKey() {
         // 某些實現可能不允許 null API 密鑰
         try {
-            PolygonFeed nullKeyFeed = new PolygonFeed(null);
+            PolygonFeed nullKeyFeed = new PolygonFeed(null, false);
             assertNotNull(nullKeyFeed);
         } catch (NullPointerException e) {
             // 拋出 NPE 也是可接受的行為
@@ -215,10 +217,11 @@ class PolygonFeedTest {
     void testConcurrentSubscriptions() throws InterruptedException {
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(10);
+        ExecutorService executor = Executors.newFixedThreadPool(10);
 
         for (int i = 0; i < 10; i++) {
             final String symbol = "SYMBOL" + i;
-            new Thread(() -> {
+            executor.submit(() -> {
                 try {
                     startLatch.await();
                     MarketDataListener listener = new MarketDataListener() {
@@ -231,12 +234,15 @@ class PolygonFeedTest {
                 } finally {
                     doneLatch.countDown();
                 }
-            }).start();
+            });
         }
 
         startLatch.countDown();
+        executor.shutdown();
         assertTrue(doneLatch.await(10, TimeUnit.SECONDS),
             "所有訂閱應該在 10 秒內完成");
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS),
+            "測試用 executor 應該正常結束");
     }
 
     @Test
@@ -377,26 +383,30 @@ class PolygonFeedTest {
 
         // 並發取消訂閱
         CountDownLatch latch = new CountDownLatch(50);
+        ExecutorService executor = Executors.newFixedThreadPool(8);
         for (String symbol : symbols) {
-            new Thread(() -> {
+            executor.submit(() -> {
                 try {
                     feed.unsubscribe(symbol, listener);
                 } finally {
                     latch.countDown();
                 }
-            }).start();
+            });
         }
+        executor.shutdown();
 
         assertTrue(latch.await(10, TimeUnit.SECONDS),
             "所有取消訂閱應該在 10 秒內完成");
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS),
+            "測試用 executor 應該正常結束");
     }
 
     @Test
     @DisplayName("測試創建實例的穩定性")
     void testInstanceStability() {
         // 確保可以創建多個實例
-        PolygonFeed feed2 = new PolygonFeed("another_key");
-        PolygonFeed feed3 = new PolygonFeed("yet_another_key");
+        PolygonFeed feed2 = new PolygonFeed("another_key", false);
+        PolygonFeed feed3 = new PolygonFeed("yet_another_key", false);
 
         assertNotNull(feed2);
         assertNotNull(feed3);

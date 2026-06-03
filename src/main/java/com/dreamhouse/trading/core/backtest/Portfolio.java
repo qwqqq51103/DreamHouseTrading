@@ -1,29 +1,26 @@
 package com.dreamhouse.trading.core.backtest;
 
+import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Collection;
 
 /**
- * 投資組合管理類
- * 負責管理現金、持倉和計算總資產
+ * Portfolio state used by backtest and simulated execution.
  */
 public class Portfolio {
-    
+
     private double initialCash;
     private double cash;
     private final Map<String, Position> positions;
     private double totalValue;
-    
-    // 統計數據
     private double maxDrawdown = 0.0;
     private double maxValue = 0.0;
     private int totalTrades = 0;
     private int winningTrades = 0;
-    
-    /**
-     * 構造函數
-     */
+    private double realizedPnL = 0.0;
+    private double totalCommission = 0.0;
+
     public Portfolio(double initialCash) {
         this.initialCash = initialCash;
         this.cash = initialCash;
@@ -31,10 +28,7 @@ public class Portfolio {
         this.totalValue = initialCash;
         this.maxValue = initialCash;
     }
-    
-    /**
-     * 重置投資組合
-     */
+
     public void reset(double initialCash) {
         this.initialCash = initialCash;
         this.cash = initialCash;
@@ -44,169 +38,197 @@ public class Portfolio {
         this.maxDrawdown = 0.0;
         this.totalTrades = 0;
         this.winningTrades = 0;
+        this.realizedPnL = 0.0;
+        this.totalCommission = 0.0;
     }
-    
-    /**
-     * 添加持倉
-     */
+
     public void addPosition(String symbol, int quantity, double price, double costRate) {
         double totalCost = quantity * price * (1 + costRate);
-        
-        if (cash >= totalCost) {
-            cash -= totalCost;
-            
-            Position existingPosition = positions.get(symbol);
-            if (existingPosition != null) {
-                // 增加現有持倉
-                existingPosition.addQuantity(quantity, price, costRate);
-            } else {
-                // 創建新持倉
-                positions.put(symbol, new Position(symbol, quantity, price, costRate));
-            }
-            
-            totalTrades++;
-        } else {
+
+        if (cash < totalCost) {
             throw new IllegalStateException("Insufficient cash for purchase");
         }
+
+        cash -= totalCost;
+        totalCommission += quantity * price * costRate;
+
+        Position existingPosition = positions.get(symbol);
+        if (existingPosition != null) {
+            existingPosition.addQuantity(quantity, price, costRate);
+        } else {
+            positions.put(symbol, new Position(symbol, quantity, price, costRate));
+        }
+
+        totalTrades++;
     }
-    
-    /**
-     * 減少持倉
-     */
+
     public void reducePosition(String symbol, int quantity, double price, double costRate) {
+        reducePosition(symbol, quantity, price, costRate, 0.0);
+    }
+
+    public void reducePosition(String symbol, int quantity, double price, double commissionRate, double taxRate) {
         Position position = positions.get(symbol);
         if (position == null) {
             throw new IllegalStateException("No position found for symbol: " + symbol);
         }
-        
+
         if (position.getQuantity() < quantity) {
             throw new IllegalStateException("Insufficient position quantity");
         }
-        
-        // 計算盈虧
-        double profit = position.calculateProfit(quantity, price, costRate);
-        double proceeds = quantity * price * (1 - costRate);
-        
+
+        double profit = position.calculateProfit(quantity, price, commissionRate, taxRate);
+        double proceeds = quantity * price * (1 - commissionRate - taxRate);
+
         cash += proceeds;
-        
-        // 更新統計
+        realizedPnL += profit;
+        totalCommission += quantity * price * commissionRate;
+
         if (profit > 0) {
             winningTrades++;
         }
-        
-        // 減少持倉
-        position.reduceQuantity(quantity, price, costRate);
-        
-        // 如果持倉為0，移除
+
+        position.reduceQuantity(quantity, price, commissionRate, taxRate);
         if (position.getQuantity() == 0) {
             positions.remove(symbol);
         }
-        
+
         totalTrades++;
     }
-    
-    /**
-     * 平倉所有持倉
-     */
+
     public void closeAllPositions(double currentPrice) {
         for (Position position : positions.values()) {
-            double proceeds = position.getQuantity() * currentPrice * 0.999; // 扣除手續費
+            double proceeds = position.getQuantity() * currentPrice * 0.999;
             cash += proceeds;
         }
         positions.clear();
     }
-    
-    /**
-     * 更新市值
-     */
+
     public void updateMarketValue(double currentPrice) {
         double positionValue = 0.0;
-        
         for (Position position : positions.values()) {
             positionValue += position.getQuantity() * currentPrice;
         }
-        
+
         totalValue = cash + positionValue;
-        
-        // 更新最大值和最大回撤
         if (totalValue > maxValue) {
             maxValue = totalValue;
         }
-        
-        double currentDrawdown = (maxValue - totalValue) / maxValue;
+
+        double currentDrawdown = maxValue > 0.0 ? (maxValue - totalValue) / maxValue : 0.0;
         if (currentDrawdown > maxDrawdown) {
             maxDrawdown = currentDrawdown;
         }
     }
-    
-    /**
-     * 獲取持倉
-     */
+
     public Position getPosition(String symbol) {
         return positions.get(symbol);
     }
-    
-    /**
-     * 獲取所有持倉
-     */
+
     public Collection<Position> getPositions() {
         return positions.values();
     }
-    
-    /**
-     * 計算持倉總價值
-     */
+
     public double getPositionValue() {
         return totalValue - cash;
     }
-    
-    /**
-     * 計算總收益率
-     */
+
     public double getTotalReturn() {
         return (totalValue - initialCash) / initialCash;
     }
-    
-    /**
-     * 計算勝率
-     */
+
     public double getWinRate() {
         return totalTrades > 0 ? (double) winningTrades / totalTrades : 0.0;
     }
-    
-    /**
-     * 獲取持倉數量
-     */
+
     public int getPositionCount() {
         return positions.size();
     }
-    
-    /**
-     * 檢查是否有足夠現金
-     */
+
     public boolean hasEnoughCash(double amount) {
         return cash >= amount;
     }
-    
-    /**
-     * 檢查是否有持倉
-     */
+
     public boolean hasPosition(String symbol) {
         return positions.containsKey(symbol);
     }
-    
-    // Getters
-    public double getInitialCash() { return initialCash; }
-    public double getCash() { return cash; }
-    public double getTotalValue() { return totalValue; }
-    public double getMaxDrawdown() { return maxDrawdown; }
-    public double getMaxValue() { return maxValue; }
-    public int getTotalTrades() { return totalTrades; }
-    public int getWinningTrades() { return winningTrades; }
-    
+
+    public double getFrozenCash() {
+        return 0.0;
+    }
+
+    public double getAvailableCash() {
+        return cash;
+    }
+
+    public double getRealizedPnL() {
+        return realizedPnL;
+    }
+
+    public double getTotalCommission() {
+        return totalCommission;
+    }
+
+    public double getUnrealizedPnL(Map<String, Double> markPrices) {
+        double total = 0.0;
+        for (Position position : positions.values()) {
+            Double markPrice = markPrices.get(position.getSymbol());
+            if (markPrice != null) {
+                total += position.getUnrealizedPnL(markPrice);
+            }
+        }
+        return total;
+    }
+
+    public PortfolioSnapshot createSnapshot(LocalDateTime timestamp, Map<String, Double> markPrices) {
+        double unrealized = getUnrealizedPnL(markPrices);
+        return new PortfolioSnapshot(
+                timestamp,
+                totalValue,
+                cash,
+                getPositionValue(),
+                positions.size(),
+                getAvailableCash(),
+                getFrozenCash(),
+                realizedPnL,
+                unrealized,
+                maxDrawdown);
+    }
+
+    public double getInitialCash() {
+        return initialCash;
+    }
+
+    public double getCash() {
+        return cash;
+    }
+
+    public double getTotalValue() {
+        return totalValue;
+    }
+
+    public double getMaxDrawdown() {
+        return maxDrawdown;
+    }
+
+    public double getMaxValue() {
+        return maxValue;
+    }
+
+    public int getTotalTrades() {
+        return totalTrades;
+    }
+
+    public int getWinningTrades() {
+        return winningTrades;
+    }
+
     @Override
     public String toString() {
-        return String.format("Portfolio{cash=%.2f, totalValue=%.2f, positions=%d, return=%.2f%%}", 
-                           cash, totalValue, positions.size(), getTotalReturn() * 100);
+        return String.format(
+                "Portfolio{cash=%.2f,totalValue=%.2f,positions=%d,return=%.2f%%}",
+                cash,
+                totalValue,
+                positions.size(),
+                getTotalReturn() * 100);
     }
 }

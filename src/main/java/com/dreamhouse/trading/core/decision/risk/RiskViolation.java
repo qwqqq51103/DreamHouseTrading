@@ -1,23 +1,25 @@
 package com.dreamhouse.trading.core.decision.risk;
 
 /**
- * 風險違規記錄
- * 當觸發風險限制時，記錄違規詳情
+ * Risk violation emitted by RiskManager.
  */
 public class RiskViolation {
 
-    /**
-     * 違規類型
-     */
     public enum Type {
-        DAILY_LOSS_LIMIT("每日虧損限制"),
-        SYMBOL_LOSS_LIMIT("單檔虧損限制"),
-        MAX_POSITIONS_EXCEEDED("超過最大持倉數"),
-        POSITION_SIZE_EXCEEDED("單一部位過大"),
-        INSUFFICIENT_CASH("現金不足"),
-        MARGIN_CALL("保證金不足"),
-        HOLDING_PERIOD_EXCEEDED("超過最大持倉時間"),
-        END_OF_DAY_CLOSE("收盤前強制平倉");
+        DAILY_LOSS_LIMIT("Daily Loss Limit"),
+        SYMBOL_LOSS_LIMIT("Symbol Loss Limit"),
+        MAX_POSITIONS_EXCEEDED("Max Positions Exceeded"),
+        POSITION_SIZE_EXCEEDED("Position Size Exceeded"),
+        INSUFFICIENT_CASH("Insufficient Cash"),
+        MARGIN_CALL("Margin Call"),
+        HOLDING_PERIOD_EXCEEDED("Holding Period Exceeded"),
+        END_OF_DAY_CLOSE("End Of Day Close"),
+        DAY_TRADE_TIME_BLOCK("Day Trade Time Block"),
+        STOP_LOSS_COOLDOWN("Stop Loss Cooldown"),
+        MIN_RISK_REWARD("Minimum Risk/Reward"),
+        VOLATILITY_TOO_LOW("Volatility Too Low"),
+        VOLATILITY_TOO_HIGH("Volatility Too High"),
+        SHORT_SELLING_DISABLED("Short Selling Disabled");
 
         private final String displayName;
 
@@ -31,14 +33,20 @@ public class RiskViolation {
     }
 
     private final Type type;
-    private final String symbol;          // 相關商品（可能為 null）
-    private final double currentValue;    // 當前值
-    private final double limitValue;      // 限制值
-    private final String message;         // 詳細訊息
-    private final long timestamp;         // 觸發時間
-    private final boolean shouldForceClose;  // 是否應強制平倉
+    private final String symbol;
+    private final double currentValue;
+    private final double limitValue;
+    private final String message;
+    private final long timestamp;
+    private final boolean shouldForceClose;
 
-    public RiskViolation(Type type, String symbol, double currentValue, double limitValue, String message, boolean shouldForceClose) {
+    public RiskViolation(
+            Type type,
+            String symbol,
+            double currentValue,
+            double limitValue,
+            String message,
+            boolean shouldForceClose) {
         this.type = type;
         this.symbol = symbol;
         this.currentValue = currentValue;
@@ -78,13 +86,14 @@ public class RiskViolation {
 
     @Override
     public String toString() {
-        String symbolInfo = symbol != null ? " [" + symbol + "]" : "";
-        return String.format("[風險違規%s] %s - 當前%.2f 超過限制%.2f - %s %s",
+        String symbolInfo = symbol != null && !symbol.isEmpty() ? " [" + symbol + "]" : "";
+        return String.format(
+                "[RiskViolation%s] %s - current=%.4f limit=%.4f - %s%s",
                 symbolInfo,
                 type.getDisplayName(),
                 currentValue,
                 limitValue,
                 message,
-                shouldForceClose ? "(強制平倉)" : "");
+                shouldForceClose ? " (force close)" : "");
     }
 }

@@ -42,12 +42,18 @@ public class PolygonFeed implements MarketDataFeed {
     private final Random random = new Random();
 
     private WebSocketClient wsClient;
-    private boolean connected = false;
+    private volatile boolean connected = false;
     private boolean paused = false;
     private ScheduledExecutorService executor;
+    private final boolean connectOnStart;
 
     public PolygonFeed(String apiKey) {
+        this(apiKey, true);
+    }
+
+    PolygonFeed(String apiKey, boolean connectOnStart) {
         this.apiKey = apiKey != null && !apiKey.trim().isEmpty() ? apiKey : "demo";
+        this.connectOnStart = connectOnStart;
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(10))
@@ -56,10 +62,8 @@ public class PolygonFeed implements MarketDataFeed {
         this.objectMapper = new ObjectMapper();
         this.objectMapper.findAndRegisterModules();
 
-        this.executor = Executors.newScheduledThreadPool(2);
-
         logger.info("PolygonFeed initialized with API key: {}",
-                   apiKey.equals("demo") ? "demo" : "***");
+                   this.apiKey.equals("demo") ? "demo" : "***");
     }
 
     @Override
@@ -87,32 +91,50 @@ public class PolygonFeed implements MarketDataFeed {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
         connected = true;
         logger.info("Starting Polygon.io feed...");
+        ensureExecutor();
+
+        if (!connectOnStart) {
+            return;
+        }
 
         // 1. 連接WebSocket
         connectWebSocket();
 
         // 2. 背景加載歷史數據
-        new Thread(() -> {
-            loadHistoricalData();
-        }, "Polygon-HistoricalData").start();
+        executor.execute(this::loadHistoricalData);
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         connected = false;
 
         if (wsClient != null) {
             wsClient.close();
+            wsClient = null;
         }
 
         if (executor != null) {
-            executor.shutdown();
+            executor.shutdownNow();
+            try {
+                if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    logger.debug("Polygon executor did not terminate within timeout");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            executor = null;
         }
 
         logger.info("Polygon.io feed stopped");
+    }
+
+    private void ensureExecutor() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            executor = Executors.newScheduledThreadPool(2);
+        }
     }
 
     @Override
@@ -175,8 +197,14 @@ public class PolygonFeed implements MarketDataFeed {
                     logger.warn("WebSocket closed: {} - {}", code, reason);
 
                     // 自動重連
-                    if (connected) {
-                        executor.schedule(() -> connectWebSocket(), 5, TimeUnit.SECONDS);
+                    if (connected && executor != null && !executor.isShutdown()) {
+                        try {
+                            executor.schedule(() -> connectWebSocket(), 5, TimeUnit.SECONDS);
+                        } catch (RejectedExecutionException e) {
+                            if (connected) {
+                                logger.warn("Polygon reconnect scheduling rejected", e);
+                            }
+                        }
                     }
                 }
 

@@ -25,6 +25,7 @@ public class OrderBookDock extends JPanel {
         tableModel = new EventTableModel<>(rows, new OrderBookTableFormat());
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
+        table.setAutoCreateRowSorter(true);
         table.setRowHeight(24);
         
         // 自訂渲染器
@@ -36,8 +37,9 @@ public class OrderBookDock extends JPanel {
                     boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 
-                if (row < rows.size()) {
-                    DepthRow depthRow = rows.get(row);
+                int modelRow = table.convertRowIndexToModel(row);
+                if (modelRow >= 0 && modelRow < rows.size()) {
+                    DepthRow depthRow = rows.get(modelRow);
                     if (depthRow.side.equals("ASK")) {
                         setForeground(new Color(237, 28, 36));
                     } else {

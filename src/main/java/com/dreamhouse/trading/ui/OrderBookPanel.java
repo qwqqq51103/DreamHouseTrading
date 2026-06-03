@@ -33,7 +33,7 @@ public class OrderBookPanel extends JPanel {
         table = new JTable(tableModel);
         table.setFillsViewportHeight(true);
         table.setRowHeight(26);
-        table.setAutoCreateRowSorter(false);
+        table.setAutoCreateRowSorter(true);
         table.getColumnModel().getColumn(0).setPreferredWidth(60);
         table.getColumnModel().getColumn(1).setPreferredWidth(100);
         table.getColumnModel().getColumn(2).setPreferredWidth(100);
@@ -56,7 +56,8 @@ public class OrderBookPanel extends JPanel {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                OrderBookRow r = rows.get(row);
+                int modelRow = table.convertRowIndexToModel(row);
+                OrderBookRow r = rows.get(modelRow);
                 c.setForeground("ASK".equals(r.side) ? askColor : bidColor);
                 return c;
             }

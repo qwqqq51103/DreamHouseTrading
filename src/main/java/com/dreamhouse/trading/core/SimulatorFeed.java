@@ -245,6 +245,42 @@ public class SimulatorFeed implements MarketDataFeed {
     }
     
     @Override
+    public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+        if (symbol == null || symbol.isBlank()) {
+            return new ArrayList<>();
+        }
+
+        Timeframe effectiveTimeframe = timeframe != null ? timeframe : Timeframe.M1;
+        int effectiveBarCount = Math.max(2, barCount);
+        double basePrice = lastPrices.computeIfAbsent(symbol, this::getReasonableBasePrice);
+        if (!orderBooks.containsKey(symbol)) {
+            initializeOrderBook(symbol);
+        }
+
+        int intervalMinutes = Math.max(1, effectiveTimeframe.getMinutes());
+        LocalDateTime startTime = LocalDateTime.now().minusMinutes((long) effectiveBarCount * intervalMinutes);
+        double currentPrice = basePrice;
+        List<Bar> bars = new ArrayList<>(effectiveBarCount);
+
+        for (int i = 0; i < effectiveBarCount; i++) {
+            LocalDateTime barTime = startTime.plusMinutes((long) i * intervalMinutes);
+            double open = currentPrice;
+            double trendBias = Math.sin((System.nanoTime() / 1_000_000_000.0) + i * 0.35) * open * 0.003;
+            double randomMove = (random.nextDouble() - 0.5) * open * 0.018 * Math.sqrt(intervalMinutes);
+            double close = round(Math.max(1.0, open + trendBias + randomMove));
+            double wick = Math.max(open * 0.002, Math.abs(close - open) * 0.6);
+            double high = round(Math.max(open, close) + random.nextDouble() * wick);
+            double low = round(Math.max(0.01, Math.min(open, close) - random.nextDouble() * wick));
+            long volume = (long) ((5_000 + random.nextInt(30_000)) * Math.max(1, intervalMinutes));
+            bars.add(new Bar(barTime, open, high, low, close, volume));
+            currentPrice = close;
+        }
+
+        lastPrices.put(symbol, currentPrice);
+        return bars;
+    }
+
+    @Override
     public void stop() {
         connected = false;
         executor.shutdown();

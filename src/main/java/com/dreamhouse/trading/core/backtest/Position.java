@@ -53,13 +53,17 @@ public class Position {
      * 減少持倉數量
      */
     public void reduceQuantity(int reduceQuantity, double price, double costRate) {
+        reduceQuantity(reduceQuantity, price, costRate, 0.0);
+    }
+
+    public void reduceQuantity(int reduceQuantity, double price, double commissionRate, double taxRate) {
         if (reduceQuantity > quantity) {
             throw new IllegalArgumentException("Cannot reduce more than current quantity");
         }
         
         // 計算這部分的成本
         double reduceCost = (totalCost / quantity) * reduceQuantity;
-        double proceeds = reduceQuantity * price * (1 - costRate);
+        double proceeds = reduceQuantity * price * (1 - commissionRate - taxRate);
         
         // 更新已實現盈虧
         realizedPnL += proceeds - reduceCost;
@@ -67,7 +71,7 @@ public class Position {
         // 更新持倉
         this.quantity -= reduceQuantity;
         this.totalCost -= reduceCost;
-        this.totalCommission += reduceQuantity * price * costRate;
+        this.totalCommission += reduceQuantity * price * commissionRate;
         this.lastUpdateTime = LocalDateTime.now();
     }
     
@@ -105,13 +109,17 @@ public class Position {
      * 計算部分賣出的盈虧
      */
     public double calculateProfit(int sellQuantity, double sellPrice, double costRate) {
+        return calculateProfit(sellQuantity, sellPrice, costRate, 0.0);
+    }
+
+    public double calculateProfit(int sellQuantity, double sellPrice, double commissionRate, double taxRate) {
         if (sellQuantity > quantity) {
             throw new IllegalArgumentException("Sell quantity exceeds position quantity");
         }
         
         double avgCost = totalCost / quantity;
         double costBasis = avgCost * sellQuantity;
-        double proceeds = sellQuantity * sellPrice * (1 - costRate);
+        double proceeds = sellQuantity * sellPrice * (1 - commissionRate - taxRate);
         
         return proceeds - costBasis;
     }
