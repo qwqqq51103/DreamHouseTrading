@@ -36,6 +36,8 @@ DreamHouseTrading 是台股交易分析與模擬平台，重點是把盤中 SQL 
 - 觀察清單顯示最新 SQL tick。
 - 觀察清單個股漲跌幅優先以指定日期前一交易日 SQL 收盤價為基準；缺昨收時才退回當日首根 K 開盤價或目前價格。
 - 主圖 live tick 若收到 SQL / snapshot 累積成交量，會先轉成差分量再更新目前 K 棒，避免圖表成交量柱被重複累加放大。
+- RealtimeBarBuilder 對累積 volume 倒退、歸零或來源切換採 reset / ignore 邏輯，不產生負成交量。
+- 台股 M5 日內完整 bar start 為 09:00 到 13:25，共 54 根；13:30 收盤 tick 不會額外建立 13:30 M5 bar。
 - Collector 資料過期時會跳過該股票掃描，並以 UTF-8 BOM CSV 輸出到 `logs/market-data-warnings/collector_stale_warnings_yyyyMMdd.csv`，方便追查 symbol、latest tick、lag 與 threshold。
 - 雷達掃描與 SQL 回測。
 
@@ -110,6 +112,16 @@ DreamHouseTrading 是台股交易分析與模擬平台，重點是把盤中 SQL 
 - 回測報告拆分 grossProfit、commission、tax、slippageCost、netProfit。
 - 交易理由、阻擋原因、技術指標與週期資訊寫入報告。
 - 雷達策略訊號會記錄每項信心度、權重、LONG 加分與原因，並輸出到模擬交易 CSV 與 SQL 雷達回測報告。
+- Backtest result / statistics 需統計已平倉交易成本拆分、出場原因分布與未進場阻擋原因分布；勝率不得混入未平倉部位。
+- Paper trade CSV 需寫入 `decision_context_source` 與 `auto_managed`，讓自動監控、replay 與 backtest 來源可追蹤。
+- TradeRecord / LogExporter CSV 需保留 `decision_source`、`auto_managed`、`timeframe`、成本拆分、entry / exit / block reason、setup score、radar score components 與策略設定摘要，避免正式交易紀錄匯出時丟失核心語意。
+
+### LogExporter CSV schema v2
+
+- LogExporter CSV schema v2 使用 ASCII snake_case header，方便程式解析與跨工具匯入；此變更相對舊中文 header 屬於 schema breaking change。若外部 Excel 模板、匯入工具或分析腳本依賴舊欄位名稱，需同步調整欄位對應。
+- LogExporter CSV 仍使用 UTF-8 with BOM；欄位順序由測試鎖定，後續改名、改順序或改語言需同步更新文件與測試。
+- LogExporter schema v2 主要欄位包含：`trade_id`、`decision_source`、`auto_managed`、`trade_mode`、`timeframe`、`quantity`、`entry_price`、`exit_price`、`gross_profit`、`commission`、`tax`、`slippage_cost`、`net_profit`、`entry_reason`、`exit_reason`、`block_reason`、`radar_score_components`、`strategy_setting_summary`。
+- Backtest 匯出 TradeRecord 時，`DecisionSource` 應為 `BACKTEST`。若 timeframe、成本拆分、entry / exit reason、strategy summary 可由 `BacktestResult` 或交易資料取得，必須寫入；若 block reason 或 radar score components 目前不可從交易配對取得，應保留空值並列為後續接入項目，不得填入誤導性預設值。
 - 雷達最低進場分數是做多門檻通過後的第二道 OPEN_LONG 分數門檻；同配置回測時需同時記錄多頭進場門檻與雷達最低進場分數。
 - SQL 雷達回測報告已輸出加分條件貢獻統計與硬阻擋後續統計，可比較條件通過 / 未通過後的最大漲幅、最大回撤與收盤報酬。
 - SQL 雷達 CSV、條件統計 CSV 與 stale warn 診斷 CSV 統一用 UTF-8 with BOM 寫出，避免 Windows Excel 直接開啟時中文欄位變成亂碼。
@@ -215,3 +227,34 @@ cmd /c "mvn -q -Djacoco.skip=true test"
 - M5 完整日內 K 線預期根數修正為 54 根（09:00 到 13:25 的 bar start），不再把 13:30 多算成額外一根而誤標 `CANDLES_INCOMPLETE`。
 - ticks 聚合來源會標示 `TICKS_AGGREGATED_COMPLETE / TICKS_AGGREGATED_INCOMPLETE`；若 Collector 缺少 09:00 bucket，重播會清楚顯示 ticks M5 根數不足，避免誤以為同配置但資料完整一致。
 - 主程式「關於 DreamHouseTrading」與「當沖指標設定說明」已補充資料來源模式與 CSV 診斷說明。
+
+## P1-C Auto Monitor / Replay cadence convergence
+
+## P2 Template / Config round-trip
+
+- Template logic has a core `SignalMonitorTemplateManager` so A/B/C built-ins, custom template persistence, setting summaries, auto-monitor requests, and replay requests can share the same config copy / serialization path.
+- Built-in A/B/C templates remain protected baselines. Custom template save/delete only affects user-defined templates.
+- Round-trip tests now cover `RadarStrategyConfig`, `SignalMonitorConfig`, and `SignalMonitorTemplateManager`, including VWAP, VWAP slope, Volume Sustain, ATR chase limit, RSI blocking, market context, breakout confirmation, MA type / periods, timeframe, bar count, cross-day warmup, scan cadence, `DecisionSource`, auto-managed flag, and day-trade quantity.
+- Scanner template tests run through `MarketScannerService.scan(...)` to verify template-applied flags affect the formal scanner path, not only object getters.
+
+- Auto Monitor 與 SQL Radar Replay 的自動開倉節奏已收斂到 `AutoMonitorExecutionGate`：早盤 warmup、13:05 禁止新倉、13:25 force-close window、daily max trades、entry pacing、同一根 M5 一筆、max open positions、stop-loss cooldown 與 trading halted 狀態使用同一組 gate input。
+- 時間判斷以 signal / asOfTime 為準，不以 K 棒 start time 取代訊號成立時間。
+- 13:25 cutoff 由 `ExecutionEngine.forceCloseAutoManagedPositions(...)` 依 engine 的 auto-managed 狀態平倉；manual position 不會被這條規則誤關。
+- Live replay exit cooldown 不再用 `reason.contains("STOP")` 判斷，改用 replay exit type metadata。
+- `ExecutionResult` 現在保留 `DecisionSource`，`PaperTradeRecorder` 在缺少 `DecisionResult` 的 system / cutoff close 場景會 fallback 到 result 上的 source。
+- `ExecutionEngine.reversePosition(...)` 在 v1 long-only 直接拒絕，避免反向倉位或可執行放空路徑。
+- `ExecutionEngine.partialClose(...)` 會保留 partial close reason、realized PnL 與剩餘 quantity。
+---
+
+## AI Collaboration Documentation
+
+The semi-automatic GPT + Codex workflow is documented in these root-level files:
+
+- `PROJECT_CONTEXT.md`: project scope, data-source boundaries, trading rules, and collaboration mode.
+- `FEATURE_FLOW.md`: required feature-chain inspection from UI through docs.
+- `TESTING_GUIDE.md`: required validation commands and tests by change type.
+- `CODE_REVIEW_CHECKLIST.md`: GPT / reviewer checklist for Codex diffs and PRs.
+- `RISK_AREAS.md`: high-risk modules and automatic-merge blockers.
+- `MODULE_OWNERSHIP.md`: package responsibilities, allowed Codex scope, and required checks.
+
+These documents formalize C-mode semi-automatic collaboration: GPT prepares requirements and review, Codex reads the repo and produces scoped diffs, and the user keeps final merge and release authority.

@@ -22,6 +22,7 @@ DreamHouseTrading 是一套 Java 17 / Swing 桌面交易分析平台，主要用
 - 三層停損停利：結構停損、盤勢感知停利、持倉中理由失效與移動停損管理。
 - 回測報告：N+1 open 成交模型、手續費 / 當沖稅 / 滑價拆分、具體未進場原因、交易理由、技術指標、雷達加分明細與條件貢獻統計。
 - 監控模板：內建 A 組穩健 `EMA8/34 + 跨日暖機`、B 組放寬 `EMA8/21`、C 組 `SMA8/21` 測試，可直接切換做 SQL 回測比較；使用者另存模板可在監控設定中刪除。
+- 模板套用與自訂模板儲存會保留 scanner 旗標、跨日暖機、週期 / K 棒數、`DecisionSource`、auto-managed 與當沖數量設定；內建 A/B/C 模板是固定測試基準，不會被自訂模板覆蓋或刪除。
 - 盤後股票池：依日線、量能、型態、當沖活躍度與分點籌碼產生隔日當沖候選。
 - UI Dock：觀察清單、主圖、機會雷達、執行狀態、FinMind API、產業分布、交易紀錄分析。
 
@@ -119,6 +120,7 @@ cmd /c "mvn -q -Djacoco.skip=true test"
 - 盤中股票 tick / K 線：只允許 MarketDataCollector 呼叫即時 API 並寫入 SQL。
 - DreamHouseTrading 盤中雷達：只讀 SQL，不 fallback 打 FinMind 即時行情。
 - MarketDataCollector 資料過期時會跳過該股票掃描，並把 stale warn 診斷輸出到 `logs/market-data-warnings/collector_stale_warnings_yyyyMMdd.csv`。
+- SQL / snapshot 來源若提供累積成交量，圖表與聚合 K 棒會先轉成差分量；台股 M5 日內完整 bar start 為 09:00 到 13:25 共 54 根，13:30 tick 不會多生額外 M5 bar。
 - FinMind `TaiwanStockKBar`：盤後分 K，15:50 前不得當作盤中即時 K 線。
 - 工具列「載入範圍分K到SQL」：可用 `TaiwanStockKBar` 補指定日期範圍；每個股票日期會先檢查 SQL M1 分 K 根數、開收盤覆蓋與 D1 日線是否存在，資料完整才略過 API。匯入會寫入 `candlesticks` 的 `M1/M5/M15/M30/H1/D1`；D1 優先由 `TaiwanStockPrice` 寫入，若日線資料為空才由當日分 K 聚合。
 - SQL 雷達回測若套用 A 組穩健模板，會從 SQL 載入前期 K 線暖機 EMA34，但只在指定交易日產生交易與績效；監控設定也可手動開關跨日暖機並調整暖機 K 線根數。
@@ -129,6 +131,14 @@ cmd /c "mvn -q -Djacoco.skip=true test"
 - SQL 雷達 replay 掃描會帶入模擬時間；若有 SQL ticks，replay feed 會用模擬時間以前的 tick 即時聚合 partial K 棒，避免 09:30:20 看到 09:30~09:34:59 的未來資料。若沒有 ticks 而只能用 candlesticks，才只使用已收完的 K 線。
 - 工具列與工具選單的「SQL 雷達開盤重播」會讀取指定日期 SQL 資料，以模擬時間推進機會雷達、全市場重播成交紀錄與目前圖表商品的交易標記；此模式不呼叫 FinMind 即時 API，也不寫入正式 paper trade CSV。
 - SQL 雷達 replay 每次啟動會輸出 UTF-8 BOM 診斷 CSV 到 `logs/radar-replay`，記錄每個模擬時間點的掃描檔數、OPEN_LONG 數、阻擋數、已發生交易與前幾名候選，方便比對批次回測與盤中重播差異，也可直接用 Excel 開啟中文阻擋原因。
+- 回測 / 報告 CSV 需保留 `grossProfit`、`commission`、`tax`、`slippageCost`、`netProfit`、entry reason、exit reason、block reason 與 radar score components。
+- TradeRecord / LogExporter CSV 會保留 `decision_source`、`auto_managed`、`timeframe`、成本拆分、entry / exit / block reason、setup score、radar score components 與策略設定摘要。
+
+### CSV 匯出欄位更新
+
+- LogExporter 匯出的 CSV header 已改為 ASCII snake_case 欄位名稱，方便程式解析與跨工具匯入；這對依賴舊中文 header 的 Excel 模板或外部分析工具屬於不相容變更，請同步調整欄位對應。CSV 仍使用 UTF-8 with BOM，Excel 可直接開啟。
+- LogExporter schema v2 主要欄位包含：`decision_source`、`auto_managed`、`trade_mode`、`timeframe`、`gross_profit`、`commission`、`tax`、`slippage_cost`、`net_profit`、`entry_reason`、`exit_reason`、`block_reason`、`radar_score_components`、`strategy_setting_summary`。
+- 正式 paper trade CSV 會保留 `decision_context_source` 與 `auto_managed`，用來追蹤 AUTO_MONITOR / RADAR_REPLAY / BACKTEST 來源與自動監控部位。
 - SQL 雷達單檔、批次 / 日期範圍與開盤重播都會輸出跨日暖機診斷；報告與 `_symbols.csv` 可看到 `scanner_bar_source`、`scanner_bars`、`visible_session_bars`、`last_visible_session_bar_time`、`warmup_enabled`、`warmup_requested_bars`、`warmup_loaded_bars`、`warmup_first`、`warmup_last`，用來確認 replay 當下實際可見 K 線與暖機資料。
 - 重播摘要 CSV 的 `trade_events` 由 SQL 開盤重播當下的 scanner 結果即時計算，會套用同一套最大持倉、每日最多交易、開單間隔與同一根 5 分 K 限制；若要查每檔當下為何開單或阻擋，請看 `_symbols.csv` 的逐檔 `action`、`block_reason` 與 `long_bonus`。
 - SQL 雷達開盤重播可設定「掃描間隔（秒）」與「掃描秒偏移」；預設會從同日 `orders_yyyyMMdd.csv` 的 auto-monitor 紀錄推估實盤掃描秒偏移，例如實盤都在 `:20/:50` 開單時，重播會用 20 秒偏移。重播開平倉價格優先使用 SQL ticks 在模擬時間以前的最新價，讓 replay 更接近盤中自動監控。
@@ -153,3 +163,23 @@ cmd /c "mvn -q -Djacoco.skip=true test"
 - 若同一日期同一配置重播結果不同，先檢查 CSV 的 `source_mode` 與 `loaded_data_sources`；盤後補入 candlesticks 後，AUTO 模式可能與盤中 ticks 聚合模式不同。
 - 重播會同時輸出 `radar_replay_*.csv` 摘要檔與 `radar_replay_*_symbols.csv` 每檔明細檔。若要檢查股票代碼、分數、阻擋理由與加分明細，請優先看 `_symbols.csv`，避免多檔資料擠在同一格造成 Excel 閱讀錯位。
 - 若 `_symbols.csv` 的 `actual_source` 顯示 `TICKS_AGGREGATED_INCOMPLETE`，代表 SQL ticks 聚合出的 M5 根數不足，例如 Collector 09:01 才有第一筆 tick 而缺少 09:00 bucket；這會影響 EMA、VWAP、VolumeBreakout 與回測/重播結果。
+
+## Auto Monitor / Replay 節奏一致性更新
+
+- 自動監控與 SQL Radar Replay 共用自動開倉節奏 gate：早盤收資料、13:05 禁止新倉、13:25 強制平倉、每日最多交易、最大持倉、同一根 M5 一筆與冷卻 / 熔斷規則會用同一套核心判斷。
+- 13:25 cutoff 只會平掉 auto-managed position，不會因為同為 DAY_TRADE 就誤關手動部位。
+- Paper trade 在 cutoff / system close 場景會保留 `DecisionSource`，方便追溯 AUTO_MONITOR / RADAR_REPLAY / BACKTEST 來源。
+---
+
+## AI 協作文件
+
+本專案採建議的 GPT + Codex 半自動協作流程。流程與審查文件位於 repo root：
+
+- `PROJECT_CONTEXT.md`
+- `FEATURE_FLOW.md`
+- `TESTING_GUIDE.md`
+- `CODE_REVIEW_CHECKLIST.md`
+- `RISK_AREAS.md`
+- `MODULE_OWNERSHIP.md`
+
+Codex 修改前應先檢查 dirty worktree、功能鏈路與高風險區域；完成後必須回報修改檔案、鏈路檢查、防漏檢查與測試結果。
