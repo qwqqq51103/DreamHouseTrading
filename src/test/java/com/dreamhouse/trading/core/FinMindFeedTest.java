@@ -100,19 +100,19 @@ class FinMindFeedTest {
                     return new SimpleResponse(request, 200, "{\"status\":200,\"data\":[]}");
                 },
                 new ObjectMapper());
-        FinMindFeed feed = new FinMindFeed("token", client);
+        FinMindFeed feed = new FinMindFeed("", client);
 
         feed.start();
-        Thread.sleep(100);
 
         assertEquals(0, requestCount.get());
+        feed.stop();
     }
 
     private FinMindFeed feedWithResponder(Responder responder) {
         FinMindClient client = new FinMindClient("token",
                 request -> new SimpleResponse(request, 200, responder.respond(request)),
                 new ObjectMapper());
-        return new FinMindFeed("token", client);
+        return new FinMindFeed("", client);
     }
 
     @FunctionalInterface

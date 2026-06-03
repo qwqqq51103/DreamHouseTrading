@@ -7,6 +7,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,13 +24,17 @@ class DataSourceManagerTest {
     void setUp() {
         deleteConfig();
         manager = new DataSourceManager();
+        manager.setMarketCollectorConfig(
+                "jdbc:h2:mem:datasource_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1",
+                "sa",
+                "");
     }
 
     @AfterEach
     void tearDown() {
         if (manager != null) {
             MarketDataFeed feed = manager.getCurrentDataSource();
-            if (feed != null && feed.isConnected()) {
+            if (feed != null) {
                 feed.stop();
             }
         }
@@ -72,11 +77,12 @@ class DataSourceManagerTest {
 
     @Test
     void marketCollectorJdbcConfigCanBeUpdated() {
-        manager.setMarketCollectorConfig("jdbc:mysql://localhost:3306/market_data_test", "tester", "secret");
+        String jdbcUrl = "jdbc:h2:mem:market_config_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1";
+        manager.setMarketCollectorConfig(jdbcUrl, "sa", "");
 
-        assertEquals("jdbc:mysql://localhost:3306/market_data_test", manager.getMarketCollectorJdbcUrl());
-        assertEquals("tester", manager.getMarketCollectorUser());
-        assertEquals("secret", manager.getMarketCollectorPassword());
+        assertEquals(jdbcUrl, manager.getMarketCollectorJdbcUrl());
+        assertEquals("sa", manager.getMarketCollectorUser());
+        assertEquals("", manager.getMarketCollectorPassword());
     }
 
     @Test

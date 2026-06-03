@@ -1,5 +1,7 @@
 package com.dreamhouse.trading.core.backtest;
 
+import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.model.Bar;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.BaseBarSeries;
@@ -25,6 +27,9 @@ public class BacktestEngine {
     private double slippage = 0.0005; // 滑點 (0.05%)
     
     // 回測狀態
+    private double sellTaxRate = 0.0;
+    private TradeMode tradeMode = TradeMode.NO_TRADE;
+    private Timeframe timeframe = Timeframe.M1;
     private boolean isRunning = false;
     private LocalDateTime startDate;
     private LocalDateTime endDate;
@@ -116,6 +121,8 @@ public class BacktestEngine {
         
         isRunning = true;
         result = new BacktestResult(startDate, endDate, initialCapital);
+        result.setTradeMode(tradeMode);
+        result.setTimeframe(timeframe);
         
         // 重置投資組合
         portfolio.reset(initialCapital);
@@ -169,7 +176,7 @@ public class BacktestEngine {
      */
     private void processBar(int barIndex) {
         org.ta4j.core.Bar currentBar = barSeries.getBar(barIndex);
-        LocalDateTime timestamp = currentBar.getBeginTime().toLocalDateTime();
+        LocalDateTime timestamp = currentBar.getEndTime().toLocalDateTime();
 
         // 更新投資組合市值
         portfolio.updateMarketValue(currentBar.getClosePrice().doubleValue());
@@ -227,11 +234,11 @@ public class BacktestEngine {
         double totalCost = price * quantity * (1 + commission + slippage);
         
         if (portfolio.getCash() >= totalCost) {
-            portfolio.addPosition(symbol, quantity, price, commission + slippage);
+            portfolio.addPosition(symbol, quantity, price, commission);
             
             // 記錄交易
-            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY, 
-                           quantity, price, commission + slippage));
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY,
+                           quantity, price, commission, 0.0, price * quantity * slippage, null, null, null));
             
             notifyTradeExecuted(symbol, TradeType.BUY, quantity, price);
             return true;
@@ -250,11 +257,11 @@ public class BacktestEngine {
         if (position != null && position.getQuantity() >= quantity) {
             double price = getCurrentPrice();
             
-            portfolio.reducePosition(symbol, quantity, price, commission + slippage);
+            portfolio.reducePosition(symbol, quantity, price, commission, sellTaxRate);
             
             // 記錄交易
-            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.SELL, 
-                           quantity, price, commission + slippage));
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.SELL,
+                           quantity, price, commission, sellTaxRate, price * quantity * slippage, null, null, "SELL"));
             
             notifyTradeExecuted(symbol, TradeType.SELL, quantity, price);
             return true;
@@ -280,11 +287,11 @@ public class BacktestEngine {
             takeProfit != null ? String.format("%.2f", takeProfit) : "null"));
 
         if (portfolio.getCash() >= totalCost) {
-            portfolio.addPosition(symbol, quantity, price, commission + slippage);
+            portfolio.addPosition(symbol, quantity, price, commission);
 
             // 記錄交易 (帶停利停損資訊)
             result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.BUY,
-                           quantity, price, commission + slippage, stopLoss, takeProfit, reason));
+                           quantity, price, commission, 0.0, price * quantity * slippage, stopLoss, takeProfit, reason));
 
             notifyTradeExecuted(symbol, TradeType.BUY, quantity, price);
             return true;
@@ -303,11 +310,11 @@ public class BacktestEngine {
         if (position != null && position.getQuantity() >= quantity) {
             double price = getCurrentPrice();
             
-            portfolio.reducePosition(symbol, quantity, price, commission + slippage);
+            portfolio.reducePosition(symbol, quantity, price, commission, sellTaxRate);
             
             // 記錄交易 (帶出場原因)
-            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.SELL, 
-                           quantity, price, commission + slippage, null, null, reason));
+            result.addTrade(new Trade(getCurrentTimestamp(), symbol, TradeType.SELL,
+                           quantity, price, commission, sellTaxRate, price * quantity * slippage, null, null, reason));
             
             notifyTradeExecuted(symbol, TradeType.SELL, quantity, price);
             return true;
@@ -319,6 +326,9 @@ public class BacktestEngine {
     // 輔助方法
     private double getCurrentPrice() {
         // 使用當前正在處理的K線價格，而不是最後一根
+        if (currentBarIndex + 1 >= 0 && currentBarIndex + 1 < barSeries.getBarCount()) {
+            return barSeries.getBar(currentBarIndex + 1).getOpenPrice().doubleValue();
+        }
         if (currentBarIndex >= 0 && currentBarIndex < barSeries.getBarCount()) {
             return barSeries.getBar(currentBarIndex).getClosePrice().doubleValue();
         }
@@ -327,10 +337,13 @@ public class BacktestEngine {
     
     private LocalDateTime getCurrentTimestamp() {
         // 使用當前正在處理的K線時間，而不是最後一根
-        if (currentBarIndex >= 0 && currentBarIndex < barSeries.getBarCount()) {
-            return barSeries.getBar(currentBarIndex).getBeginTime().toLocalDateTime();
+        if (currentBarIndex + 1 >= 0 && currentBarIndex + 1 < barSeries.getBarCount()) {
+            return barSeries.getBar(currentBarIndex + 1).getEndTime().toLocalDateTime();
         }
-        return barSeries.getLastBar().getBeginTime().toLocalDateTime();
+        if (currentBarIndex >= 0 && currentBarIndex < barSeries.getBarCount()) {
+            return barSeries.getBar(currentBarIndex).getEndTime().toLocalDateTime();
+        }
+        return barSeries.getLastBar().getEndTime().toLocalDateTime();
     }
     
     // 通知方法
@@ -381,4 +394,17 @@ public class BacktestEngine {
     public void setSlippage(double slippage) {
         this.slippage = slippage;
     }
+
+    public void setSellTaxRate(double sellTaxRate) {
+        this.sellTaxRate = sellTaxRate;
+    }
+
+    public void setTradeMode(TradeMode tradeMode) {
+        this.tradeMode = tradeMode != null ? tradeMode : TradeMode.NO_TRADE;
+    }
+
+    public void setTimeframe(Timeframe timeframe) {
+        this.timeframe = timeframe != null ? timeframe : Timeframe.M1;
+    }
+
 }

@@ -1,5 +1,7 @@
 package com.dreamhouse.trading.core.execution;
 
+import com.dreamhouse.trading.core.decision.DecisionResult;
+
 import java.time.LocalDateTime;
 
 /**
@@ -45,6 +47,8 @@ public class ExecutionResult {
     private final String positionId;
     private final String message;
     private final String decisionReason;
+    private final DecisionResult.DecisionSource decisionSource;
+    private final boolean autoManaged;
     private final Exception error;
 
     private ExecutionResult(Builder builder) {
@@ -67,6 +71,8 @@ public class ExecutionResult {
         this.positionId = builder.positionId;
         this.message = builder.message;
         this.decisionReason = builder.decisionReason;
+        this.decisionSource = builder.decisionSource;
+        this.autoManaged = builder.autoManaged;
         this.error = builder.error;
     }
 
@@ -146,6 +152,14 @@ public class ExecutionResult {
         return decisionReason;
     }
 
+    public DecisionResult.DecisionSource getDecisionSource() {
+        return decisionSource;
+    }
+
+    public boolean isAutoManaged() {
+        return autoManaged;
+    }
+
     public Exception getError() {
         return error;
     }
@@ -211,6 +225,8 @@ public class ExecutionResult {
         private String positionId = "";
         private String message = "";
         private String decisionReason = "";
+        private DecisionResult.DecisionSource decisionSource = DecisionResult.DecisionSource.MANUAL;
+        private boolean autoManaged;
         private Exception error;
 
         public Builder status(Status status) {
@@ -305,6 +321,16 @@ public class ExecutionResult {
 
         public Builder decisionReason(String decisionReason) {
             this.decisionReason = decisionReason;
+            return this;
+        }
+
+        public Builder decisionSource(DecisionResult.DecisionSource decisionSource) {
+            this.decisionSource = decisionSource != null ? decisionSource : DecisionResult.DecisionSource.MANUAL;
+            return this;
+        }
+
+        public Builder autoManaged(boolean autoManaged) {
+            this.autoManaged = autoManaged;
             return this;
         }
 

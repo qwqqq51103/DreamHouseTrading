@@ -5,6 +5,7 @@ import com.dreamhouse.trading.core.MarketDataListener;
 import com.dreamhouse.trading.core.Timeframe;
 import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.model.Bar;
+import com.dreamhouse.trading.core.monitor.AutoMonitorExecutionGate;
 import com.dreamhouse.trading.core.scanner.MarketScanResult;
 import com.dreamhouse.trading.core.scanner.MarketScannerService;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
@@ -201,7 +202,7 @@ public class RadarReplayBacktestService {
                     } else {
                         consecutiveLosses = 0;
                     }
-                    if ("停損".equals(exit.reason())) {
+                    if (exit.type() == ExitType.STOP_LOSS) {
                         stopLossCount++;
                         cooldownUntil = barTime.plusMinutes(stopLossCooldownMinutes);
                     }
@@ -217,20 +218,32 @@ public class RadarReplayBacktestService {
             if (open == null
                     && !tradingHalted
                     && index < lastEntryIndexExclusive
-                    && index + 1 >= minimumWarmupBars
-                    && !isEarlyEntryBlock(decisionTime.toLocalTime())
-                    && (cooldownUntil == null || !decisionTime.isBefore(cooldownUntil))
-                    && autoEntryCount < dailyMaxAutoTrades
-                    && !isEntryPacingBlocked(decisionTime, lastEntryTime)
-                    && !isEntryBucketBlocked(decisionTime, entryBuckets)
-                    && decisionTime.toLocalTime().isBefore(latestAutoEntryTime)
-                    && decisionTime.toLocalTime().isBefore(FORCE_CLOSE_TIME)) {
+                    && index + 1 >= minimumWarmupBars) {
+                AutoMonitorExecutionGate.GateDecision gateDecision = AutoMonitorExecutionGate.evaluateOpenLong(
+                        replayGateConfig(),
+                        new AutoMonitorExecutionGate.GateState(
+                                symbol,
+                                decisionTime,
+                                tradingHalted,
+                                false,
+                                cooldownUntil,
+                                autoEntryCount,
+                                lastEntryTime,
+                                entryBuckets,
+                                open != null ? 1 : 0,
+                                1));
                 rollingFeed.setVisibleBarCount(index + 1);
                 MarketScannerService.ScanRequest rollingRequest = effectiveRequest.copy()
                         .barCount(Math.min(effectiveRequest.getBarCount(), index + 1))
                         .asOfTime(decisionTime);
                 MarketScanResult scanResult = scanner.scan(symbol, rollingRequest);
                 DecisionResult decision = scanResult != null ? scanResult.getDecisionResult() : null;
+                if (!gateDecision.allowed()) {
+                    if (decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
+                        recordSignalObservation(result, symbol, bars, index, scanResult, decision, true, gateDecision.reason());
+                    }
+                    continue;
+                }
                 if (decision != null && decision.getAction() == DecisionResult.Action.OPEN_LONG) {
                     Bar entryBar = bars.get(index + 1);
                     double entryPrice = entryBar.getOpen() > 0.0 ? entryBar.getOpen() : entryBar.getClose();
@@ -259,7 +272,7 @@ public class RadarReplayBacktestService {
                         cash -= buy.getTotalCost();
                         autoEntryCount++;
                         lastEntryTime = entryTime;
-                        entryBuckets.add(fiveMinuteBucket(entryTime));
+                        entryBuckets.add(AutoMonitorExecutionGate.fiveMinuteBucket(entryTime));
                         open = new OpenPosition(
                                 quantity,
                                 entryPrice,
@@ -487,6 +500,18 @@ public class RadarReplayBacktestService {
         return !time.isBefore(earlyEntryBlockStart) && time.isBefore(earlyEntryBlockEnd);
     }
 
+    private AutoMonitorExecutionGate.GateConfig replayGateConfig() {
+        return new AutoMonitorExecutionGate.GateConfig(
+                true,
+                earlyEntryBlockStart,
+                earlyEntryBlockEnd,
+                latestAutoEntryTime,
+                dailyMaxAutoTrades,
+                entryPacingMinutes,
+                oneEntryPerFiveMinuteBar,
+                FORCE_CLOSE_TIME);
+    }
+
     private boolean isEntryPacingBlocked(LocalDateTime decisionTime, LocalDateTime lastEntryTime) {
         return entryPacingMinutes > 0
                 && decisionTime != null
@@ -502,29 +527,25 @@ public class RadarReplayBacktestService {
     }
 
     private String fiveMinuteBucket(LocalDateTime time) {
-        if (time == null) {
-            return "";
-        }
-        int bucketMinute = (time.getMinute() / 5) * 5;
-        return time.toLocalDate() + "T" + String.format("%02d:%02d", time.getHour(), bucketMinute);
+        return AutoMonitorExecutionGate.fiveMinuteBucket(time);
     }
 
     private ExitDecision resolveExit(OpenPosition open, List<Bar> bars, int index) {
         Bar bar = bars.get(index);
         if (open.stopLoss() != null && bar.getLow() <= open.stopLoss()) {
-            return new ExitDecision(open.stopLoss(), "停損");
+            return new ExitDecision(open.stopLoss(), "STOP_LOSS", ExitType.STOP_LOSS);
         }
         if (open.takeProfit() != null && bar.getHigh() >= open.takeProfit()) {
-            return new ExitDecision(open.takeProfit(), "停利");
+            return new ExitDecision(open.takeProfit(), "TAKE_PROFIT", ExitType.TAKE_PROFIT);
         }
         if (isVwapBreak(bars, index, bar)) {
-            return new ExitDecision(bar.getClose(), "VWAP_BREAK");
+            return new ExitDecision(bar.getClose(), "VWAP_BREAK", ExitType.VWAP_BREAK);
         }
         if (isVolumeFail(bars, index, bar)) {
-            return new ExitDecision(bar.getClose(), "VOLUME_FAIL");
+            return new ExitDecision(bar.getClose(), "VOLUME_FAIL", ExitType.VOLUME_FAIL);
         }
         if (!bar.getTimestamp().toLocalTime().isBefore(FORCE_CLOSE_TIME)) {
-            return new ExitDecision(bar.getClose(), "13:25 當沖強制平倉");
+            return new ExitDecision(bar.getClose(), "FORCE_CLOSE", ExitType.FORCE_CLOSE);
         }
         return null;
     }
@@ -580,7 +601,15 @@ public class RadarReplayBacktestService {
     private record OpenPosition(int quantity, double entryPrice, Double stopLoss, Double takeProfit, Trade entryTrade) {
     }
 
-    private record ExitDecision(double price, String reason) {
+    private record ExitDecision(double price, String reason, ExitType type) {
+    }
+
+    private enum ExitType {
+        STOP_LOSS,
+        TAKE_PROFIT,
+        VWAP_BREAK,
+        VOLUME_FAIL,
+        FORCE_CLOSE
     }
 
     private static class RollingBarFeed implements MarketDataFeed {

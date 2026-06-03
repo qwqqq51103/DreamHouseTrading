@@ -52,6 +52,7 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
 
     private final MarketDataCollectorRepository repository;
     private final Duration staleThreshold;
+    private final Path staleWarningLogDirectory;
     private final Map<String, List<MarketDataListener>> listeners = new ConcurrentHashMap<>();
     private final Map<String, LocalDateTime> lastNotifiedTickTime = new ConcurrentHashMap<>();
     private final boolean closeRepository;
@@ -121,10 +122,28 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
         this(repository, staleThreshold, false);
     }
 
+    MarketDataCollectorFeed(
+            MarketDataCollectorRepository repository,
+            Duration staleThreshold,
+            Path staleWarningLogDirectory) {
+        this(repository, staleThreshold, false, staleWarningLogDirectory);
+    }
+
     private MarketDataCollectorFeed(MarketDataCollectorRepository repository, Duration staleThreshold, boolean closeRepository) {
+        this(repository, staleThreshold, closeRepository, Path.of("logs", "market-data-warnings"));
+    }
+
+    private MarketDataCollectorFeed(
+            MarketDataCollectorRepository repository,
+            Duration staleThreshold,
+            boolean closeRepository,
+            Path staleWarningLogDirectory) {
         this.repository = repository;
         this.staleThreshold = staleThreshold != null ? staleThreshold : DEFAULT_STALE_THRESHOLD;
         this.closeRepository = closeRepository;
+        this.staleWarningLogDirectory = staleWarningLogDirectory != null
+                ? staleWarningLogDirectory
+                : Path.of("logs", "market-data-warnings");
     }
 
     private static MarketDataCollectorRepository createDefaultRepository() {
@@ -393,10 +412,25 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
             Duration threshold,
             LocalDateTime detectedAt,
             String action) {
+        writeStaleWarningDiagnostic(
+                symbol,
+                freshness != null ? freshness.latest() : null,
+                freshness != null ? freshness.lagSeconds() : -1L,
+                threshold,
+                detectedAt,
+                action);
+    }
+
+    void writeStaleWarningDiagnostic(
+            String symbol,
+            LocalDateTime latest,
+            long lagSeconds,
+            Duration threshold,
+            LocalDateTime detectedAt,
+            String action) {
         LocalDateTime safeDetectedAt = detectedAt != null ? detectedAt : LocalDateTime.now(TAIPEI_ZONE);
-        Path logPath = Path.of(
-                "logs",
-                "market-data-warnings",
+        Duration safeThreshold = threshold != null ? threshold : staleThreshold;
+        Path logPath = staleWarningLogDirectory.resolve(
                 "collector_stale_warnings_" + safeDetectedAt.toLocalDate().format(STALE_WARN_FILE_DATE) + ".csv");
         synchronized (STALE_WARN_LOG_LOCK) {
             try {
@@ -410,14 +444,14 @@ public class MarketDataCollectorFeed implements MarketDataFeed {
                 String message = String.format(
                         "%s local collector data is stale; latest=%s, lag=%ds, threshold=%ds; skipping scan instead of calling FinMind",
                         symbol,
-                        freshness.latest(),
-                        freshness.lagSeconds(),
-                        threshold.toSeconds());
+                        latest,
+                        lagSeconds,
+                        safeThreshold.toSeconds());
                 line.append(csv(safeDetectedAt.toString())).append(',')
                         .append(csv(symbol)).append(',')
-                        .append(csv(freshness.latest() != null ? freshness.latest().toString() : "")).append(',')
-                        .append(freshness.lagSeconds()).append(',')
-                        .append(threshold.toSeconds()).append(',')
+                        .append(csv(latest != null ? latest.toString() : "")).append(',')
+                        .append(lagSeconds).append(',')
+                        .append(safeThreshold.toSeconds()).append(',')
                         .append(csv(action)).append(',')
                         .append(csv(message)).append('\n');
                 Files.writeString(logPath, line.toString(), StandardCharsets.UTF_8,

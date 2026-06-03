@@ -1,5 +1,7 @@
 package com.dreamhouse.trading.core.backtest;
 
+import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.scanner.RadarScoreComponent;
 
 import java.time.LocalDate;
@@ -17,6 +19,8 @@ public class BacktestResult {
     private final LocalDateTime startDate;
     private final LocalDateTime endDate;
     private final double initialCapital;
+    private TradeMode tradeMode = TradeMode.NO_TRADE;
+    private Timeframe timeframe = Timeframe.D1;
     
     // 績效數據
     private double finalValue;
@@ -79,6 +83,14 @@ public class BacktestResult {
         if (diagnostic != null) {
             warmupDiagnostics.add(diagnostic);
         }
+    }
+
+    public void setTradeMode(TradeMode tradeMode) {
+        this.tradeMode = tradeMode != null ? tradeMode : TradeMode.NO_TRADE;
+    }
+
+    public void setTimeframe(Timeframe timeframe) {
+        this.timeframe = timeframe != null ? timeframe : Timeframe.D1;
     }
     
     /**
@@ -287,10 +299,72 @@ public class BacktestResult {
     public double getAvgWin() { return avgWin; }
     public double getAvgLoss() { return avgLoss; }
     public double getProfitFactor() { return profitFactor; }
+    public TradeMode getTradeMode() { return tradeMode; }
+    public Timeframe getTimeframe() { return timeframe; }
     public List<Trade> getTrades() { return new ArrayList<>(trades); }
     public List<PortfolioSnapshot> getSnapshots() { return new ArrayList<>(snapshots); }
     public List<SignalObservation> getSignalObservations() { return new ArrayList<>(signalObservations); }
     public List<WarmupDiagnostic> getWarmupDiagnostics() { return new ArrayList<>(warmupDiagnostics); }
+
+    public double getGrossProfit() {
+        return pairTrades().stream().mapToDouble(pair -> (pair.sell().getPrice() - pair.buy().getPrice()) * pair.buy().getQuantity()).sum();
+    }
+
+    public double getTotalCommission() {
+        return trades.stream().mapToDouble(Trade::getCommissionAmount).sum();
+    }
+
+    public double getTotalTax() {
+        return trades.stream().mapToDouble(Trade::getTaxAmount).sum();
+    }
+
+    public double getTotalSlippageCost() {
+        return trades.stream().mapToDouble(Trade::getSlippageCost).sum();
+    }
+
+    public double getNetProfit() {
+        return pairTrades().stream().mapToDouble(pair -> pair.sell().getNetProceeds() - pair.buy().getTotalCost()).sum();
+    }
+
+    public java.util.Map<String, Long> getExitReasonStatistics() {
+        return pairTrades().stream()
+                .map(pair -> pair.sell().getExitReason() != null && !pair.sell().getExitReason().isBlank()
+                        ? pair.sell().getExitReason()
+                        : "UNKNOWN")
+                .collect(java.util.stream.Collectors.groupingBy(
+                        reason -> reason,
+                        java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()));
+    }
+
+    public java.util.Map<String, Long> getBlockReasonStatistics() {
+        return signalObservations.stream()
+                .filter(SignalObservation::blocked)
+                .map(observation -> observation.reason() != null && !observation.reason().isBlank()
+                        ? observation.reason()
+                        : "UNKNOWN")
+                .collect(java.util.stream.Collectors.groupingBy(
+                        reason -> reason,
+                        java.util.LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()));
+    }
+
+    private List<TradePair> pairTrades() {
+        List<TradePair> pairs = new ArrayList<>();
+        Trade lastBuy = null;
+        for (Trade trade : trades) {
+            if (trade.getType() == TradeType.BUY) {
+                lastBuy = trade;
+            } else if (trade.getType() == TradeType.SELL && lastBuy != null) {
+                pairs.add(new TradePair(lastBuy, trade));
+                lastBuy = null;
+            }
+        }
+        return pairs;
+    }
+
+    private record TradePair(Trade buy, Trade sell) {
+    }
 
     public record WarmupDiagnostic(
             String symbol,

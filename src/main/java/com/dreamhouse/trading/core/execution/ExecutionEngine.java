@@ -8,6 +8,7 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 /**
  * Execution engine for backtest, paper and dry-run workflows.
@@ -23,6 +24,7 @@ public class ExecutionEngine {
     private final Map<String, String> activePositionIds;
     private final Map<String, Double> activeStopLosses;
     private final Map<String, Double> activeTakeProfits;
+    private final Map<String, Boolean> activeAutoManagedPositions;
 
     public ExecutionEngine(ExecutionMode mode, Portfolio portfolio, double commissionRate) {
         this(mode, portfolio, commissionRate, 0.0);
@@ -38,6 +40,7 @@ public class ExecutionEngine {
         this.activePositionIds = new HashMap<>();
         this.activeStopLosses = new HashMap<>();
         this.activeTakeProfits = new HashMap<>();
+        this.activeAutoManagedPositions = new HashMap<>();
     }
 
     public ExecutionResult openPosition(String symbol, int quantity, double price) {
@@ -87,24 +90,24 @@ public class ExecutionEngine {
 
     public ExecutionResult executeDecision(DecisionResult decision, double price) {
         if (decision == null) {
-            return rejectedResult("", "", "Decision is null");
+            return rejectedResult("", "", "Decision is null", DecisionResult.DecisionSource.SYSTEM);
         }
         if (!decision.shouldTrade()) {
-            return rejectedResult("", decision.getSymbol(), "Decision does not request execution");
+            return rejectedResult("", decision.getSymbol(), "Decision does not request execution", decision.getDecisionSource());
         }
         if (decision.isShort()) {
-            return rejectedResult("", decision.getSymbol(), "Short selling is disabled in v1");
+            return rejectedResult("", decision.getSymbol(), "Short selling is disabled in v1", decision.getDecisionSource());
         }
 
         String symbol = decision.getSymbol();
         if (symbol == null || symbol.isBlank()) {
-            return rejectedResult("", "", "Decision symbol is required");
+            return rejectedResult("", "", "Decision symbol is required", decision.getDecisionSource());
         }
 
         if (decision.isEntry()) {
             Integer quantity = decision.getSuggestedQuantity();
             if (quantity == null || quantity <= 0) {
-                return rejectedResult("", symbol, "Decision quantity is required for entry");
+                return rejectedResult("", symbol, "Decision quantity is required for entry", decision.getDecisionSource());
             }
             Order order = new Order.Builder()
                     .orderId(generateOrderId())
@@ -117,12 +120,13 @@ public class ExecutionEngine {
                     .takeProfit(decision.getSuggestedTakeProfit())
                     .reason(decision.getReason())
                     .build();
-            return executeOrder(order);
+            return executeOrder(order, decision.getDecisionSource() == DecisionResult.DecisionSource.AUTO_MONITOR,
+                    decision.getDecisionSource());
         }
 
         Position position = portfolio.getPosition(symbol);
         if (position == null) {
-            return rejectedResult("", symbol, "No position available to close");
+            return rejectedResult("", symbol, "No position available to close", decision.getDecisionSource());
         }
 
         int quantity = decision.getSuggestedQuantity() != null
@@ -137,13 +141,25 @@ public class ExecutionEngine {
                 .requestedPrice(price)
                 .reason(decision.getReason())
                 .build();
-        return executeOrder(order);
+        return executeOrder(order, false, decision.getDecisionSource());
     }
 
     public ExecutionResult executeOrder(Order order) {
+        return executeOrder(order, false, DecisionResult.DecisionSource.MANUAL);
+    }
+
+    private ExecutionResult executeOrder(Order order, boolean requestedAutoManaged) {
+        return executeOrder(order, requestedAutoManaged, DecisionResult.DecisionSource.MANUAL);
+    }
+
+    private ExecutionResult executeOrder(
+            Order order,
+            boolean requestedAutoManaged,
+            DecisionResult.DecisionSource decisionSource) {
         if (order.getQuantity() <= 0) {
-            return rejectedResult(order.getOrderId(), order.getSymbol(), "Order quantity must be positive");
+            return rejectedResult(order.getOrderId(), order.getSymbol(), "Order quantity must be positive", decisionSource);
         }
+        boolean autoManaged = requestedAutoManaged || Boolean.TRUE.equals(activeAutoManagedPositions.get(order.getSymbol()));
 
         if (mode == ExecutionMode.DRY_RUN) {
             ExecutionResult dryRunResult = new ExecutionResult.Builder()
@@ -158,6 +174,8 @@ public class ExecutionEngine {
                     .requestedPrice(order.getRequestedPrice())
                     .executedPrice(0.0)
                     .decisionReason(order.getReason())
+                    .decisionSource(decisionSource)
+                    .autoManaged(autoManaged)
                     .message("Dry-run accepted")
                     .build();
             executionHistory.put(order.getOrderId(), dryRunResult);
@@ -175,13 +193,18 @@ public class ExecutionEngine {
                 if (portfolio.getCash() < requiredCash) {
                     return rejectedResult(order.getOrderId(), order.getSymbol(),
                             String.format("Required cash %.2f exceeds available cash %.2f",
-                                    requiredCash, portfolio.getCash()));
+                                    requiredCash, portfolio.getCash()),
+                            decisionSource);
                 }
                 if (mode == ExecutionMode.LIVE_TRADING) {
                     throw new UnsupportedOperationException("Live trading is not supported");
                 }
                 portfolio.addPosition(order.getSymbol(), order.getQuantity(), order.getRequestedPrice(), commissionRate);
                 positionId = activePositionIds.computeIfAbsent(order.getSymbol(), key -> order.getOrderId());
+                if (requestedAutoManaged) {
+                    activeAutoManagedPositions.put(order.getSymbol(), true);
+                    autoManaged = true;
+                }
                 if (order.getStopLoss() != null) {
                     activeStopLosses.put(order.getSymbol(), order.getStopLoss());
                 }
@@ -193,12 +216,13 @@ public class ExecutionEngine {
                 takeProfit = activeTakeProfits.get(order.getSymbol());
                 Position position = portfolio.getPosition(order.getSymbol());
                 if (position == null) {
-                    return rejectedResult(order.getOrderId(), order.getSymbol(), "No position available");
+                    return rejectedResult(order.getOrderId(), order.getSymbol(), "No position available", decisionSource);
                 }
                 if (position.getQuantity() < order.getQuantity()) {
                     return rejectedResult(order.getOrderId(), order.getSymbol(),
                             String.format("Requested close quantity %d exceeds held quantity %d",
-                                    order.getQuantity(), position.getQuantity()));
+                                    order.getQuantity(), position.getQuantity()),
+                            decisionSource);
                 }
                 if (mode == ExecutionMode.LIVE_TRADING) {
                     throw new UnsupportedOperationException("Live trading is not supported");
@@ -210,6 +234,7 @@ public class ExecutionEngine {
                     activePositionIds.remove(order.getSymbol());
                     activeStopLosses.remove(order.getSymbol());
                     activeTakeProfits.remove(order.getSymbol());
+                    activeAutoManagedPositions.remove(order.getSymbol());
                 }
             }
 
@@ -232,6 +257,8 @@ public class ExecutionEngine {
                     .executionTime(LocalDateTime.now())
                     .positionId(positionId)
                     .decisionReason(order.getReason())
+                    .decisionSource(decisionSource)
+                    .autoManaged(autoManaged)
                     .message(order.getSide().opensExposure() ? "開倉成功" : String.format("平倉成功，損益 %.2f", realizedPnL))
                     .build();
             executionHistory.put(order.getOrderId(), result);
@@ -243,6 +270,7 @@ public class ExecutionEngine {
                     .orderType(order.getType())
                     .orderSide(order.getSide())
                     .decisionReason(order.getReason())
+                    .decisionSource(decisionSource)
                     .error(e)
                     .build();
             executionHistory.put(order.getOrderId(), errorResult);
@@ -259,6 +287,40 @@ public class ExecutionEngine {
         return results;
     }
 
+    public Map<String, ExecutionResult> forceCloseAutoManagedPositions(
+            Function<String, Double> priceProvider,
+            OrderType orderType,
+            String reason,
+            DecisionResult.DecisionSource decisionSource) {
+        Map<String, ExecutionResult> results = new HashMap<>();
+        for (String symbol : activeAutoManagedPositions.keySet().toArray(new String[0])) {
+            if (!isAutoManagedPosition(symbol)) {
+                continue;
+            }
+            Position position = portfolio.getPosition(symbol);
+            if (position == null || position.getQuantity() <= 0) {
+                activeAutoManagedPositions.remove(symbol);
+                continue;
+            }
+            Double closePrice = priceProvider != null ? priceProvider.apply(symbol) : null;
+            if (closePrice == null || closePrice <= 0.0) {
+                results.put(symbol, rejectedResult(generateOrderId(), symbol, "Close price is required", decisionSource));
+                continue;
+            }
+            Order order = new Order.Builder()
+                    .orderId(generateOrderId())
+                    .symbol(symbol)
+                    .side(OrderSide.SELL)
+                    .type(orderType != null ? orderType : OrderType.MARKET)
+                    .quantity(position.getQuantity())
+                    .requestedPrice(closePrice)
+                    .reason(reason != null ? reason : "Force close auto-managed position")
+                    .build();
+            results.put(symbol, executeOrder(order, true, decisionSource));
+        }
+        return results;
+    }
+
     public ExecutionResult partialClose(String symbol, double percentage, double price) {
         if (percentage <= 0.0 || percentage > 1.0) {
             throw new IllegalArgumentException("Close percentage must be in (0.0, 1.0]");
@@ -268,16 +330,17 @@ public class ExecutionEngine {
             return rejectedResult(generateOrderId(), symbol, "No position available");
         }
         int closeQuantity = Math.max(1, (int) (position.getQuantity() * percentage));
-        return closePosition(symbol, closeQuantity, price, OrderType.MARKET);
+        return closePosition(symbol, closeQuantity, price, OrderType.MARKET, "Partial close");
+    }
+
+    public boolean isAutoManagedPosition(String symbol) {
+        return Boolean.TRUE.equals(activeAutoManagedPositions.get(symbol));
     }
 
     public ExecutionResult[] reversePosition(String symbol, int newQuantity, double price) {
         ExecutionResult[] results = new ExecutionResult[2];
-        Position position = portfolio.getPosition(symbol);
-        results[0] = position != null
-                ? closePosition(symbol, position.getQuantity(), price)
-                : rejectedResult(generateOrderId(), symbol, "No position available to reverse");
-        results[1] = openPosition(symbol, newQuantity, price);
+        results[0] = rejectedResult(generateOrderId(), symbol, "Reverse position is disabled in long-only mode");
+        results[1] = rejectedResult(generateOrderId(), symbol, "Short selling is disabled in v1");
         return results;
     }
 
@@ -290,11 +353,20 @@ public class ExecutionEngine {
     }
 
     private ExecutionResult rejectedResult(String orderId, String symbol, String message) {
+        return rejectedResult(orderId, symbol, message, DecisionResult.DecisionSource.MANUAL);
+    }
+
+    private ExecutionResult rejectedResult(
+            String orderId,
+            String symbol,
+            String message,
+            DecisionResult.DecisionSource decisionSource) {
         return new ExecutionResult.Builder()
                 .status(ExecutionResult.Status.REJECTED)
                 .orderId(orderId.isBlank() ? generateOrderId() : orderId)
                 .symbol(symbol)
                 .orderStatus(OrderStatus.REJECTED)
+                .decisionSource(decisionSource)
                 .message(message)
                 .build();
     }

@@ -52,8 +52,17 @@ public class DecisionResult {
         }
     }
 
+    public enum DecisionSource {
+        MANUAL,
+        AUTO_MONITOR,
+        RADAR_REPLAY,
+        BACKTEST,
+        SYSTEM
+    }
+
     private final Action action;
     private final Source source;
+    private final DecisionSource decisionSource;
     private final String symbol;
     private final TradeMode tradeMode;
     private final String reason;
@@ -73,6 +82,7 @@ public class DecisionResult {
     private DecisionResult(Builder builder) {
         this.action = builder.action;
         this.source = builder.source;
+        this.decisionSource = builder.decisionSource;
         this.symbol = builder.symbol;
         this.tradeMode = builder.tradeMode;
         this.reason = builder.reason;
@@ -96,6 +106,10 @@ public class DecisionResult {
 
     public Source getSource() {
         return source;
+    }
+
+    public DecisionSource getDecisionSource() {
+        return decisionSource;
     }
 
     public String getSymbol() {
@@ -246,6 +260,7 @@ public class DecisionResult {
     public static class Builder {
         private Action action = Action.NO_ACTION;
         private Source source = Source.MANUAL;
+        private DecisionSource decisionSource = DecisionSource.SYSTEM;
         private String symbol = "";
         private TradeMode tradeMode = TradeMode.NO_TRADE;
         private String reason = "";
@@ -269,6 +284,11 @@ public class DecisionResult {
 
         public Builder source(Source source) {
             this.source = source;
+            return this;
+        }
+
+        public Builder decisionSource(DecisionSource decisionSource) {
+            this.decisionSource = decisionSource;
             return this;
         }
 

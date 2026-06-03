@@ -4,6 +4,8 @@ import com.dreamhouse.trading.core.backtest.Portfolio;
 import com.dreamhouse.trading.core.backtest.Position;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -17,6 +19,7 @@ public class RiskManager {
     private final RiskConfig config;
     private final Portfolio portfolio;
     private final Map<String, Double> dailyPnL;
+    private final Map<String, LocalDateTime> stopLossCooldownUntilBySymbol;
     private final List<RiskViolation> violations;
 
     private String currentDate;
@@ -28,6 +31,7 @@ public class RiskManager {
         this.config = config;
         this.portfolio = portfolio;
         this.dailyPnL = new HashMap<>();
+        this.stopLossCooldownUntilBySymbol = new HashMap<>();
         this.violations = new ArrayList<>();
         this.currentDate = getTodayString();
         this.todayStartEquity = portfolio.getTotalValue();
@@ -43,7 +47,55 @@ public class RiskManager {
             dailyLimitHit = false;
             allowNewPositions = true;
             dailyPnL.put(currentDate, 0.0);
+            stopLossCooldownUntilBySymbol.clear();
         }
+    }
+
+    public RiskViolation checkDayTradeOpenLong(
+            String symbol,
+            LocalDateTime signalTime,
+            double entryPrice,
+            int quantity) {
+        LocalDateTime effectiveTime = signalTime != null ? signalTime : LocalDateTime.now();
+        if (!effectiveTime.toLocalTime().isBefore(LocalTime.of(13, 25))) {
+            return new RiskViolation(
+                    RiskViolation.Type.DAY_TRADE_TIME_BLOCK,
+                    symbol,
+                    effectiveTime.toLocalTime().toSecondOfDay(),
+                    LocalTime.of(13, 25).toSecondOfDay(),
+                    "Open long is blocked at or after 13:25 for day trade",
+                    false);
+        }
+
+        if (dailyLimitHit || !allowNewPositions) {
+            return new RiskViolation(
+                    RiskViolation.Type.DAILY_LOSS_LIMIT,
+                    symbol,
+                    getTodayPnL(),
+                    -todayStartEquity * config.getMaxDailyLossPercent(),
+                    "Open long is blocked after daily loss circuit breaker",
+                    false);
+        }
+
+        LocalDateTime cooldownUntil = stopLossCooldownUntilBySymbol.get(symbol);
+        if (cooldownUntil != null && effectiveTime.isBefore(cooldownUntil)) {
+            return new RiskViolation(
+                    RiskViolation.Type.STOP_LOSS_COOLDOWN,
+                    symbol,
+                    effectiveTime.toLocalTime().toSecondOfDay(),
+                    cooldownUntil.toLocalTime().toSecondOfDay(),
+                    "Open long is blocked during stop-loss cooldown",
+                    false);
+        }
+
+        return checkNewPosition(symbol, entryPrice * quantity);
+    }
+
+    public void registerStopLossCooldown(String symbol, LocalDateTime exitTime, int cooldownMinutes) {
+        if (symbol == null || symbol.isBlank() || exitTime == null || cooldownMinutes <= 0) {
+            return;
+        }
+        stopLossCooldownUntilBySymbol.put(symbol, exitTime.plusMinutes(cooldownMinutes));
     }
 
     public RiskViolation checkAccountRisk() {
@@ -282,7 +334,14 @@ public class RiskManager {
 
     public void updateDailyPnL(double realizedPnL) {
         double currentPnL = dailyPnL.getOrDefault(currentDate, 0.0);
-        dailyPnL.put(currentDate, currentPnL + realizedPnL);
+        double updatedPnL = currentPnL + realizedPnL;
+        dailyPnL.put(currentDate, updatedPnL);
+        if (config.isDailyLossLimitEnabled()
+                && todayStartEquity > 0.0
+                && -updatedPnL / todayStartEquity >= config.getMaxDailyLossPercent()) {
+            dailyLimitHit = true;
+            allowNewPositions = false;
+        }
     }
 
     public double getTodayPnL() {

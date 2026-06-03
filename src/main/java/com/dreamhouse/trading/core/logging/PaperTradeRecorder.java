@@ -55,7 +55,9 @@ public class PaperTradeRecorder {
             "score_components",
             "long_bonus_components",
             "strategy_name",
-            "strategy_details");
+            "strategy_details",
+            "decision_context_source",
+            "auto_managed");
 
     private static final String TRADE_HEADER = String.join(",",
             "closed_time",
@@ -93,7 +95,9 @@ public class PaperTradeRecorder {
             "long_bonus_components",
             "tax",
             "strategy_name",
-            "strategy_details");
+            "strategy_details",
+            "decision_context_source",
+            "auto_managed");
 
     private static final String SETUP_HEADER = String.join(",",
             "entry_time",
@@ -117,7 +121,9 @@ public class PaperTradeRecorder {
             "score_components",
             "long_bonus_components",
             "strategy_name",
-            "strategy_details");
+            "strategy_details",
+            "decision_context_source",
+            "auto_managed");
 
     private final Path outputDirectory;
     private final Map<String, OpenTrade> openTrades = new ConcurrentHashMap<>();
@@ -205,7 +211,9 @@ public class PaperTradeRecorder {
                 csv(scoreComponents(scanResult)),
                 csv(longBonusComponents(scanResult)),
                 csv(strategyName),
-                csv(strategyDetails)));
+                csv(strategyDetails),
+                csv(decisionSource(decision, result)),
+                csv(Boolean.toString(result.isAutoManaged()))));
     }
 
     private void updateCompletedTrade(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) throws IOException {
@@ -278,7 +286,9 @@ public class PaperTradeRecorder {
                 csv(open.longBonusComponents()),
                 decimal(result.getTax()),
                 csv(open.strategyName()),
-                csv(open.strategyDetails())));
+                csv(open.strategyDetails()),
+                csv(open.decisionSource()),
+                csv(Boolean.toString(open.autoManaged()))));
     }
 
     private void appendSetup(ExecutionResult result, DecisionResult decision, MarketScanResult scanResult, String source, String strategyName, String strategyDetails) throws IOException {
@@ -304,7 +314,9 @@ public class PaperTradeRecorder {
                 csv(scoreComponents(scanResult)),
                 csv(longBonusComponents(scanResult)),
                 csv(strategyName),
-                csv(strategyDetails)));
+                csv(strategyDetails),
+                csv(decisionSource(decision, result)),
+                csv(Boolean.toString(result.isAutoManaged()))));
     }
 
     private static String scoreComponents(MarketScanResult scanResult) {
@@ -407,6 +419,17 @@ public class PaperTradeRecorder {
         return scanResult != null ? scanResult.getRiskRewardRatio() : null;
     }
 
+    private static String decisionSource(DecisionResult decision) {
+        return decisionSource(decision, null);
+    }
+
+    private static String decisionSource(DecisionResult decision, ExecutionResult result) {
+        if (decision != null && decision.getDecisionSource() != null) {
+            return decision.getDecisionSource().name();
+        }
+        return result != null && result.getDecisionSource() != null ? result.getDecisionSource().name() : "";
+    }
+
     private static String formatTime(LocalDateTime time) {
         return time != null ? time.format(TIME_FORMAT) : "";
     }
@@ -452,6 +475,8 @@ public class PaperTradeRecorder {
         private final String blockReason;
         private final String scoreComponents;
         private final String longBonusComponents;
+        private final String decisionSource;
+        private final boolean autoManaged;
         private double highestPrice;
         private double lowestPrice;
         private LocalDateTime highestTime;
@@ -474,7 +499,9 @@ public class PaperTradeRecorder {
                 String rawSignalSummary,
                 String blockReason,
                 String scoreComponents,
-                String longBonusComponents) {
+                String longBonusComponents,
+                String decisionSource,
+                boolean autoManaged) {
             this.symbol = symbol;
             this.orderId = orderId;
             this.entryTime = entryTime;
@@ -492,6 +519,8 @@ public class PaperTradeRecorder {
             this.blockReason = blockReason;
             this.scoreComponents = scoreComponents;
             this.longBonusComponents = longBonusComponents;
+            this.decisionSource = decisionSource;
+            this.autoManaged = autoManaged;
             this.highestPrice = entryPrice;
             this.lowestPrice = entryPrice;
             this.highestTime = entryTime;
@@ -516,7 +545,9 @@ public class PaperTradeRecorder {
                     scanResult != null ? scanResult.getRawSignalSummary() : "",
                     scanResult != null ? scanResult.getBlockReason() : "",
                     PaperTradeRecorder.scoreComponents(scanResult),
-                    PaperTradeRecorder.longBonusComponents(scanResult));
+                    PaperTradeRecorder.longBonusComponents(scanResult),
+                    PaperTradeRecorder.decisionSource(decision, result),
+                    result.isAutoManaged());
         }
 
         static OpenTrade fromUnknownEntry(ExecutionResult result, DecisionResult decision) {
@@ -537,7 +568,9 @@ public class PaperTradeRecorder {
                     "",
                     "",
                     "",
-                    "");
+                    "",
+                    PaperTradeRecorder.decisionSource(decision, result),
+                    result.isAutoManaged());
         }
 
         void observePrice(double price, LocalDateTime timestamp) {
@@ -620,6 +653,14 @@ public class PaperTradeRecorder {
 
         String longBonusComponents() {
             return longBonusComponents;
+        }
+
+        String decisionSource() {
+            return decisionSource;
+        }
+
+        boolean autoManaged() {
+            return autoManaged;
         }
 
         double maeAmount(int quantity) {

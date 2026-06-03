@@ -5,11 +5,17 @@ import com.dreamhouse.trading.core.model.Bar;
 import com.dreamhouse.trading.core.model.DepthLevel;
 import com.dreamhouse.trading.core.model.NewsItem;
 import com.dreamhouse.trading.core.model.Tick;
+import com.dreamhouse.trading.core.monitor.AutoMonitorExecutionGate;
+import com.dreamhouse.trading.core.monitor.AutoMonitorExitPolicy;
 import com.dreamhouse.trading.core.monitor.SignalMonitorConfig;
 import com.dreamhouse.trading.core.monitor.SignalMonitorService;
+import com.dreamhouse.trading.core.monitor.SignalMonitorTemplate;
+import com.dreamhouse.trading.core.monitor.SignalMonitorTemplateManager;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.decision.DecisionConfig;
 import com.dreamhouse.trading.core.decision.DecisionResult;
+import com.dreamhouse.trading.core.decision.risk.RiskManager;
+import com.dreamhouse.trading.core.decision.risk.RiskViolation;
 import com.dreamhouse.trading.core.execution.ExecutionEngine;
 import com.dreamhouse.trading.core.execution.ExecutionMode;
 import com.dreamhouse.trading.core.execution.ExecutionResult;
@@ -73,7 +79,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalDouble;
-import java.util.Properties;
 import java.util.Set;
 
 public class MainFrameWithDocking extends JFrame {
@@ -81,13 +86,8 @@ public class MainFrameWithDocking extends JFrame {
     static final LocalTime DAY_TRADE_FORCE_CLOSE_TIME = LocalTime.of(13, 25);
     private static final ZoneId TAIPEI_ZONE = ZoneId.of("Asia/Taipei");
     private static final Path MONITOR_TEMPLATE_STORE = Path.of("config", "monitor_templates.properties");
-    private record MonitorTemplate(
-            String name,
-            String description,
-            SignalMonitorConfig monitorConfig,
-            DecisionConfig decisionConfig,
-            boolean userDefined) {
-    }
+    private static final SignalMonitorTemplateManager MONITOR_TEMPLATE_MANAGER =
+            new SignalMonitorTemplateManager(MONITOR_TEMPLATE_STORE);
 
     private final DataSourceManager dataSourceManager;
     private MarketDataFeed dataFeed;
@@ -147,6 +147,7 @@ public class MainFrameWithDocking extends JFrame {
     private DecisionConfig monitorDecisionConfig;
     private String monitorStrategyName = "當沖標準趨勢版";
     private Portfolio monitorPortfolio;
+    private RiskManager monitorRiskManager;
     private ExecutionEngine executionEngine;
     private final PaperTradeRecorder paperTradeRecorder = new PaperTradeRecorder();
     private boolean autoTradingEnabled = false;
@@ -982,38 +983,29 @@ public class MainFrameWithDocking extends JFrame {
             return;
         }
 
-        List<Position> positions = new ArrayList<>(monitorPortfolio.getPositions());
-        for (Position position : positions) {
-            String symbol = position.getSymbol();
-            if (!autoManagedPositions.contains(symbol) || position.getQuantity() <= 0) {
-                continue;
-            }
-
-            double closePrice = getCurrentPrice(symbol);
-            if (closePrice <= 0.0) {
-                statusBar.setText("13:25 當沖強制平倉失敗，缺少最新價格：" + symbol);
-                continue;
-            }
-
-            String reason = "13:25 自動監控強制平倉";
-            ExecutionResult result = executionEngine.closePosition(
-                    symbol,
-                    position.getQuantity(),
-                    closePrice,
-                    com.dreamhouse.trading.core.execution.OrderType.MARKET,
-                    reason);
+        String reason = "13:25 auto-monitor force close";
+        Map<String, ExecutionResult> results = executionEngine.forceCloseAutoManagedPositions(
+                this::getCurrentPrice,
+                com.dreamhouse.trading.core.execution.OrderType.MARKET,
+                reason,
+                DecisionResult.DecisionSource.AUTO_MONITOR);
+        for (Map.Entry<String, ExecutionResult> entry : results.entrySet()) {
+            String symbol = entry.getKey();
+            ExecutionResult result = entry.getValue();
             paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "day-trade-cutoff", monitorStrategyName, buildMonitorStrategyDetails());
-            clearAutoPositionState(symbol);
+            if (result.isSuccess()) {
+                clearAutoPositionState(symbol);
+                updateAutoMonitorRiskAfterClose(symbol, result, null);
+            }
             if (executionStatusDock != null) {
                 executionStatusDock.setExecutionEngine(executionEngine);
-                executionStatusDock.updateMarketPrice(symbol, closePrice);
+                executionStatusDock.updateMarketPrice(symbol, result.getExecutedPrice());
             }
             statusBar.setText(result.isSuccess()
-                    ? reason + "：" + symbol + " @ " + String.format("%.2f", closePrice)
-                    : reason + "失敗：" + symbol + "，" + result.getMessage());
+                    ? reason + ": " + symbol + " @ " + String.format("%.2f", result.getExecutedPrice())
+                    : reason + " failed: " + symbol + ": " + result.getMessage());
         }
     }
-
     private boolean isTickForCurrentChart(Tick tick) {
         if (tick == null) {
             return false;
@@ -1057,18 +1049,19 @@ public class MainFrameWithDocking extends JFrame {
         }
 
         boolean stopLossTriggered = stopLoss != null && stopLoss > 0.0 && price <= stopLoss;
+        com.dreamhouse.trading.core.execution.OrderType exitOrderType = stopLossTriggered
+                ? com.dreamhouse.trading.core.execution.OrderType.STOP
+                : com.dreamhouse.trading.core.execution.OrderType.TAKE_PROFIT;
         ExecutionResult result = executionEngine.closePosition(
                 symbol,
                 position.getQuantity(),
                 price,
-                com.dreamhouse.trading.core.execution.OrderType.MARKET,
+                exitOrderType,
                 reason);
         paperTradeRecorder.record(result, null, latestScanResults.get(symbol), "auto-stop", monitorStrategyName, buildMonitorStrategyDetails());
         clearAutoPositionState(symbol);
-        if (result.isSuccess() && stopLossTriggered) {
-            registerStopLossCooldown(symbol);
-        }
         if (result.isSuccess()) {
+            updateAutoMonitorRiskAfterClose(symbol, result, null);
             registerPostExitCooldown(symbol);
         }
         if (executionStatusDock != null) {
@@ -1232,6 +1225,11 @@ public class MainFrameWithDocking extends JFrame {
         autoEntryPrices.remove(symbol);
         autoEntryRiskAmounts.remove(symbol);
         autoRangeEntries.remove(symbol);
+    }
+
+    private boolean isAutoManagedPosition(String symbol) {
+        return autoManagedPositions.contains(symbol)
+                || (executionEngine != null && executionEngine.isAutoManagedPosition(symbol));
     }
 
     private void changeSymbol(String symbol) {
@@ -3472,7 +3470,7 @@ public class MainFrameWithDocking extends JFrame {
                 } else if (pnl > 0.0) {
                     liveReplayConsecutiveLosses = 0;
                 }
-                if (exit.reason().toUpperCase(Locale.ROOT).contains("STOP")) {
+                if (exit.type() == ReplayExitType.STOP_LOSS) {
                     liveReplayStopLossCount++;
                     if (monitorConfig != null && monitorConfig.isStopLossCooldownEnabled()) {
                         registerLiveReplayCooldown(symbol, replayTime, monitorConfig.getStopLossCooldownMinutes());
@@ -3515,7 +3513,7 @@ public class MainFrameWithDocking extends JFrame {
                     && scanResult.getVwap() != null
                     && scanResult.getVwap() > 0.0
                     && price < scanResult.getVwap()) {
-                return new ReplayExit(price, "EXIT_VWAP_BREAK");
+                return new ReplayExit(price, "EXIT_VWAP_BREAK", ReplayExitType.VWAP_BREAK);
             }
             double risk = open.stopLoss() != null ? Math.max(0.0, open.entryPrice() - open.stopLoss()) : 0.0;
             if (holdingMinutes >= 5
@@ -3523,70 +3521,44 @@ public class MainFrameWithDocking extends JFrame {
                     && Boolean.FALSE.equals(scanResult.getVolumeSustain())
                     && risk > 0.0
                     && price < open.entryPrice() + risk * 0.50) {
-                return new ReplayExit(price, "EXIT_VOLUME_FAIL");
+                return new ReplayExit(price, "EXIT_VOLUME_FAIL", ReplayExitType.VOLUME_FAIL);
             }
             if (open.stopLoss() != null && latest.getLow() <= open.stopLoss()) {
-                return new ReplayExit(open.stopLoss(), "EXIT_STOP_LOSS");
+                return new ReplayExit(open.stopLoss(), "EXIT_STOP_LOSS", ReplayExitType.STOP_LOSS);
             }
             if (open.takeProfit() != null && latest.getHigh() >= open.takeProfit()) {
-                return new ReplayExit(open.takeProfit(), "EXIT_TAKE_PROFIT");
+                return new ReplayExit(open.takeProfit(), "EXIT_TAKE_PROFIT", ReplayExitType.TAKE_PROFIT);
             }
             if (replayTime != null && !replayTime.toLocalTime().isBefore(DAY_TRADE_FORCE_CLOSE_TIME)) {
-                return new ReplayExit(latest.getClose(), "EXIT_TIME_FORCE");
+                return new ReplayExit(latest.getClose(), "EXIT_TIME_FORCE", ReplayExitType.FORCE_CLOSE);
             }
             return null;
         }
 
         private String resolveLiveReplayEntryBlockReason(String symbol, LocalDateTime replayTime) {
-            if (liveReplayTradingHalted) {
-                return "live-equivalent replay trading halted";
-            }
-            if (symbol == null || symbol.isBlank() || liveReplayOpenPositions.containsKey(symbol)) {
-                return "position already open";
-            }
-            LocalTime time = replayTime != null ? replayTime.toLocalTime() : LocalTime.now(TAIPEI_ZONE);
-            if (!time.isBefore(DAY_TRADE_FORCE_CLOSE_TIME)) {
-                return "force close window";
-            }
-            if (monitorConfig != null && monitorConfig.getLatestAutoEntryTime() != null
-                    && !time.isBefore(monitorConfig.getLatestAutoEntryTime())) {
-                return "latest entry time reached";
-            }
-            if (monitorConfig != null && monitorConfig.isEarlyEntryBlockEnabled()) {
-                LocalTime start = monitorConfig.getEarlyEntryBlockStart();
-                LocalTime end = monitorConfig.getEarlyEntryBlockEnd();
-                if (start != null && end != null && start.isBefore(end)
-                        && !time.isBefore(start) && time.isBefore(end)) {
-                    return "early entry block";
-                }
-            }
+            LocalDateTime signalTime = replayTime != null ? replayTime : LocalDateTime.now(TAIPEI_ZONE);
             LocalDateTime cooldownUntil = liveReplayStopLossCooldownUntil.get(symbol);
-            if (cooldownUntil != null) {
-                if (replayTime != null && replayTime.isBefore(cooldownUntil)) {
-                    return "stop loss cooldown";
-                }
+            if (cooldownUntil != null && !signalTime.isBefore(cooldownUntil)) {
                 liveReplayStopLossCooldownUntil.remove(symbol);
-            }
-            if (monitorConfig != null && liveReplayEntryCount >= monitorConfig.getDailyMaxAutoTrades()) {
-                return "daily max auto trades reached";
-            }
-            if (monitorConfig != null && monitorConfig.getEntryPacingMinutes() > 0 && liveReplayLastEntryTime != null
-                    && replayTime != null
-                    && replayTime.isBefore(liveReplayLastEntryTime.plusMinutes(monitorConfig.getEntryPacingMinutes()))) {
-                return "entry pacing";
-            }
-            if (monitorConfig != null && monitorConfig.isOneEntryPerFiveMinuteBar()
-                    && replayTime != null
-                    && liveReplayEntryBuckets.contains(fiveMinuteBacktestBucket(replayTime))) {
-                return "one entry per M5";
+                cooldownUntil = null;
             }
             int maxPositions = monitorDecisionConfig != null
                     ? Math.max(1, monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions())
                     : 1;
-            if (liveReplayOpenPositions.size() >= maxPositions) {
-                return "max positions reached";
-            }
-            return null;
+            AutoMonitorExecutionGate.GateDecision gateDecision = AutoMonitorExecutionGate.evaluateOpenLong(
+                    AutoMonitorExecutionGate.GateConfig.from(monitorConfig),
+                    new AutoMonitorExecutionGate.GateState(
+                            symbol,
+                            signalTime,
+                            liveReplayTradingHalted,
+                            symbol == null || symbol.isBlank() || liveReplayOpenPositions.containsKey(symbol),
+                            cooldownUntil,
+                            liveReplayEntryCount,
+                            liveReplayLastEntryTime,
+                            liveReplayEntryBuckets,
+                            liveReplayOpenPositions.size(),
+                            maxPositions));
+            return gateDecision.allowed() ? null : gateDecision.reason();
         }
 
         private boolean isNewLiveReplaySignal(String symbol, LocalDateTime replayTime) {
@@ -3682,7 +3654,15 @@ public class MainFrameWithDocking extends JFrame {
                 Trade entryTrade) {
         }
 
-        private record ReplayExit(double price, String reason) {
+        private record ReplayExit(double price, String reason, ReplayExitType type) {
+        }
+
+        private enum ReplayExitType {
+            STOP_LOSS,
+            TAKE_PROFIT,
+            VWAP_BREAK,
+            VOLUME_FAIL,
+            FORCE_CLOSE
         }
 
         private Map<String, List<Bar>> normalizeReplayBars(Map<String, List<Bar>> source) {
@@ -4587,6 +4567,7 @@ public class MainFrameWithDocking extends JFrame {
                 ? monitorDecisionConfig
                 : createDayTradeStandardMonitorConfig();
         monitorPortfolio = monitorPortfolio != null ? monitorPortfolio : new Portfolio(1_000_000.0);
+        monitorRiskManager = new RiskManager(monitorDecisionConfig.getRiskConfig(), monitorPortfolio);
         executionEngine = new ExecutionEngine(ExecutionMode.PAPER_TRADING, monitorPortfolio, 0.001425, 0.0015);
         if (executionStatusDock != null) {
             executionStatusDock.setExecutionEngine(executionEngine);
@@ -4777,23 +4758,6 @@ public class MainFrameWithDocking extends JFrame {
         return config;
     }
 
-    private DecisionConfig createDayTradeMomentumMonitorConfig() {
-        DecisionConfig config = DecisionConfig.createDefault();
-        config.setRegimeDetectionEnabled(false);
-        config.setTrendAnalysisEnabled(false);
-        config.setRiskManagementEnabled(true);
-        config.getVotingConfig().setLongEntryThreshold(0.45);
-        config.getVotingConfig().setShortEntryThreshold(0.95);
-        config.getVotingConfig().setExitThreshold(0.30);
-        config.getVotingConfig().setMinVotingStrategies(1);
-        config.getRiskConfig().setMinRiskRewardRatio(1.8);
-        config.getRiskConfig().setMaxConcurrentPositions(3);
-        config.getRiskConfig().setMaxPositionSizePercent(0.25);
-        config.getRiskConfig().setMinCashReservePercent(0.10);
-        config.getRiskConfig().setAllowShortSelling(false);
-        return config;
-    }
-
     private String getMonitorTemplateDescription(int index) {
         return switch (index) {
             case 1 -> "A組穩健 EMA8/34：跨日暖機、阻擋均線單因子、突破後一根 K 確認，最低分數 0.45。";
@@ -4812,498 +4776,35 @@ public class MainFrameWithDocking extends JFrame {
         };
     }
 
-    private List<MonitorTemplate> loadMonitorTemplatesForDialog() {
-        List<MonitorTemplate> templates = new ArrayList<>();
-        templates.add(new MonitorTemplate(
-                "目前設定",
-                "保留目前畫面設定，不套用任何模板。",
-                copyMonitorConfig(monitorConfig != null ? monitorConfig : SignalMonitorConfig.createDefault()),
-                copyDecisionConfig(monitorDecisionConfig != null ? monitorDecisionConfig : createDayTradeStandardMonitorConfig()),
-                false));
-        templates.add(new MonitorTemplate(getMonitorTemplateName(1), getMonitorTemplateDescription(1),
-                SignalMonitorConfig.createDayTradeGroupATemplate(), createBConvergenceMonitorConfig(), false));
-        templates.add(new MonitorTemplate(getMonitorTemplateName(2), getMonitorTemplateDescription(2),
-                SignalMonitorConfig.createDayTradeGroupBTemplate(), createBConvergenceMonitorConfig(), false));
-        templates.add(new MonitorTemplate(getMonitorTemplateName(3), getMonitorTemplateDescription(3),
-                SignalMonitorConfig.createDayTradeGroupCTemplate(), createBConvergenceMonitorConfig(), false));
-        templates.addAll(loadUserMonitorTemplates());
-        return templates;
+    private List<SignalMonitorTemplate> loadMonitorTemplatesForDialog() {
+        return MONITOR_TEMPLATE_MANAGER.loadTemplatesForDialog(monitorConfig, monitorDecisionConfig);
     }
 
     private SignalMonitorConfig copyMonitorConfig(SignalMonitorConfig source) {
-        SignalMonitorConfig copy = new SignalMonitorConfig();
-        if (source == null) {
-            return copy;
-        }
-        copy.setScanIntervalSeconds(source.getScanIntervalSeconds());
-        copy.setTimeframe(source.getTimeframe());
-        copy.setMinSignalIntervalMinutes(source.getMinSignalIntervalMinutes());
-        copy.setBarCount(source.getBarCount());
-        copy.setTradeMode(source.getTradeMode());
-        copy.setBatchScanMode(source.isBatchScanMode());
-        copy.setRadarStrategyConfig(source.getRadarStrategyConfig() != null
-                ? source.getRadarStrategyConfig().copy()
-                : RadarStrategyConfig.createDefault());
-        copy.setEarlyEntryBlockEnabled(source.isEarlyEntryBlockEnabled());
-        copy.setEarlyEntryBlockStart(source.getEarlyEntryBlockStart());
-        copy.setEarlyEntryBlockEnd(source.getEarlyEntryBlockEnd());
-        copy.setStopLossCooldownEnabled(source.isStopLossCooldownEnabled());
-        copy.setStopLossCooldownMinutes(source.getStopLossCooldownMinutes());
-        copy.setLatestAutoEntryTime(source.getLatestAutoEntryTime());
-        copy.setDailyMaxLoss(source.getDailyMaxLoss());
-        copy.setDailyMaxStopLossCount(source.getDailyMaxStopLossCount());
-        copy.setConsecutiveLossLimit(source.getConsecutiveLossLimit());
-        copy.setDisableTradingAfterLossLimit(source.isDisableTradingAfterLossLimit());
-        copy.setDailyMaxAutoTrades(source.getDailyMaxAutoTrades());
-        copy.setEntryPacingMinutes(source.getEntryPacingMinutes());
-        copy.setPostExitCooldownMinutes(source.getPostExitCooldownMinutes());
-        copy.setOneEntryPerFiveMinuteBar(source.isOneEntryPerFiveMinuteBar());
-        copy.setRangeFailureExitEnabled(source.isRangeFailureExitEnabled());
-        copy.setRangeFailureExitMinutes(source.getRangeFailureExitMinutes());
-        copy.setRangeFailureMinR(source.getRangeFailureMinR());
-        copy.setRangeFailureVolumeSustainExitEnabled(source.isRangeFailureVolumeSustainExitEnabled());
-        copy.setRsiPeriod(source.getRsiPeriod());
-        copy.setRsiOversold(source.getRsiOversold());
-        copy.setRsiOverbought(source.getRsiOverbought());
-        return copy;
+        return SignalMonitorTemplateManager.copyMonitorConfig(source);
     }
 
-    private List<MonitorTemplate> loadUserMonitorTemplates() {
-        if (!Files.exists(MONITOR_TEMPLATE_STORE)) {
-            return List.of();
-        }
-        Properties props = new Properties();
-        try (InputStream input = Files.newInputStream(MONITOR_TEMPLATE_STORE)) {
-            props.load(input);
-        } catch (IOException e) {
-            System.err.println("[MonitorTemplates] load failed: " + e.getMessage());
-            return List.of();
-        }
-        int count = parseInt(props.getProperty("count"), 0);
-        List<MonitorTemplate> templates = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            String prefix = "template." + i + ".";
-            String name = props.getProperty(prefix + "name", "").trim();
-            if (name.isEmpty()) {
-                continue;
-            }
-            SignalMonitorConfig monitor = readMonitorConfig(props, prefix);
-            DecisionConfig decision = readDecisionConfig(props, prefix);
-            templates.add(new MonitorTemplate(
-                    name,
-                    props.getProperty(prefix + "description", "使用者自訂模板：" + name),
-                    monitor,
-                    decision,
-                    true));
-        }
-        return templates;
+    private List<SignalMonitorTemplate> loadUserMonitorTemplates() {
+        return MONITOR_TEMPLATE_MANAGER.loadUserTemplates();
     }
 
-    private void saveUserMonitorTemplate(MonitorTemplate newTemplate) {
-        LinkedHashMap<String, MonitorTemplate> templates = new LinkedHashMap<>();
-        for (MonitorTemplate template : loadUserMonitorTemplates()) {
-            templates.put(template.name(), template);
-        }
-        templates.put(newTemplate.name(), newTemplate);
-
-        Properties props = new Properties();
-        props.setProperty("count", String.valueOf(templates.size()));
-        int index = 0;
-        for (MonitorTemplate template : templates.values()) {
-            String prefix = "template." + index++ + ".";
-            props.setProperty(prefix + "name", template.name());
-            props.setProperty(prefix + "description", template.description());
-            writeMonitorConfig(props, prefix, template.monitorConfig());
-            writeDecisionConfig(props, prefix, template.decisionConfig());
-        }
-        try {
-            Files.createDirectories(MONITOR_TEMPLATE_STORE.getParent());
-            try (OutputStream output = Files.newOutputStream(MONITOR_TEMPLATE_STORE)) {
-                props.store(output, "DreamHouseTrading user monitor templates");
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException("儲存監控模板失敗：" + e.getMessage(), e);
-        }
+    private void saveUserMonitorTemplate(SignalMonitorTemplate newTemplate) {
+        MONITOR_TEMPLATE_MANAGER.saveUserTemplate(newTemplate);
     }
 
     private boolean deleteUserMonitorTemplate(String templateName) {
-        LinkedHashMap<String, MonitorTemplate> templates = new LinkedHashMap<>();
-        for (MonitorTemplate template : loadUserMonitorTemplates()) {
-            templates.put(template.name(), template);
-        }
-        if (templates.remove(templateName) == null) {
-            return false;
-        }
-
-        Properties props = new Properties();
-        props.setProperty("count", String.valueOf(templates.size()));
-        int index = 0;
-        for (MonitorTemplate template : templates.values()) {
-            String prefix = "template." + index++ + ".";
-            props.setProperty(prefix + "name", template.name());
-            props.setProperty(prefix + "description", template.description());
-            writeMonitorConfig(props, prefix, template.monitorConfig());
-            writeDecisionConfig(props, prefix, template.decisionConfig());
-        }
-        try {
-            Files.createDirectories(MONITOR_TEMPLATE_STORE.getParent());
-            try (OutputStream output = Files.newOutputStream(MONITOR_TEMPLATE_STORE)) {
-                props.store(output, "DreamHouseTrading user monitor templates");
-            }
-            return true;
-        } catch (IOException e) {
-            throw new IllegalStateException("刪除監控模板失敗：" + e.getMessage(), e);
-        }
-    }
-
-    private void writeMonitorConfig(Properties props, String prefix, SignalMonitorConfig monitor) {
-        RadarStrategyConfig radar = monitor.getRadarStrategyConfig() != null
-                ? monitor.getRadarStrategyConfig()
-                : RadarStrategyConfig.createDefault();
-        props.setProperty(prefix + "scanIntervalSeconds", String.valueOf(monitor.getScanIntervalSeconds()));
-        props.setProperty(prefix + "timeframe", monitor.getTimeframe().name());
-        props.setProperty(prefix + "minSignalIntervalMinutes", String.valueOf(monitor.getMinSignalIntervalMinutes()));
-        props.setProperty(prefix + "barCount", String.valueOf(monitor.getBarCount()));
-        props.setProperty(prefix + "earlyEntryBlockEnabled", String.valueOf(monitor.isEarlyEntryBlockEnabled()));
-        props.setProperty(prefix + "earlyEntryBlockStart", monitor.getEarlyEntryBlockStart().toString());
-        props.setProperty(prefix + "earlyEntryBlockEnd", monitor.getEarlyEntryBlockEnd().toString());
-        props.setProperty(prefix + "stopLossCooldownEnabled", String.valueOf(monitor.isStopLossCooldownEnabled()));
-        props.setProperty(prefix + "stopLossCooldownMinutes", String.valueOf(monitor.getStopLossCooldownMinutes()));
-        props.setProperty(prefix + "latestAutoEntryTime", monitor.getLatestAutoEntryTime().toString());
-        props.setProperty(prefix + "dailyMaxLoss", String.valueOf(monitor.getDailyMaxLoss()));
-        props.setProperty(prefix + "dailyMaxStopLossCount", String.valueOf(monitor.getDailyMaxStopLossCount()));
-        props.setProperty(prefix + "consecutiveLossLimit", String.valueOf(monitor.getConsecutiveLossLimit()));
-        props.setProperty(prefix + "disableTradingAfterLossLimit", String.valueOf(monitor.isDisableTradingAfterLossLimit()));
-        props.setProperty(prefix + "dailyMaxAutoTrades", String.valueOf(monitor.getDailyMaxAutoTrades()));
-        props.setProperty(prefix + "entryPacingMinutes", String.valueOf(monitor.getEntryPacingMinutes()));
-        props.setProperty(prefix + "postExitCooldownMinutes", String.valueOf(monitor.getPostExitCooldownMinutes()));
-        props.setProperty(prefix + "oneEntryPerFiveMinuteBar", String.valueOf(monitor.isOneEntryPerFiveMinuteBar()));
-        props.setProperty(prefix + "rangeFailureExitEnabled", String.valueOf(monitor.isRangeFailureExitEnabled()));
-        props.setProperty(prefix + "rangeFailureExitMinutes", String.valueOf(monitor.getRangeFailureExitMinutes()));
-        props.setProperty(prefix + "rangeFailureMinR", String.valueOf(monitor.getRangeFailureMinR()));
-        props.setProperty(prefix + "rangeFailureVolumeSustainExitEnabled", String.valueOf(monitor.isRangeFailureVolumeSustainExitEnabled()));
-
-        props.setProperty(prefix + "radar.dayTradeTimeframe", radar.getDayTradeTimeframe().name());
-        props.setProperty(prefix + "radar.executionConfirmationTimeframe", radar.getExecutionConfirmationTimeframe().name());
-        props.setProperty(prefix + "radar.dayTradeBarCount", String.valueOf(radar.getDayTradeBarCount()));
-        props.setProperty(prefix + "radar.rsiEnabled", String.valueOf(radar.isRsiEnabled()));
-        props.setProperty(prefix + "radar.rsiPeriod", String.valueOf(radar.getRsiPeriod()));
-        props.setProperty(prefix + "radar.rsiOversold", String.valueOf(radar.getRsiOversold()));
-        props.setProperty(prefix + "radar.rsiOverbought", String.valueOf(radar.getRsiOverbought()));
-        props.setProperty(prefix + "radar.rsiWeight", String.valueOf(radar.getRsiWeight()));
-        props.setProperty(prefix + "radar.requireRsiEntryConfirmation", String.valueOf(radar.isRequireRsiEntryConfirmation()));
-        props.setProperty(prefix + "radar.movingAverageEnabled", String.valueOf(radar.isMovingAverageEnabled()));
-        props.setProperty(prefix + "radar.movingAverageType", radar.getMovingAverageType().name());
-        props.setProperty(prefix + "radar.fastMovingAveragePeriod", String.valueOf(radar.getFastMovingAveragePeriod()));
-        props.setProperty(prefix + "radar.slowMovingAveragePeriod", String.valueOf(radar.getSlowMovingAveragePeriod()));
-        props.setProperty(prefix + "radar.movingAverageWeight", String.valueOf(radar.getMovingAverageWeight()));
-        props.setProperty(prefix + "radar.volumeBreakoutEnabled", String.valueOf(radar.isVolumeBreakoutEnabled()));
-        props.setProperty(prefix + "radar.breakoutLookbackBars", String.valueOf(radar.getBreakoutLookbackBars()));
-        props.setProperty(prefix + "radar.volumeMultiplier", String.valueOf(radar.getVolumeMultiplier()));
-        props.setProperty(prefix + "radar.volumeBreakoutWeight", String.valueOf(radar.getVolumeBreakoutWeight()));
-        props.setProperty(prefix + "radar.minimumEntryScore", String.valueOf(radar.getMinimumEntryScore()));
-        props.setProperty(prefix + "radar.blockBreakoutOnRsiOverbought", String.valueOf(radar.isBlockBreakoutOnRsiOverbought()));
-        props.setProperty(prefix + "radar.requireBreakoutContinuation", String.valueOf(radar.isRequireBreakoutContinuation()));
-        props.setProperty(prefix + "radar.requirePriceAboveVwapForLong", String.valueOf(radar.isRequirePriceAboveVwapForLong()));
-        props.setProperty(prefix + "radar.requireBreakoutNextBarConfirmation", String.valueOf(radar.isRequireBreakoutNextBarConfirmation()));
-        props.setProperty(prefix + "radar.blockMovingAverageOnlyEntry", String.valueOf(radar.isBlockMovingAverageOnlyEntry()));
-        props.setProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent", String.valueOf(radar.getMaxEntryRiseFromRecentLowPercent()));
-        props.setProperty(prefix + "radar.marketRegimeFilterEnabled", String.valueOf(radar.isMarketRegimeFilterEnabled()));
-        props.setProperty(prefix + "radar.weakMarketStrictLongEnabled", String.valueOf(radar.isWeakMarketStrictLongEnabled()));
-        props.setProperty(prefix + "radar.weakMarketLongPolicy", radar.getWeakMarketLongPolicy().name());
-        props.setProperty(prefix + "radar.weakOutperformBenchmarkPercent", String.valueOf(radar.getWeakOutperformBenchmarkPercent()));
-        props.setProperty(prefix + "radar.weakOutperformIndustryPercent", String.valueOf(radar.getWeakOutperformIndustryPercent()));
-        props.setProperty(prefix + "radar.internalAllowVwapPassPercent", String.valueOf(radar.getInternalAllowVwapPassPercent()));
-        props.setProperty(prefix + "radar.internalAllowAverageReturnPercent", String.valueOf(radar.getInternalAllowAverageReturnPercent()));
-        props.setProperty(prefix + "radar.internalAllowVolumeSustainPercent", String.valueOf(radar.getInternalAllowVolumeSustainPercent()));
-        props.setProperty(prefix + "radar.internalBlockVwapPassPercent", String.valueOf(radar.getInternalBlockVwapPassPercent()));
-        props.setProperty(prefix + "radar.internalBlockAverageReturnPercent", String.valueOf(radar.getInternalBlockAverageReturnPercent()));
-        props.setProperty(prefix + "radar.internalBlockNewLowExcessCount", String.valueOf(radar.getInternalBlockNewLowExcessCount()));
-        props.setProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume", String.valueOf(radar.isRangeMarketRequiresVwapAndVolume()));
-        props.setProperty(prefix + "radar.volumeSustainEnabled", String.valueOf(radar.isVolumeSustainEnabled()));
-        props.setProperty(prefix + "radar.atrRiskEnabled", String.valueOf(radar.isAtrRiskEnabled()));
-        props.setProperty(prefix + "radar.atrChaseLimitEnabled", String.valueOf(radar.isAtrChaseLimitEnabled()));
-        props.setProperty(prefix + "radar.atrPeriod", String.valueOf(radar.getAtrPeriod()));
-        props.setProperty(prefix + "radar.atrStopMultiplier", String.valueOf(radar.getAtrStopMultiplier()));
-        props.setProperty(prefix + "radar.atrTakeProfitMultiplier", String.valueOf(radar.getAtrTakeProfitMultiplier()));
-        props.setProperty(prefix + "radar.atrChaseLimitMultiplier", String.valueOf(radar.getAtrChaseLimitMultiplier()));
-        props.setProperty(prefix + "radar.backtestCrossDayWarmupEnabled", String.valueOf(radar.isBacktestCrossDayWarmupEnabled()));
-        props.setProperty(prefix + "radar.backtestWarmupBarCount", String.valueOf(radar.getBacktestWarmupBarCount()));
-    }
-
-    private SignalMonitorConfig readMonitorConfig(Properties props, String prefix) {
-        SignalMonitorConfig monitor = SignalMonitorConfig.createDayTradeStandardTemplate();
-        RadarStrategyConfig radar = monitor.getRadarStrategyConfig().copy();
-        monitor.setScanIntervalSeconds(parseInt(props.getProperty(prefix + "scanIntervalSeconds"), monitor.getScanIntervalSeconds()));
-        monitor.setTimeframe(parseEnum(props.getProperty(prefix + "timeframe"), Timeframe.class, monitor.getTimeframe()));
-        monitor.setMinSignalIntervalMinutes(parseInt(props.getProperty(prefix + "minSignalIntervalMinutes"), monitor.getMinSignalIntervalMinutes()));
-        monitor.setBarCount(parseInt(props.getProperty(prefix + "barCount"), monitor.getBarCount()));
-        monitor.setEarlyEntryBlockEnabled(parseBoolean(props.getProperty(prefix + "earlyEntryBlockEnabled"), monitor.isEarlyEntryBlockEnabled()));
-        monitor.setEarlyEntryBlockStart(parseTime(props.getProperty(prefix + "earlyEntryBlockStart"), monitor.getEarlyEntryBlockStart()));
-        monitor.setEarlyEntryBlockEnd(parseTime(props.getProperty(prefix + "earlyEntryBlockEnd"), monitor.getEarlyEntryBlockEnd()));
-        monitor.setStopLossCooldownEnabled(parseBoolean(props.getProperty(prefix + "stopLossCooldownEnabled"), monitor.isStopLossCooldownEnabled()));
-        monitor.setStopLossCooldownMinutes(parseInt(props.getProperty(prefix + "stopLossCooldownMinutes"), monitor.getStopLossCooldownMinutes()));
-        monitor.setLatestAutoEntryTime(parseTime(props.getProperty(prefix + "latestAutoEntryTime"), monitor.getLatestAutoEntryTime()));
-        monitor.setDailyMaxLoss(parseDouble(props.getProperty(prefix + "dailyMaxLoss"), monitor.getDailyMaxLoss()));
-        monitor.setDailyMaxStopLossCount(parseInt(props.getProperty(prefix + "dailyMaxStopLossCount"), monitor.getDailyMaxStopLossCount()));
-        monitor.setConsecutiveLossLimit(parseInt(props.getProperty(prefix + "consecutiveLossLimit"), monitor.getConsecutiveLossLimit()));
-        monitor.setDisableTradingAfterLossLimit(parseBoolean(props.getProperty(prefix + "disableTradingAfterLossLimit"), monitor.isDisableTradingAfterLossLimit()));
-        monitor.setDailyMaxAutoTrades(parseInt(props.getProperty(prefix + "dailyMaxAutoTrades"), monitor.getDailyMaxAutoTrades()));
-        monitor.setEntryPacingMinutes(parseInt(props.getProperty(prefix + "entryPacingMinutes"), monitor.getEntryPacingMinutes()));
-        monitor.setPostExitCooldownMinutes(parseInt(props.getProperty(prefix + "postExitCooldownMinutes"), monitor.getPostExitCooldownMinutes()));
-        monitor.setOneEntryPerFiveMinuteBar(parseBoolean(props.getProperty(prefix + "oneEntryPerFiveMinuteBar"), monitor.isOneEntryPerFiveMinuteBar()));
-        monitor.setRangeFailureExitEnabled(parseBoolean(props.getProperty(prefix + "rangeFailureExitEnabled"), monitor.isRangeFailureExitEnabled()));
-        monitor.setRangeFailureExitMinutes(parseInt(props.getProperty(prefix + "rangeFailureExitMinutes"), monitor.getRangeFailureExitMinutes()));
-        monitor.setRangeFailureMinR(parseDouble(props.getProperty(prefix + "rangeFailureMinR"), monitor.getRangeFailureMinR()));
-        monitor.setRangeFailureVolumeSustainExitEnabled(parseBoolean(props.getProperty(prefix + "rangeFailureVolumeSustainExitEnabled"), monitor.isRangeFailureVolumeSustainExitEnabled()));
-
-        radar.setDayTradeTimeframe(parseEnum(props.getProperty(prefix + "radar.dayTradeTimeframe"), Timeframe.class, radar.getDayTradeTimeframe()));
-        radar.setExecutionConfirmationTimeframe(parseEnum(props.getProperty(prefix + "radar.executionConfirmationTimeframe"), Timeframe.class, radar.getExecutionConfirmationTimeframe()));
-        radar.setDayTradeBarCount(parseInt(props.getProperty(prefix + "radar.dayTradeBarCount"), radar.getDayTradeBarCount()));
-        radar.setRsiEnabled(parseBoolean(props.getProperty(prefix + "radar.rsiEnabled"), radar.isRsiEnabled()));
-        radar.setRsiPeriod(parseInt(props.getProperty(prefix + "radar.rsiPeriod"), radar.getRsiPeriod()));
-        radar.setRsiOversold(parseDouble(props.getProperty(prefix + "radar.rsiOversold"), radar.getRsiOversold()));
-        radar.setRsiOverbought(parseDouble(props.getProperty(prefix + "radar.rsiOverbought"), radar.getRsiOverbought()));
-        radar.setRsiWeight(parseDouble(props.getProperty(prefix + "radar.rsiWeight"), radar.getRsiWeight()));
-        radar.setRequireRsiEntryConfirmation(parseBoolean(props.getProperty(prefix + "radar.requireRsiEntryConfirmation"), radar.isRequireRsiEntryConfirmation()));
-        radar.setMovingAverageEnabled(parseBoolean(props.getProperty(prefix + "radar.movingAverageEnabled"), radar.isMovingAverageEnabled()));
-        radar.setMovingAverageType(parseEnum(props.getProperty(prefix + "radar.movingAverageType"), RadarStrategyConfig.MovingAverageType.class, radar.getMovingAverageType()));
-        radar.setFastMovingAveragePeriod(parseInt(props.getProperty(prefix + "radar.fastMovingAveragePeriod"), radar.getFastMovingAveragePeriod()));
-        radar.setSlowMovingAveragePeriod(parseInt(props.getProperty(prefix + "radar.slowMovingAveragePeriod"), radar.getSlowMovingAveragePeriod()));
-        radar.setMovingAverageWeight(parseDouble(props.getProperty(prefix + "radar.movingAverageWeight"), radar.getMovingAverageWeight()));
-        radar.setVolumeBreakoutEnabled(parseBoolean(props.getProperty(prefix + "radar.volumeBreakoutEnabled"), radar.isVolumeBreakoutEnabled()));
-        radar.setBreakoutLookbackBars(parseInt(props.getProperty(prefix + "radar.breakoutLookbackBars"), radar.getBreakoutLookbackBars()));
-        radar.setVolumeMultiplier(parseDouble(props.getProperty(prefix + "radar.volumeMultiplier"), radar.getVolumeMultiplier()));
-        radar.setVolumeBreakoutWeight(parseDouble(props.getProperty(prefix + "radar.volumeBreakoutWeight"), radar.getVolumeBreakoutWeight()));
-        radar.setMinimumEntryScore(parseDouble(props.getProperty(prefix + "radar.minimumEntryScore"), radar.getMinimumEntryScore()));
-        radar.setBlockBreakoutOnRsiOverbought(parseBoolean(props.getProperty(prefix + "radar.blockBreakoutOnRsiOverbought"), radar.isBlockBreakoutOnRsiOverbought()));
-        radar.setRequireBreakoutContinuation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutContinuation"), radar.isRequireBreakoutContinuation()));
-        radar.setRequirePriceAboveVwapForLong(parseBoolean(props.getProperty(prefix + "radar.requirePriceAboveVwapForLong"), radar.isRequirePriceAboveVwapForLong()));
-        radar.setRequireBreakoutNextBarConfirmation(parseBoolean(props.getProperty(prefix + "radar.requireBreakoutNextBarConfirmation"), radar.isRequireBreakoutNextBarConfirmation()));
-        radar.setBlockMovingAverageOnlyEntry(parseBoolean(props.getProperty(prefix + "radar.blockMovingAverageOnlyEntry"), radar.isBlockMovingAverageOnlyEntry()));
-        radar.setMaxEntryRiseFromRecentLowPercent(parseDouble(props.getProperty(prefix + "radar.maxEntryRiseFromRecentLowPercent"), radar.getMaxEntryRiseFromRecentLowPercent()));
-        radar.setMarketRegimeFilterEnabled(parseBoolean(props.getProperty(prefix + "radar.marketRegimeFilterEnabled"), radar.isMarketRegimeFilterEnabled()));
-        radar.setWeakMarketStrictLongEnabled(parseBoolean(props.getProperty(prefix + "radar.weakMarketStrictLongEnabled"), radar.isWeakMarketStrictLongEnabled()));
-        radar.setWeakMarketLongPolicy(parseEnum(props.getProperty(prefix + "radar.weakMarketLongPolicy"), WeakMarketLongPolicy.class, radar.getWeakMarketLongPolicy()));
-        radar.setWeakOutperformBenchmarkPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformBenchmarkPercent"), radar.getWeakOutperformBenchmarkPercent()));
-        radar.setWeakOutperformIndustryPercent(parseDouble(props.getProperty(prefix + "radar.weakOutperformIndustryPercent"), radar.getWeakOutperformIndustryPercent()));
-        radar.setInternalAllowVwapPassPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowVwapPassPercent"), radar.getInternalAllowVwapPassPercent()));
-        radar.setInternalAllowAverageReturnPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowAverageReturnPercent"), radar.getInternalAllowAverageReturnPercent()));
-        radar.setInternalAllowVolumeSustainPercent(parseDouble(props.getProperty(prefix + "radar.internalAllowVolumeSustainPercent"), radar.getInternalAllowVolumeSustainPercent()));
-        radar.setInternalBlockVwapPassPercent(parseDouble(props.getProperty(prefix + "radar.internalBlockVwapPassPercent"), radar.getInternalBlockVwapPassPercent()));
-        radar.setInternalBlockAverageReturnPercent(parseDouble(props.getProperty(prefix + "radar.internalBlockAverageReturnPercent"), radar.getInternalBlockAverageReturnPercent()));
-        radar.setInternalBlockNewLowExcessCount(parseInt(props.getProperty(prefix + "radar.internalBlockNewLowExcessCount"), radar.getInternalBlockNewLowExcessCount()));
-        radar.setRangeMarketRequiresVwapAndVolume(parseBoolean(props.getProperty(prefix + "radar.rangeMarketRequiresVwapAndVolume"), radar.isRangeMarketRequiresVwapAndVolume()));
-        radar.setVolumeSustainEnabled(parseBoolean(props.getProperty(prefix + "radar.volumeSustainEnabled"), radar.isVolumeSustainEnabled()));
-        radar.setAtrRiskEnabled(parseBoolean(props.getProperty(prefix + "radar.atrRiskEnabled"), radar.isAtrRiskEnabled()));
-        radar.setAtrChaseLimitEnabled(parseBoolean(props.getProperty(prefix + "radar.atrChaseLimitEnabled"), radar.isAtrChaseLimitEnabled()));
-        radar.setAtrPeriod(parseInt(props.getProperty(prefix + "radar.atrPeriod"), radar.getAtrPeriod()));
-        radar.setAtrStopMultiplier(parseDouble(props.getProperty(prefix + "radar.atrStopMultiplier"), radar.getAtrStopMultiplier()));
-        radar.setAtrTakeProfitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrTakeProfitMultiplier"), radar.getAtrTakeProfitMultiplier()));
-        radar.setAtrChaseLimitMultiplier(parseDouble(props.getProperty(prefix + "radar.atrChaseLimitMultiplier"), radar.getAtrChaseLimitMultiplier()));
-        radar.setBacktestCrossDayWarmupEnabled(parseBoolean(props.getProperty(prefix + "radar.backtestCrossDayWarmupEnabled"), radar.isBacktestCrossDayWarmupEnabled()));
-        radar.setBacktestWarmupBarCount(parseInt(props.getProperty(prefix + "radar.backtestWarmupBarCount"), radar.getBacktestWarmupBarCount()));
-        monitor.setRadarStrategyConfig(radar);
-        return monitor;
-    }
-
-    private void writeDecisionConfig(Properties props, String prefix, DecisionConfig decision) {
-        props.setProperty(prefix + "decision.longEntryThreshold", String.valueOf(decision.getVotingConfig().getLongEntryThreshold()));
-        props.setProperty(prefix + "decision.exitThreshold", String.valueOf(decision.getVotingConfig().getExitThreshold()));
-        props.setProperty(prefix + "decision.minVotingStrategies", String.valueOf(decision.getVotingConfig().getMinVotingStrategies()));
-        props.setProperty(prefix + "decision.riskManagementEnabled", String.valueOf(decision.isRiskManagementEnabled()));
-        props.setProperty(prefix + "decision.maxConcurrentPositions", String.valueOf(decision.getRiskConfig().getMaxConcurrentPositions()));
-        props.setProperty(prefix + "decision.minRiskRewardRatio", String.valueOf(decision.getRiskConfig().getMinRiskRewardRatio()));
-        props.setProperty(prefix + "decision.minVolatilityPercent", String.valueOf(decision.getRiskConfig().getMinVolatilityPercent()));
-        props.setProperty(prefix + "decision.maxVolatilityPercent", String.valueOf(decision.getRiskConfig().getMaxVolatilityPercent()));
-    }
-
-    private DecisionConfig readDecisionConfig(Properties props, String prefix) {
-        DecisionConfig decision = createDayTradeStandardMonitorConfig();
-        decision.getVotingConfig().setLongEntryThreshold(parseDouble(props.getProperty(prefix + "decision.longEntryThreshold"), decision.getVotingConfig().getLongEntryThreshold()));
-        decision.getVotingConfig().setExitThreshold(parseDouble(props.getProperty(prefix + "decision.exitThreshold"), decision.getVotingConfig().getExitThreshold()));
-        decision.getVotingConfig().setMinVotingStrategies(parseInt(props.getProperty(prefix + "decision.minVotingStrategies"), decision.getVotingConfig().getMinVotingStrategies()));
-        decision.setRiskManagementEnabled(parseBoolean(props.getProperty(prefix + "decision.riskManagementEnabled"), decision.isRiskManagementEnabled()));
-        decision.getRiskConfig().setMaxConcurrentPositions(parseInt(props.getProperty(prefix + "decision.maxConcurrentPositions"), decision.getRiskConfig().getMaxConcurrentPositions()));
-        decision.getRiskConfig().setMinRiskRewardRatio(parseDouble(props.getProperty(prefix + "decision.minRiskRewardRatio"), decision.getRiskConfig().getMinRiskRewardRatio()));
-        decision.getRiskConfig().setMinVolatilityPercent(parseDouble(props.getProperty(prefix + "decision.minVolatilityPercent"), decision.getRiskConfig().getMinVolatilityPercent()));
-        decision.getRiskConfig().setMaxVolatilityPercent(parseDouble(props.getProperty(prefix + "decision.maxVolatilityPercent"), decision.getRiskConfig().getMaxVolatilityPercent()));
-        decision.getRiskConfig().setAllowShortSelling(false);
-        return decision;
-    }
-
-    private int parseInt(String value, int fallback) {
-        try {
-            return value == null ? fallback : Integer.parseInt(value.trim());
-        } catch (RuntimeException e) {
-            return fallback;
-        }
-    }
-
-    private double parseDouble(String value, double fallback) {
-        try {
-            return value == null ? fallback : Double.parseDouble(value.trim());
-        } catch (RuntimeException e) {
-            return fallback;
-        }
-    }
-
-    private boolean parseBoolean(String value, boolean fallback) {
-        return value == null ? fallback : Boolean.parseBoolean(value.trim());
-    }
-
-    private LocalTime parseTime(String value, LocalTime fallback) {
-        try {
-            return value == null ? fallback : LocalTime.parse(value.trim());
-        } catch (RuntimeException e) {
-            return fallback;
-        }
-    }
-
-    private <E extends Enum<E>> E parseEnum(String value, Class<E> type, E fallback) {
-        try {
-            return value == null ? fallback : Enum.valueOf(type, value.trim());
-        } catch (RuntimeException e) {
-            return fallback;
-        }
+        return MONITOR_TEMPLATE_MANAGER.deleteUserTemplate(templateName);
     }
 
     private String buildMonitorStrategyDetails() {
-        SignalMonitorConfig activeMonitorConfig = monitorConfig != null
-                ? monitorConfig
-                : SignalMonitorConfig.createDayTradeStandardTemplate();
-        RadarStrategyConfig radar = activeMonitorConfig.getRadarStrategyConfig() != null
-                ? activeMonitorConfig.getRadarStrategyConfig()
-                : RadarStrategyConfig.createDefault();
-        DecisionConfig activeDecisionConfig = monitorDecisionConfig != null
-                ? monitorDecisionConfig
-                : createDayTradeStandardMonitorConfig();
-
-        return String.format(Locale.US,
-                "strategy=%s;scanIntervalSec=%d;mainTimeframe=%s;dayTradeTimeframe=%s;executionConfirmTimeframe=%s;barCount=%d;dayTradeBars=%d;minSignalIntervalMin=%d;"
-                        + "earlyBlock=%s %s-%s;latestEntry=%s;stopLossCooldown=%s %dmin;postExitCooldownMin=%d;"
-                        + "maxPositions=%d;dailyMaxLoss=%.2f;dailyMaxStopLossCount=%d;consecutiveLossLimit=%d;disableAfterLossLimit=%s;dailyMaxAutoTrades=%d;entryPacingMin=%d;oneEntryPerM5=%s;"
-                        + "longThreshold=%.3f;exitThreshold=%.3f;minStrategies=%d;minRR=%.3f;minVolatility=%.3f;maxVolatility=%.3f;"
-                        + "rsiEnabled=%s;rsiPeriod=%d;rsiOversold=%.2f;rsiOverbought=%.2f;rsiWeight=%.2f;requireRsiConfirm=%s;blockRsiOverbought=%s;"
-                        + "maEnabled=%s;maType=%s;maFast=%d;maSlow=%d;maWeight=%.2f;"
-                        + "volumeBreakout=%s;breakoutLookback=%d;volumeMultiplier=%.2f;volumeWeight=%.2f;volumeSustain=%s;breakoutContinuation=%s;nextBarConfirm=%s;blockMaOnlyEntry=%s;"
-                        + "requireAboveVwap=%s;rangeRequiresVwapVolume=%s;rangeFailureExit=%s;rangeFailureMinutes=%d;rangeFailureMinR=%.2f;rangeVolumeFailExit=%s;"
-                        + "marketRegimeFilter=%s;internalAllowVwap=%.2f;internalAllowAvgReturn=%.2f;internalAllowVolumeSustain=%.2f;"
-                        + "internalBlockVwap=%.2f;internalBlockAvgReturn=%.2f;internalBlockNewLowExcess=%d;"
-                        + "weakStrictLong=%s;weakPolicy=%s;weakOutperformInternalBenchmark=%.2f;weakOutperformWatchlistGroup=%.2f;"
-                        + "atrRisk=%s;atrChaseLimitEnabled=%s;atrPeriod=%d;atrStop=%.2f;atrTakeProfit=%.2f;atrChaseLimit=%.2f;maxEntryRiseFromRecentLow=%.3f;minimumEntryScore=%.3f",
+        return SignalMonitorTemplateManager.buildStrategySettingSummary(
                 monitorStrategyName,
-                activeMonitorConfig.getScanIntervalSeconds(),
-                activeMonitorConfig.getTimeframe(),
-                radar.getDayTradeTimeframe(),
-                radar.getExecutionConfirmationTimeframe(),
-                activeMonitorConfig.getBarCount(),
-                radar.getDayTradeBarCount(),
-                activeMonitorConfig.getMinSignalIntervalMinutes(),
-                activeMonitorConfig.isEarlyEntryBlockEnabled(),
-                activeMonitorConfig.getEarlyEntryBlockStart(),
-                activeMonitorConfig.getEarlyEntryBlockEnd(),
-                activeMonitorConfig.getLatestAutoEntryTime(),
-                activeMonitorConfig.isStopLossCooldownEnabled(),
-                activeMonitorConfig.getStopLossCooldownMinutes(),
-                activeMonitorConfig.getPostExitCooldownMinutes(),
-                activeDecisionConfig.getRiskConfig().getMaxConcurrentPositions(),
-                activeMonitorConfig.getDailyMaxLoss(),
-                activeMonitorConfig.getDailyMaxStopLossCount(),
-                activeMonitorConfig.getConsecutiveLossLimit(),
-                activeMonitorConfig.isDisableTradingAfterLossLimit(),
-                activeMonitorConfig.getDailyMaxAutoTrades(),
-                activeMonitorConfig.getEntryPacingMinutes(),
-                activeMonitorConfig.isOneEntryPerFiveMinuteBar(),
-                activeDecisionConfig.getVotingConfig().getLongEntryThreshold(),
-                activeDecisionConfig.getVotingConfig().getExitThreshold(),
-                activeDecisionConfig.getVotingConfig().getMinVotingStrategies(),
-                activeDecisionConfig.getRiskConfig().getMinRiskRewardRatio(),
-                activeDecisionConfig.getRiskConfig().getMinVolatilityPercent(),
-                activeDecisionConfig.getRiskConfig().getMaxVolatilityPercent(),
-                radar.isRsiEnabled(),
-                radar.getRsiPeriod(),
-                radar.getRsiOversold(),
-                radar.getRsiOverbought(),
-                radar.getRsiWeight(),
-                radar.isRequireRsiEntryConfirmation(),
-                radar.isBlockBreakoutOnRsiOverbought(),
-                radar.isMovingAverageEnabled(),
-                radar.getMovingAverageType(),
-                radar.getFastMovingAveragePeriod(),
-                radar.getSlowMovingAveragePeriod(),
-                radar.getMovingAverageWeight(),
-                radar.isVolumeBreakoutEnabled(),
-                radar.getBreakoutLookbackBars(),
-                radar.getVolumeMultiplier(),
-                radar.getVolumeBreakoutWeight(),
-                radar.isVolumeSustainEnabled(),
-                radar.isRequireBreakoutContinuation(),
-                radar.isRequireBreakoutNextBarConfirmation(),
-                radar.isBlockMovingAverageOnlyEntry(),
-                radar.isRequirePriceAboveVwapForLong(),
-                radar.isRangeMarketRequiresVwapAndVolume(),
-                activeMonitorConfig.isRangeFailureExitEnabled(),
-                activeMonitorConfig.getRangeFailureExitMinutes(),
-                activeMonitorConfig.getRangeFailureMinR(),
-                activeMonitorConfig.isRangeFailureVolumeSustainExitEnabled(),
-                radar.isMarketRegimeFilterEnabled(),
-                radar.getInternalAllowVwapPassPercent(),
-                radar.getInternalAllowAverageReturnPercent(),
-                radar.getInternalAllowVolumeSustainPercent(),
-                radar.getInternalBlockVwapPassPercent(),
-                radar.getInternalBlockAverageReturnPercent(),
-                radar.getInternalBlockNewLowExcessCount(),
-                radar.isWeakMarketStrictLongEnabled(),
-                radar.getWeakMarketLongPolicy(),
-                radar.getWeakOutperformBenchmarkPercent(),
-                radar.getWeakOutperformIndustryPercent(),
-                radar.isAtrRiskEnabled(),
-                radar.isAtrChaseLimitEnabled(),
-                radar.getAtrPeriod(),
-                radar.getAtrStopMultiplier(),
-                radar.getAtrTakeProfitMultiplier(),
-                radar.getAtrChaseLimitMultiplier(),
-                radar.getMaxEntryRiseFromRecentLowPercent(),
-                radar.getMinimumEntryScore());
+                monitorConfig,
+                monitorDecisionConfig);
     }
 
     private DecisionConfig copyDecisionConfig(DecisionConfig source) {
-        DecisionConfig copy = DecisionConfig.createDefault();
-        copy.setMainLoopTimeframe(source.getMainLoopTimeframe());
-        copy.setRiskMonitorTimeframe(source.getRiskMonitorTimeframe());
-        copy.setRegimeDetectionEnabled(source.isRegimeDetectionEnabled());
-        copy.setTrendAnalysisEnabled(source.isTrendAnalysisEnabled());
-        copy.setPatternDetectionEnabled(source.isPatternDetectionEnabled());
-        copy.setVotingEnabled(source.isVotingEnabled());
-        copy.setRiskManagementEnabled(source.isRiskManagementEnabled());
-        copy.setLogLevel(source.getLogLevel());
-        copy.setVerboseLogging(source.isVerboseLogging());
-        copy.getVotingConfig().setLongEntryThreshold(source.getVotingConfig().getLongEntryThreshold());
-        copy.getVotingConfig().setShortEntryThreshold(source.getVotingConfig().getShortEntryThreshold());
-        copy.getVotingConfig().setExitThreshold(source.getVotingConfig().getExitThreshold());
-        copy.getVotingConfig().setReverseThreshold(source.getVotingConfig().getReverseThreshold());
-        copy.getVotingConfig().setReverseEnabled(source.getVotingConfig().isReverseEnabled());
-        copy.getVotingConfig().setMinVotingStrategies(source.getVotingConfig().getMinVotingStrategies());
-        copy.getVotingConfig().setRequireConsensus(source.getVotingConfig().isRequireConsensus());
-        copy.getVotingConfig().setSignalValidityMs(source.getVotingConfig().getSignalValidityMs());
-        copy.getRiskConfig().setRiskPercentPerTrade(source.getRiskConfig().getRiskPercentPerTrade());
-        copy.getRiskConfig().setMaxDailyLossPercent(source.getRiskConfig().getMaxDailyLossPercent());
-        copy.getRiskConfig().setMaxSymbolLossPercent(source.getRiskConfig().getMaxSymbolLossPercent());
-        copy.getRiskConfig().setMaxConcurrentPositions(source.getRiskConfig().getMaxConcurrentPositions());
-        copy.getRiskConfig().setMaxPositionSizePercent(source.getRiskConfig().getMaxPositionSizePercent());
-        copy.getRiskConfig().setMinCashReservePercent(source.getRiskConfig().getMinCashReservePercent());
-        copy.getRiskConfig().setDailyLossLimitEnabled(source.getRiskConfig().isDailyLossLimitEnabled());
-        copy.getRiskConfig().setSymbolLossLimitEnabled(source.getRiskConfig().isSymbolLossLimitEnabled());
-        copy.getRiskConfig().setAllowExitOnlyAfterDailyLimit(source.getRiskConfig().isAllowExitOnlyAfterDailyLimit());
-        copy.getRiskConfig().setMaxHoldingBars(source.getRiskConfig().getMaxHoldingBars());
-        copy.getRiskConfig().setForceCloseAtEndOfDay(source.getRiskConfig().isForceCloseAtEndOfDay());
-        copy.getRiskConfig().setCloseBeforeEndOfDayBars(source.getRiskConfig().getCloseBeforeEndOfDayBars());
-        copy.getRiskConfig().setMinRiskRewardRatio(source.getRiskConfig().getMinRiskRewardRatio());
-        copy.getRiskConfig().setMinVolatilityPercent(source.getRiskConfig().getMinVolatilityPercent());
-        copy.getRiskConfig().setMaxVolatilityPercent(source.getRiskConfig().getMaxVolatilityPercent());
-        copy.getRiskConfig().setAllowShortSelling(source.getRiskConfig().isAllowShortSelling());
-        return copy;
+        return SignalMonitorTemplateManager.copyDecisionConfig(source);
     }
 
     private void showMonitorSettingsDialog() {
@@ -5324,9 +4825,9 @@ public class MainFrameWithDocking extends JFrame {
         gbc.anchor = GridBagConstraints.WEST;
         gbc.fill = GridBagConstraints.HORIZONTAL;
 
-        List<MonitorTemplate> monitorTemplates = new ArrayList<>(loadMonitorTemplatesForDialog());
+        List<SignalMonitorTemplate> monitorTemplates = new ArrayList<>(loadMonitorTemplatesForDialog());
         JComboBox<String> templateBox = new JComboBox<>(monitorTemplates.stream()
-                .map(MonitorTemplate::name)
+                .map(SignalMonitorTemplate::name)
                 .toArray(String[]::new));
         JLabel templateDescription = new JLabel(monitorTemplates.get(0).description());
         templateDescription.setForeground(UIManager.getColor("Label.disabledForeground"));
@@ -5458,7 +4959,7 @@ public class MainFrameWithDocking extends JFrame {
             if (selectedIndex < 0 || selectedIndex >= monitorTemplates.size()) {
                 return;
             }
-            MonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
+            SignalMonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
             templateDescription.setText(selectedTemplate.description());
             if (selectedIndex == 0) {
                 return;
@@ -5648,7 +5149,7 @@ public class MainFrameWithDocking extends JFrame {
         addSettingsRow(panel, gbc, row++, "短線 K 線數量", createDisabledFieldPanel(shortBars, "目前自動監控僅支援當沖"));
         addSettingsRow(panel, gbc, row, "波段 K 線數量", createDisabledFieldPanel(swingBars, "目前自動監控僅支援當沖"));
 
-        java.util.function.BiFunction<String, String, MonitorTemplate> buildTemplateFromForm = (name, description) -> {
+        java.util.function.BiFunction<String, String, SignalMonitorTemplate> buildTemplateFromForm = (name, description) -> {
             SignalMonitorConfig savedMonitor = copyMonitorConfig(monitorConfig);
             savedMonitor.setScanIntervalSeconds(((Number) scanInterval.getValue()).intValue());
             savedMonitor.setTimeframe((Timeframe) timeframeBox.getSelectedItem());
@@ -5737,7 +5238,7 @@ public class MainFrameWithDocking extends JFrame {
             savedDecision.getRiskConfig().setMinVolatilityPercent(((Number) minVolatility.getValue()).doubleValue());
             savedDecision.getRiskConfig().setMaxVolatilityPercent(((Number) maxVolatility.getValue()).doubleValue());
             savedDecision.getRiskConfig().setAllowShortSelling(false);
-            return new MonitorTemplate(name, description, savedMonitor, savedDecision, true);
+            return new SignalMonitorTemplate(name, description, savedMonitor, savedDecision, true);
         };
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
@@ -5759,7 +5260,7 @@ public class MainFrameWithDocking extends JFrame {
                 return;
             }
             try {
-                MonitorTemplate savedTemplate = buildTemplateFromForm.apply(
+                SignalMonitorTemplate savedTemplate = buildTemplateFromForm.apply(
                         trimmedName,
                         "使用者自訂模板：" + trimmedName);
                 saveUserMonitorTemplate(savedTemplate);
@@ -5784,7 +5285,7 @@ public class MainFrameWithDocking extends JFrame {
                 JOptionPane.showMessageDialog(dialog, "請先選擇一個使用者自訂模板。", "刪除監控模板", JOptionPane.INFORMATION_MESSAGE);
                 return;
             }
-            MonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
+            SignalMonitorTemplate selectedTemplate = monitorTemplates.get(selectedIndex);
             if (!selectedTemplate.userDefined()) {
                 JOptionPane.showMessageDialog(dialog, "內建測試模板不可刪除；如需修改，請另存為自訂模板。", "刪除監控模板", JOptionPane.WARNING_MESSAGE);
                 return;
@@ -6349,25 +5850,18 @@ public class MainFrameWithDocking extends JFrame {
                         if (monitorPortfolio.getPosition(symbol) != null || pendingAutoEntries.contains(symbol)) {
                             return;
                         }
-                        String blockReason = resolveAutoEntryBlockReason(symbol);
-                        if (blockReason != null) {
-                            statusBar.setText(blockReason);
-                            return;
-                        }
                         int quantity = determineOrderQuantity(price, autoSignal);
                         if (quantity <= 0) {
                             statusBar.setText("資金不足，無法開倉 " + symbol);
                             return;
                         }
+                        String blockReason = resolveAutoEntryBlockReason(symbol, price, quantity);
+                        if (blockReason != null) {
+                            statusBar.setText(blockReason);
+                            return;
+                        }
                         pendingAutoEntries.add(symbol);
-                        result = executionEngine.openPosition(
-                                symbol,
-                                quantity,
-                                price,
-                                autoSignal.getOrderType(),
-                                autoSignal.getSuggestedStopLoss(),
-                                autoSignal.getSuggestedTakeProfit(),
-                                autoSignal.getReason());
+                        result = executionEngine.executeDecision(autoSignal, price);
                     }
                     case CLOSE_POSITION -> {
                         Position position = monitorPortfolio.getPosition(symbol);
@@ -6394,7 +5888,9 @@ public class MainFrameWithDocking extends JFrame {
                     } else if (autoSignal.getAction() == DecisionResult.Action.OPEN_LONG) {
                         registerAutoMonitorEntry();
                         activeTradeModes.put(symbol, TradeMode.DAY_TRADE);
-                        autoManagedPositions.add(symbol);
+                        if (executionEngine.isAutoManagedPosition(symbol) || result.isAutoManaged()) {
+                            autoManagedPositions.add(symbol);
+                        }
                         autoEntryTimes.put(symbol, result.getExecutionTime());
                         autoEntryPrices.put(symbol, result.getExecutedPrice());
                         if (result.getStopLoss() != null && result.getStopLoss() > 0.0) {
@@ -6436,6 +5932,7 @@ public class MainFrameWithDocking extends JFrame {
         return new DecisionResult.Builder()
                 .action(signal.getAction())
                 .source(signal.getSource())
+                .decisionSource(resolveAutoMonitorDecisionSource())
                 .symbol(symbol != null && !symbol.isBlank() ? symbol : signal.getSymbol())
                 .tradeMode(TradeMode.DAY_TRADE)
                 .reason(signal.getReason())
@@ -6444,7 +5941,7 @@ public class MainFrameWithDocking extends JFrame {
                 .orderSide(signal.getOrderSide())
                 .suggestedStopLoss(signal.getSuggestedStopLoss())
                 .suggestedTakeProfit(signal.getSuggestedTakeProfit())
-                .suggestedQuantity(DAY_TRADE_LOT_SIZE)
+                .suggestedQuantity(resolveDayTradeOrderQuantity())
                 .riskRewardRatio(signal.getRiskRewardRatio())
                 .regimeAnalysis(signal.getRegimeAnalysis())
                 .trendAnalysis(signal.getTrendAnalysis())
@@ -6454,68 +5951,65 @@ public class MainFrameWithDocking extends JFrame {
                 .build();
     }
 
-    private String resolveAutoEntryBlockReason(String symbol) {
+    private DecisionResult.DecisionSource resolveAutoMonitorDecisionSource() {
+        return monitorConfig != null ? monitorConfig.getDecisionSource() : DecisionResult.DecisionSource.AUTO_MONITOR;
+    }
+
+    private int resolveDayTradeOrderQuantity() {
+        return monitorConfig != null ? monitorConfig.getDayTradeOrderQuantity() : DAY_TRADE_LOT_SIZE;
+    }
+
+    private String resolveAutoEntryBlockReason(String symbol, double price, int quantity) {
         resetAutoMonitorRiskIfNewDay();
-        if (autoMonitorTradingHalted) {
-            return String.format(Locale.US,
-                    "自動監控熔斷中，今日停止新開倉：日損 %.2f，停損 %d 次，連虧 %d 次",
-                    autoMonitorDailyPnl,
-                    autoMonitorStopLossCount,
-                    autoMonitorConsecutiveLosses);
-        }
         LocalDateTime nowDateTime = LocalDateTime.now(TAIPEI_ZONE);
-        LocalTime now = nowDateTime.toLocalTime();
-        if (isDayTradeForceCloseTime(now)) {
-            closeAutoManagedPositionsAtCutoff();
-            return "13:25 後自動監控不再新開倉：" + symbol;
-        }
-        if (isLateAutoEntryBlocked(now)) {
-            return "尾盤禁止新開倉時間已到：" + symbol;
-        }
-        if (isEarlyEntryBlocked(now)) {
-            return "早盤禁開倉時段，略過自動開倉：" + symbol;
-        }
-        LocalDateTime cooldownUntil = stopLossCooldownUntil.get(symbol);
-        if (cooldownUntil != null) {
-            if (nowDateTime.isBefore(cooldownUntil)) {
-                return "停損冷卻中，略過自動開倉：" + symbol + "，冷卻至 " + cooldownUntil.toLocalTime();
-            }
-            stopLossCooldownUntil.remove(symbol);
-        }
-        if (monitorConfig != null && autoMonitorEntryCount >= monitorConfig.getDailyMaxAutoTrades()) {
-            return "每日最多自動交易已達上限：" + monitorConfig.getDailyMaxAutoTrades() + " 筆，阻擋 " + symbol;
-        }
-        if (monitorConfig != null && monitorConfig.getEntryPacingMinutes() > 0 && autoMonitorLastEntryTime != null
-                && nowDateTime.isBefore(autoMonitorLastEntryTime.plusMinutes(monitorConfig.getEntryPacingMinutes()))) {
-            return "開單節奏限制：距離上一筆未滿 "
-                    + monitorConfig.getEntryPacingMinutes() + " 分鐘，阻擋 " + symbol;
-        }
-        if (monitorConfig != null && monitorConfig.isOneEntryPerFiveMinuteBar()) {
-            String bucket = currentFiveMinuteEntryBucket(nowDateTime);
-            if (autoMonitorEntryBuckets.contains(bucket)) {
-                return "同一根 5 分 K 已有自動開倉，阻擋 " + symbol;
-            }
-        }
         int maxPositions = monitorDecisionConfig != null
                 ? monitorDecisionConfig.getRiskConfig().getMaxConcurrentPositions()
                 : 1;
-        if (monitorPortfolio != null && monitorPortfolio.getPositionCount() >= maxPositions) {
-            return "自動監控持倉已達上限 " + maxPositions + " 檔，略過：" + symbol;
+        LocalDateTime cooldownUntil = stopLossCooldownUntil.get(symbol);
+        if (cooldownUntil != null && !nowDateTime.isBefore(cooldownUntil)) {
+            stopLossCooldownUntil.remove(symbol);
+            cooldownUntil = null;
+        }
+        AutoMonitorExecutionGate.GateDecision gateDecision = AutoMonitorExecutionGate.evaluateOpenLong(
+                AutoMonitorExecutionGate.GateConfig.from(monitorConfig),
+                new AutoMonitorExecutionGate.GateState(
+                        symbol,
+                        nowDateTime,
+                        autoMonitorTradingHalted,
+                        monitorPortfolio != null && monitorPortfolio.getPosition(symbol) != null,
+                        cooldownUntil,
+                        autoMonitorEntryCount,
+                        autoMonitorLastEntryTime,
+                        autoMonitorEntryBuckets,
+                        monitorPortfolio != null ? monitorPortfolio.getPositionCount() : 0,
+                        maxPositions));
+        if (!gateDecision.allowed()) {
+            if (gateDecision.blockType() == AutoMonitorExecutionGate.BlockType.FORCE_CLOSE_WINDOW) {
+                closeAutoManagedPositionsAtCutoff();
+            }
+            return gateDecision.reason() + ": " + symbol;
+        }
+        if (monitorRiskManager != null) {
+            RiskViolation violation = monitorRiskManager.checkDayTradeOpenLong(symbol, nowDateTime, price, quantity);
+            if (violation != null) {
+                return violation.getMessage() + ": " + symbol;
+            }
         }
         return null;
     }
-
     private void updateAutoMonitorRiskAfterClose(String symbol, ExecutionResult result, DecisionResult signal) {
         resetAutoMonitorRiskIfNewDay();
         double realized = result != null ? result.getRealizedPnL() : 0.0;
+        if (result != null && result.isSuccess() && monitorRiskManager != null) {
+            monitorRiskManager.updateDailyPnL(realized);
+        }
         autoMonitorDailyPnl += realized;
         if (realized < 0.0) {
             autoMonitorConsecutiveLosses++;
         } else if (realized > 0.0) {
             autoMonitorConsecutiveLosses = 0;
         }
-        String reason = signal != null && signal.getReason() != null ? signal.getReason() : "";
-        if (reason.contains("停損") || reason.toUpperCase(Locale.ROOT).contains("STOP")) {
+        if (AutoMonitorExitPolicy.shouldRegisterStopLossCooldown(result, signal)) {
             autoMonitorStopLossCount++;
             registerStopLossCooldown(symbol);
         }
@@ -6577,6 +6071,12 @@ public class MainFrameWithDocking extends JFrame {
                 || !monitorConfig.isStopLossCooldownEnabled()) {
             return;
         }
+        if (monitorRiskManager != null) {
+            monitorRiskManager.registerStopLossCooldown(
+                    symbol,
+                    LocalDateTime.now(TAIPEI_ZONE),
+                    monitorConfig.getStopLossCooldownMinutes());
+        }
         registerSymbolCooldown(symbol, monitorConfig.getStopLossCooldownMinutes());
     }
 
@@ -6620,6 +6120,10 @@ public class MainFrameWithDocking extends JFrame {
             return 0;
         }
         TradeMode tradeMode = signal != null ? signal.getTradeMode() : null;
+        if (tradeMode == TradeMode.DAY_TRADE) {
+            Integer quantity = signal != null ? signal.getSuggestedQuantity() : null;
+            return quantity != null && quantity > 0 ? quantity : DAY_TRADE_LOT_SIZE;
+        }
         return calculateOrderQuantity(
                 price,
                 monitorPortfolio.getCash(),
@@ -7247,4 +6751,3 @@ public class MainFrameWithDocking extends JFrame {
         }
     }
 }
-

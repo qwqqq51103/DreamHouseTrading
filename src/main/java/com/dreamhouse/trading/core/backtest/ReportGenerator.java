@@ -211,6 +211,10 @@ public class ReportGenerator {
         table.append("                        <th>價格</th>\n");
         table.append("                        <th>金額</th>\n");
         table.append("                        <th>手續費</th>\n");
+        table.append("                        <th>tax</th>\n");
+        table.append("                        <th>slippageCost</th>\n");
+        table.append("                        <th>netAmount</th>\n");
+        table.append("                        <th>reason</th>\n");
         table.append("                    </tr>\n");
         table.append("                </thead>\n");
         table.append("                <tbody>\n");
@@ -225,6 +229,10 @@ public class ReportGenerator {
             table.append("                        <td>$").append(String.format("%.2f", trade.getPrice())).append("</td>\n");
             table.append("                        <td>$").append(String.format("%.2f", trade.getTotalAmount())).append("</td>\n");
             table.append("                        <td>$").append(String.format("%.2f", trade.getCommissionAmount())).append("</td>\n");
+            table.append("                        <td>$").append(String.format("%.2f", trade.getTaxAmount())).append("</td>\n");
+            table.append("                        <td>$").append(String.format("%.2f", trade.getSlippageCost())).append("</td>\n");
+            table.append("                        <td>$").append(String.format("%.2f", trade.getType() == TradeType.BUY ? trade.getTotalCost() : trade.getNetProceeds())).append("</td>\n");
+            table.append("                        <td>").append(trade.getExitReason() != null ? trade.getExitReason() : "").append("</td>\n");
             table.append("                    </tr>\n");
         }
         

@@ -79,10 +79,14 @@ class SignalMonitorServiceTest {
         AccessDeniedFeed feed = new AccessDeniedFeed();
         SignalMonitorService monitor = new SignalMonitorService(feed, config, DecisionConfig.createDefault());
         CountDownLatch pausedLatch = new CountDownLatch(1);
+        CountDownLatch cooldownLatch = new CountDownLatch(1);
 
         monitor.setOnStatusUpdate(status -> {
             if (status.contains("Market data scan paused for 15 minutes")) {
                 pausedLatch.countDown();
+            }
+            if (status.contains("Market data scan paused until")) {
+                cooldownLatch.countDown();
             }
         });
 
@@ -90,7 +94,7 @@ class SignalMonitorServiceTest {
             monitor.start(List.of("2330.TW", "2317.TW"));
 
             assertTrue(pausedLatch.await(4, TimeUnit.SECONDS), "Monitor should publish FinMind pause status");
-            Thread.sleep(1_200);
+            assertTrue(cooldownLatch.await(4, TimeUnit.SECONDS), "Later scheduled scan should be blocked by cooldown");
             assertEquals(1, feed.getRequestCount(), "Cooldown should prevent later scheduled API requests");
         } finally {
             monitor.stop();

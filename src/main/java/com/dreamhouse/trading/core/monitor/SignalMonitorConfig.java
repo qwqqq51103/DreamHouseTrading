@@ -1,6 +1,7 @@
 package com.dreamhouse.trading.core.monitor;
 
 import com.dreamhouse.trading.core.Timeframe;
+import com.dreamhouse.trading.core.decision.DecisionResult;
 import com.dreamhouse.trading.core.decision.classifier.TradeMode;
 import com.dreamhouse.trading.core.scanner.RadarStrategyConfig;
 
@@ -17,6 +18,9 @@ public class SignalMonitorConfig {
     private int barCount = 160;
     private TradeMode tradeMode = TradeMode.DAY_TRADE;
     private boolean batchScanMode = true;
+    private DecisionResult.DecisionSource decisionSource = DecisionResult.DecisionSource.AUTO_MONITOR;
+    private boolean autoManagedEntries = true;
+    private int dayTradeOrderQuantity = 1000;
     private RadarStrategyConfig radarStrategyConfig = RadarStrategyConfig.createDefault();
     private boolean earlyEntryBlockEnabled = true;
     private LocalTime earlyEntryBlockStart = LocalTime.of(9, 0);
@@ -250,6 +254,30 @@ public class SignalMonitorConfig {
 
     public void setBatchScanMode(boolean batchScanMode) {
         this.batchScanMode = batchScanMode;
+    }
+
+    public DecisionResult.DecisionSource getDecisionSource() {
+        return decisionSource;
+    }
+
+    public void setDecisionSource(DecisionResult.DecisionSource decisionSource) {
+        this.decisionSource = decisionSource != null ? decisionSource : DecisionResult.DecisionSource.AUTO_MONITOR;
+    }
+
+    public boolean isAutoManagedEntries() {
+        return autoManagedEntries;
+    }
+
+    public void setAutoManagedEntries(boolean autoManagedEntries) {
+        this.autoManagedEntries = autoManagedEntries;
+    }
+
+    public int getDayTradeOrderQuantity() {
+        return dayTradeOrderQuantity;
+    }
+
+    public void setDayTradeOrderQuantity(int dayTradeOrderQuantity) {
+        this.dayTradeOrderQuantity = Math.max(1000, dayTradeOrderQuantity);
     }
 
     public RadarStrategyConfig getRadarStrategyConfig() {

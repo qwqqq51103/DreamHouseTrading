@@ -3,7 +3,11 @@ package com.dreamhouse.trading.core;
 import com.dreamhouse.trading.core.model.Bar;
 import com.dreamhouse.trading.core.model.Tick;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -22,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class MarketDataCollectorFeedTest {
     private static final ZoneId TAIPEI_ZONE = ZoneId.of("Asia/Taipei");
+    private static final LocalDate FIXED_SESSION_DATE = LocalDate.of(2026, 5, 13);
 
     @Test
     void repositoryReadsLatestCandlesInAscendingOrder() throws Exception {
@@ -124,6 +129,136 @@ class MarketDataCollectorFeedTest {
 
             assertThat(bars).hasSize(1);
             assertThat(bars.get(0).getTimestamp()).isEqualTo(sessionDate.minusDays(1).atTime(13, 25));
+        }
+    }
+
+    @Test
+    void shouldReturnTicksAggregatedWhenTicksAreComplete() throws Exception {
+        try (Connection connection = createSchema()) {
+            for (int i = 0; i < 54; i++) {
+                insertTick(
+                        connection,
+                        "2330.TW",
+                        FIXED_SESSION_DATE.atTime(9, 0).plusMinutes(i * 5L).plusSeconds(1),
+                        100.0 + i,
+                        (i + 1L) * 100L);
+            }
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            MarketDataCollectorFeed.SessionBarLoadResult result = feed.fetchSessionBarsWithSource(
+                    "2330.TW",
+                    Timeframe.M5,
+                    FIXED_SESSION_DATE,
+                    MarketDataCollectorFeed.SessionBarSourceMode.TICKS_AGGREGATED);
+
+            assertThat(result.bars()).hasSize(54);
+            assertThat(result.actualSource()).isEqualTo("TICKS_AGGREGATED_COMPLETE");
+            assertThat(result.actualSource()).doesNotContain("CANDLES");
+            assertThat(result.tickCount()).isEqualTo(54);
+            assertThat(result.candleCount()).isZero();
+            assertThat(result.expectedBars()).isEqualTo(54);
+            assertThat(result.toSummary("2330.TW")).contains("TICKS_AGGREGATED_COMPLETE", "expected=54");
+        }
+    }
+
+    @Test
+    void shouldMarkTicksAggregatedIncompleteWhenM5BarsLessThanFullSession() throws Exception {
+        try (Connection connection = createSchema()) {
+            insertTick(connection, "2330.TW", FIXED_SESSION_DATE.atTime(9, 0, 1), 100.0, 100);
+            insertTick(connection, "2330.TW", FIXED_SESSION_DATE.atTime(9, 5, 1), 101.0, 130);
+            insertTick(connection, "2330.TW", FIXED_SESSION_DATE.atTime(9, 10, 1), 102.0, 150);
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            MarketDataCollectorFeed.SessionBarLoadResult result = feed.fetchSessionBarsWithSource(
+                    "2330.TW",
+                    Timeframe.M5,
+                    FIXED_SESSION_DATE,
+                    MarketDataCollectorFeed.SessionBarSourceMode.TICKS_AGGREGATED);
+
+            assertThat(result.bars()).hasSize(3);
+            assertThat(result.bars().size()).isLessThan(result.expectedBars());
+            assertThat(result.expectedBars()).isEqualTo(54);
+            assertThat(result.actualSource()).isEqualTo("TICKS_AGGREGATED_INCOMPLETE");
+            assertThat(result.toSummary("2330.TW")).contains("TICKS_AGGREGATED_INCOMPLETE", "bars=3", "expected=54");
+        }
+    }
+
+    @Test
+    void shouldFallbackToCandlesOnlyWhenTicksUnavailableAndModeAuto() throws Exception {
+        try (Connection connection = createSchema()) {
+            insertCandle(connection, "2330.TW", "M5", FIXED_SESSION_DATE.atTime(9, 0).toString(), 100, 102, 99, 101, 20);
+            insertCandle(connection, "2330.TW", "M5", FIXED_SESSION_DATE.atTime(9, 5).toString(), 101, 103, 100, 102, 30);
+
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            MarketDataCollectorFeed.SessionBarLoadResult result = feed.fetchSessionBarsWithSource(
+                    "2330.TW",
+                    Timeframe.M5,
+                    FIXED_SESSION_DATE,
+                    MarketDataCollectorFeed.SessionBarSourceMode.AUTO);
+
+            assertThat(result.requestedMode()).isEqualTo(MarketDataCollectorFeed.SessionBarSourceMode.AUTO);
+            assertThat(result.bars()).hasSize(2);
+            assertThat(result.tickCount()).isZero();
+            assertThat(result.candleCount()).isEqualTo(2);
+            assertThat(result.actualSource()).isEqualTo("AUTO_CANDLES_INCOMPLETE");
+            assertThat(result.toSummary("2330.TW")).contains("AUTO_CANDLES_INCOMPLETE", "candles=2", "ticks=0");
+        }
+    }
+
+    @Test
+    void shouldNotFallbackToFinMindIntradayRealtime() throws Exception {
+        try (Connection connection = createSchema()) {
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofDays(1));
+
+            MarketDataCollectorFeed.SessionBarLoadResult result = feed.fetchSessionBarsWithSource(
+                    "2330.TW",
+                    Timeframe.M5,
+                    FIXED_SESSION_DATE,
+                    MarketDataCollectorFeed.SessionBarSourceMode.AUTO);
+
+            assertThat(result.bars()).isEmpty();
+            assertThat(result.tickCount()).isZero();
+            assertThat(result.candleCount()).isZero();
+            assertThat(result.actualSource()).isEqualTo("AUTO_NO_DATA");
+            assertThat(result.toSummary("2330.TW")).contains("AUTO_NO_DATA");
+        }
+    }
+
+    @Test
+    void shouldWriteStaleWarningCsvWithUtf8Bom(@TempDir Path tempDir) throws Exception {
+        try (Connection connection = createSchema()) {
+            MarketDataCollectorFeed feed = new MarketDataCollectorFeed(
+                    new MarketDataCollectorRepository(connection),
+                    Duration.ofSeconds(90),
+                    tempDir);
+
+            feed.writeStaleWarningDiagnostic(
+                    "2330.TW",
+                    FIXED_SESSION_DATE.atTime(9, 0),
+                    120,
+                    Duration.ofSeconds(90),
+                    FIXED_SESSION_DATE.atTime(9, 2),
+                    "SKIP_SCAN");
+
+            Path csv = tempDir.resolve("collector_stale_warnings_20260513.csv");
+            byte[] bytes = Files.readAllBytes(csv);
+            assertThat(bytes).startsWith(new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
+            assertThat(csv.normalize()).startsWith(tempDir.normalize());
+            assertThat(Files.readString(csv, StandardCharsets.UTF_8))
+                    .contains("detected_at,symbol,latest_tick_time,lag_seconds,threshold_seconds,action,message")
+                    .contains("2330.TW")
+                    .contains("skipping scan instead of calling FinMind");
         }
     }
 

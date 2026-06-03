@@ -1,11 +1,15 @@
 package com.dreamhouse.trading.ui.dialog;
 
 import com.dreamhouse.trading.core.backtest.*;
+import com.dreamhouse.trading.core.logging.LogExporter;
 import net.miginfocom.swing.MigLayout;
 
 import javax.swing.*;
 import java.awt.*;
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -17,6 +21,8 @@ public class BacktestResultDialog extends JDialog {
     private final BacktestResult result;
     private final String strategyName;
     private final String reportConfigurationSummary;
+    private static final DateTimeFormatter CSV_TIMESTAMP_FORMAT =
+            DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     
     /**
      * 構造函數
@@ -794,14 +800,13 @@ public class BacktestResultDialog extends JDialog {
      */
     private void exportTradesToCSV() {
         try {
-            // 轉換 Trade 為 TradeRecord 格式
-            String exportedPath = BacktestReportExporter.exportDetailedCsv(
-                    result, strategyName, reportConfigurationSummary);
-
-            // 生成檔案名稱
-            
-
-            // 使用 LogExporter 匯出 CSV
+            List<com.dreamhouse.trading.core.logging.TradeRecord> records =
+                    BacktestTradeRecordMapper.toTradeRecords(result, strategyName, reportConfigurationSummary);
+            if (records.isEmpty()) {
+                throw new IllegalStateException("沒有可匯出的已平倉交易");
+            }
+            String fileName = "backtest_trades_" + LocalDateTime.now().format(CSV_TIMESTAMP_FORMAT) + ".csv";
+            String exportedPath = LogExporter.exportToCSV(records, fileName);
             JOptionPane.showMessageDialog(this,
                 "交易記錄已成功匯出到：\n" + exportedPath,
                 "匯出成功",
@@ -812,97 +817,6 @@ public class BacktestResultDialog extends JDialog {
                 "匯出 CSV 時發生錯誤:\n" + ex.getMessage(),
                 "匯出錯誤",
                 JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    /**
-     * 轉換 Trade 列表為 TradeRecord 列表
-     */
-    private java.util.List<com.dreamhouse.trading.core.logging.TradeRecord> convertToTradeRecords(
-            java.util.List<Trade> trades) {
-        java.util.List<com.dreamhouse.trading.core.logging.TradeRecord> records = new java.util.ArrayList<>();
-
-        for (int i = 0; i < trades.size() - 1; i++) {
-            Trade buy = trades.get(i);
-            if (buy.getType() == TradeType.BUY && i + 1 < trades.size()) {
-                Trade sell = trades.get(i + 1);
-                if (sell.getType() == TradeType.SELL && buy.getSymbol().equals(sell.getSymbol())) {
-                    // 計算績效指標
-                    double entryPrice = buy.getPrice();
-                    double exitPrice = sell.getPrice();
-                    double grossProfit = (exitPrice - entryPrice) * buy.getQuantity();
-                    double entryCommission = buy.getTotalAmount() * buy.getCommission();
-                    double exitCommission = sell.getTotalAmount() * sell.getCommission();
-                    double netProfit = grossProfit - entryCommission - exitCommission;
-                    double returnPercent = netProfit / (buy.getTotalAmount() + entryCommission);
-
-                    // 計算 MAE 和 MFE（簡化版）
-                    double stopLoss = buy.getStopLoss() != null ? buy.getStopLoss() : entryPrice * 0.98;
-                    double mae = Math.abs(entryPrice - stopLoss) / entryPrice;
-                    double takeProfit = buy.getTakeProfit() != null ? buy.getTakeProfit() : exitPrice;
-                    double mfe = Math.max(0, (takeProfit - entryPrice) / entryPrice);
-
-                    // 計算持倉時間
-                    long holdingMinutes = java.time.temporal.ChronoUnit.MINUTES.between(
-                        buy.getTimestamp(), sell.getTimestamp());
-                    int holdingBars = 1; // 簡化計算
-                    long holdingDays = holdingMinutes / (24 * 60);
-
-                    // 建立 TradeRecord
-                    com.dreamhouse.trading.core.logging.TradeRecord record =
-                        new com.dreamhouse.trading.core.logging.TradeRecord.Builder(
-                            String.format("T%05d", i / 2 + 1),
-                            buy.getSymbol()
-                        )
-                        .tradeMode(com.dreamhouse.trading.core.decision.classifier.TradeMode.DAY_TRADE) // 默認值
-                        .entryTime(buy.getTimestamp())
-                        .entryPrice(entryPrice)
-                        .exitTime(sell.getTimestamp())
-                        .exitPrice(exitPrice)
-                        .quantity(buy.getQuantity())
-                        .entryCommission(entryCommission)
-                        .exitCommission(exitCommission)
-                        .stopLoss(buy.getStopLoss())
-                        .takeProfit(buy.getTakeProfit())
-                        .exitReason(convertToExitReason(sell.getExitReason()))
-                        .mae(mae)
-                        .mfe(mfe)
-                        .strategyName(strategyName)
-                        .build();
-                    // 注意：grossProfit, netProfit, returnPercent, holdingBars, holdingMinutes, holdingDays
-                    // 會由 TradeRecord.Builder.build() 自動計算
-
-                    records.add(record);
-                    i++; // 跳過已配對的賣出交易
-                }
-            }
-        }
-
-        return records;
-    }
-
-    /**
-     * 轉換出場原因字串為 ExitReason 枚舉
-     */
-    private com.dreamhouse.trading.core.logging.ExitReason convertToExitReason(String reasonStr) {
-        if (reasonStr == null) {
-            return com.dreamhouse.trading.core.logging.ExitReason.MANUAL_EXIT;
-        }
-
-        // 嘗試根據字串內容判斷出場原因
-        String lowerReason = reasonStr.toLowerCase();
-        if (lowerReason.contains("stop loss") || lowerReason.contains("停損")) {
-            return com.dreamhouse.trading.core.logging.ExitReason.STOP_LOSS;
-        } else if (lowerReason.contains("take profit") || lowerReason.contains("停利")) {
-            return com.dreamhouse.trading.core.logging.ExitReason.TAKE_PROFIT;
-        } else if (lowerReason.contains("trailing") || lowerReason.contains("移動")) {
-            return com.dreamhouse.trading.core.logging.ExitReason.TRAILING_STOP;
-        } else if (lowerReason.contains("time") || lowerReason.contains("時間")) {
-            return com.dreamhouse.trading.core.logging.ExitReason.TIME_STOP;
-        } else if (lowerReason.contains("eod") || lowerReason.contains("收盤")) {
-            return com.dreamhouse.trading.core.logging.ExitReason.FORCE_CLOSE_EOD;
-        } else {
-            return com.dreamhouse.trading.core.logging.ExitReason.MANUAL_EXIT;
         }
     }
 

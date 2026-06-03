@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -318,6 +319,152 @@ class MarketScannerServiceTest {
     }
 
     @Test
+    void shouldKeepSpecificBlockReasonForVwapSlopeVolumeAtrAndRsi() {
+        RadarStrategyConfig vwapConfig = openLongRadarConfig();
+        vwapConfig.setRequirePriceAboveVwapForLong(true);
+        MarketScanResult belowVwap = new MarketScannerService(new BelowVwapBreakoutFeed()).scan(
+                "TEST",
+                MarketScannerService.ScanRequest.createDefault()
+                        .tradeMode(TradeMode.DAY_TRADE)
+                        .timeframe(Timeframe.M1)
+                        .barCount(80)
+                        .decisionConfig(openLongDecisionConfig())
+                        .radarStrategyConfig(vwapConfig));
+
+        List<Bar> bars = new DeterministicFeed().fetchHistoricalBars("TEST", Timeframe.M1, 80);
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+
+        RadarStrategyConfig weakConfig = openLongRadarConfig();
+        weakConfig.setMarketRegimeFilterEnabled(true);
+        weakConfig.setWeakMarketStrictLongEnabled(true);
+        weakConfig.setWeakMarketLongPolicy(WeakMarketLongPolicy.ALLOW_EXTREME_STRENGTH_ONLY);
+        MarketScanResult flatVwapSlope = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(openLongDecisionConfig())
+                .radarStrategyConfig(weakConfig)
+                .marketContext(context(
+                        MarketRegime.WEAK,
+                        bars,
+                        new SymbolMarketContext(
+                                "TEST",
+                                "TAIEX",
+                                "Semi",
+                                118.8,
+                                2.0,
+                                -1.0,
+                                0.0,
+                                3.0,
+                                2.0,
+                                112.0,
+                                0.0,
+                                true,
+                                true,
+                                "flat vwap slope"))));
+
+        RadarStrategyConfig rangeConfig = openLongRadarConfig();
+        rangeConfig.setMarketRegimeFilterEnabled(true);
+        rangeConfig.setRangeMarketRequiresVwapAndVolume(true);
+        rangeConfig.setVolumeSustainEnabled(false);
+        MarketScanResult volumeSustain = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(openLongDecisionConfig())
+                .radarStrategyConfig(rangeConfig)
+                .marketContext(context(
+                        MarketRegime.RANGE,
+                        bars,
+                        new SymbolMarketContext(
+                                "TEST",
+                                "TAIEX",
+                                "Semi",
+                                118.8,
+                                0.5,
+                                0.2,
+                                0.3,
+                                0.3,
+                                0.2,
+                                112.0,
+                                0.20,
+                                false,
+                                false,
+                                "volume sustain failed"))));
+
+        RadarStrategyConfig atrConfig = openLongRadarConfig();
+        atrConfig.setAtrChaseLimitEnabled(true);
+        atrConfig.setAtrChaseLimitMultiplier(0.1);
+        MarketScanResult atrChase = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(openLongDecisionConfig())
+                .radarStrategyConfig(atrConfig));
+
+        RadarStrategyConfig rsiConfig = openLongRadarConfig();
+        rsiConfig.setRsiEnabled(true);
+        rsiConfig.setRsiPeriod(5);
+        rsiConfig.setRsiOverbought(60.0);
+        rsiConfig.setRsiWeight(0.1);
+        MarketScanResult rsiShort = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(openLongDecisionConfig())
+                .radarStrategyConfig(rsiConfig));
+
+        assertThat(belowVwap.getBlockReason()).contains("VWAP").doesNotContain("No entry signal");
+        assertThat(flatVwapSlope.getBlockReason()).contains("VWAP").doesNotContain("No entry signal");
+        assertThat(volumeSustain.getBlockReason()).contains("Volume Sustain").doesNotContain("No entry signal");
+        assertThat(atrChase.getBlockReason()).contains("ATR").doesNotContain("No entry signal");
+        assertThat(rsiShort.getBlockReason()).contains("SignalRSI=SHORT").doesNotContain("No entry signal");
+    }
+
+    @Test
+    void shouldPreserveScoreComponentsWhenHardBlocked() {
+        RadarStrategyConfig radarConfig = openLongRadarConfig();
+        radarConfig.setRequirePriceAboveVwapForLong(true);
+
+        MarketScanResult result = new MarketScannerService(new BelowVwapBreakoutFeed()).scan(
+                "TEST",
+                MarketScannerService.ScanRequest.createDefault()
+                        .tradeMode(TradeMode.DAY_TRADE)
+                        .timeframe(Timeframe.M1)
+                        .barCount(80)
+                        .decisionConfig(openLongDecisionConfig())
+                        .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getBlockReason()).contains("VWAP");
+        assertThat(result.getScoreComponents()).isNotEmpty();
+        assertThat(result.getScoreComponents())
+                .extracting(RadarScoreComponent::name)
+                .contains("MovingAverageTrend", "VolumeBreakout");
+        assertThat(result.getLongBonusSummary()).contains("long=");
+    }
+
+    @Test
+    void shouldNotReturnGenericNoEntrySignalWhenHardBlockExists() {
+        RadarStrategyConfig radarConfig = openLongRadarConfig();
+        radarConfig.setRequirePriceAboveVwapForLong(true);
+
+        MarketScanResult result = new MarketScannerService(new BelowVwapBreakoutFeed()).scan(
+                "TEST",
+                MarketScannerService.ScanRequest.createDefault()
+                        .tradeMode(TradeMode.DAY_TRADE)
+                        .timeframe(Timeframe.M1)
+                        .barCount(80)
+                        .decisionConfig(openLongDecisionConfig())
+                        .radarStrategyConfig(radarConfig));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getBlockReason()).contains("VWAP");
+        assertThat(result.getBlockReason()).doesNotContain("No entry signal");
+        assertThat(result.getReason()).doesNotContain("No entry signal");
+    }
+
+    @Test
     void dayTradeAbcTemplatesDisableInternalMarketFilterAndExposeWarmupComparison() {
         RadarStrategyConfig groupA = RadarStrategyConfig.createDayTradeGroupATemplate();
         RadarStrategyConfig groupB = RadarStrategyConfig.createDayTradeGroupBTemplate();
@@ -482,6 +629,127 @@ class MarketScannerServiceTest {
         assertThat(result.getReason()).contains("ATR");
     }
 
+    @Test
+    void scanUsesMarketContextPreloadedBarsWithoutCallingFeed() {
+        CountingEmptyFeed feed = new CountingEmptyFeed();
+        MarketScannerService scanner = new MarketScannerService(feed);
+        List<Bar> bars = new DeterministicFeed().fetchHistoricalBars("TEST", Timeframe.M1, 80);
+        DecisionConfig decisionConfig = openLongDecisionConfig();
+        RadarStrategyConfig radarConfig = openLongRadarConfig();
+        MarketContextSnapshot context = context(
+                MarketRegime.TREND_UP,
+                bars,
+                new SymbolMarketContext(
+                        "TEST",
+                        "TAIEX",
+                        "Semi",
+                        118.8,
+                        2.0,
+                        0.8,
+                        1.2,
+                        1.2,
+                        0.8,
+                        112.0,
+                        0.25,
+                        true,
+                        true,
+                        "qualified"));
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig)
+                .marketContext(context));
+
+        assertThat(result.hasTradeSignal()).isTrue();
+        assertThat(result.getRawSignalSummary()).contains("Regime:TREND_UP");
+        assertThat(feed.fetchCount()).isZero();
+    }
+
+    @Test
+    void rangeMarketBlocksOpenLongWhenVolumeSustainFails() {
+        List<Bar> bars = new DeterministicFeed().fetchHistoricalBars("TEST", Timeframe.M1, 80);
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = openLongDecisionConfig();
+        RadarStrategyConfig radarConfig = openLongRadarConfig();
+        radarConfig.setMarketRegimeFilterEnabled(true);
+        radarConfig.setRangeMarketRequiresVwapAndVolume(true);
+        radarConfig.setVolumeSustainEnabled(false);
+        MarketContextSnapshot context = context(
+                MarketRegime.RANGE,
+                bars,
+                new SymbolMarketContext(
+                        "TEST",
+                        "TAIEX",
+                        "Semi",
+                        118.8,
+                        0.5,
+                        0.2,
+                        0.3,
+                        0.3,
+                        0.2,
+                        112.0,
+                        0.20,
+                        false,
+                        false,
+                        "volume sustain failed"));
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig)
+                .marketContext(context));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getMarketRegime()).isEqualTo(MarketRegime.RANGE);
+        assertThat(result.getBlockReason()).contains("Volume Sustain");
+    }
+
+    @Test
+    void weakMarketBlocksOpenLongWhenVwapSlopeIsNotPositive() {
+        List<Bar> bars = new DeterministicFeed().fetchHistoricalBars("TEST", Timeframe.M1, 80);
+        MarketScannerService scanner = new MarketScannerService(new DeterministicFeed());
+        DecisionConfig decisionConfig = openLongDecisionConfig();
+        RadarStrategyConfig radarConfig = openLongRadarConfig();
+        radarConfig.setMarketRegimeFilterEnabled(true);
+        radarConfig.setWeakMarketStrictLongEnabled(true);
+        radarConfig.setWeakMarketLongPolicy(WeakMarketLongPolicy.ALLOW_EXTREME_STRENGTH_ONLY);
+        MarketContextSnapshot context = context(
+                MarketRegime.WEAK,
+                bars,
+                new SymbolMarketContext(
+                        "TEST",
+                        "TAIEX",
+                        "Semi",
+                        118.8,
+                        2.0,
+                        -1.0,
+                        0.0,
+                        3.0,
+                        2.0,
+                        112.0,
+                        0.0,
+                        true,
+                        true,
+                        "flat vwap slope"));
+
+        MarketScanResult result = scanner.scan("TEST", MarketScannerService.ScanRequest.createDefault()
+                .tradeMode(TradeMode.DAY_TRADE)
+                .timeframe(Timeframe.M1)
+                .barCount(80)
+                .decisionConfig(decisionConfig)
+                .radarStrategyConfig(radarConfig)
+                .marketContext(context));
+
+        assertThat(result.hasTradeSignal()).isFalse();
+        assertThat(result.getMarketRegime()).isEqualTo(MarketRegime.WEAK);
+        assertThat(result.getBlockReason()).contains("VWAP");
+    }
+
     private MarketContextSnapshot weakContext(List<Bar> bars, SymbolMarketContext symbolContext) {
         return new MarketContextSnapshot(
                 MarketRegime.WEAK,
@@ -492,6 +760,78 @@ class MarketScannerServiceTest {
                 Map.of("半導體", new IndustryStrength("半導體", 0.0, 1_000.0, 1, 1, 0.7)),
                 Map.of("TEST", bars),
                 LocalDateTime.now());
+    }
+
+    private MarketContextSnapshot context(MarketRegime regime, List<Bar> bars, SymbolMarketContext symbolContext) {
+        return new MarketContextSnapshot(
+                regime,
+                "fixed context",
+                new MarketMetric("TAIEX", 100.0, regime == MarketRegime.WEAK ? -1.0 : 0.5, 99.0, 0.1, true, 1_000.0, 20),
+                new MarketMetric("TPEx", 100.0, regime == MarketRegime.WEAK ? -0.8 : 0.3, 99.0, 0.1, true, 1_000.0, 20),
+                Map.of("TEST", symbolContext),
+                Map.of("Semi", new IndustryStrength("Semi", 0.5, 1_000.0, 1, 1, 0.7)),
+                Map.of("TEST", bars),
+                LocalDateTime.of(2026, 1, 1, 10, 30));
+    }
+
+    private DecisionConfig openLongDecisionConfig() {
+        DecisionConfig decisionConfig = DecisionConfig.createAggressive();
+        decisionConfig.setRegimeDetectionEnabled(false);
+        decisionConfig.setTrendAnalysisEnabled(false);
+        decisionConfig.setRiskManagementEnabled(false);
+        decisionConfig.getVotingConfig().setLongEntryThreshold(0.1);
+        decisionConfig.getVotingConfig().setMinVotingStrategies(1);
+        return decisionConfig;
+    }
+
+    private RadarStrategyConfig openLongRadarConfig() {
+        RadarStrategyConfig radarConfig = RadarStrategyConfig.createDefault();
+        radarConfig.setRsiEnabled(false);
+        radarConfig.setMovingAverageEnabled(true);
+        radarConfig.setVolumeBreakoutEnabled(true);
+        radarConfig.setFastMovingAveragePeriod(3);
+        radarConfig.setSlowMovingAveragePeriod(8);
+        radarConfig.setBreakoutLookbackBars(12);
+        radarConfig.setVolumeMultiplier(1.2);
+        radarConfig.setMinimumEntryScore(0.0);
+        radarConfig.setBlockBreakoutOnRsiOverbought(false);
+        radarConfig.setRequireBreakoutContinuation(false);
+        return radarConfig;
+    }
+
+    private static class CountingEmptyFeed implements MarketDataFeed {
+        private final AtomicInteger fetchCount = new AtomicInteger();
+
+        @Override
+        public void subscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void unsubscribe(String symbol, MarketDataListener listener) {
+        }
+
+        @Override
+        public void start() {
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isConnected() {
+            return true;
+        }
+
+        @Override
+        public List<Bar> fetchHistoricalBars(String symbol, Timeframe timeframe, int barCount) {
+            fetchCount.incrementAndGet();
+            return List.of();
+        }
+
+        int fetchCount() {
+            return fetchCount.get();
+        }
     }
 
     private static class DeterministicFeed implements MarketDataFeed {

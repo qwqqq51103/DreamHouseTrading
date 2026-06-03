@@ -14,6 +14,8 @@ public class RiskViolation {
         MARGIN_CALL("Margin Call"),
         HOLDING_PERIOD_EXCEEDED("Holding Period Exceeded"),
         END_OF_DAY_CLOSE("End Of Day Close"),
+        DAY_TRADE_TIME_BLOCK("Day Trade Time Block"),
+        STOP_LOSS_COOLDOWN("Stop Loss Cooldown"),
         MIN_RISK_REWARD("Minimum Risk/Reward"),
         VOLATILITY_TOO_LOW("Volatility Too Low"),
         VOLATILITY_TOO_HIGH("Volatility Too High"),

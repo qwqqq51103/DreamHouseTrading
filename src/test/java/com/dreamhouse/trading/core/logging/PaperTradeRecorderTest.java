@@ -28,6 +28,7 @@ class PaperTradeRecorderTest {
         PaperTradeRecorder recorder = new PaperTradeRecorder(tempDir);
         DecisionResult entryDecision = new DecisionResult.Builder()
                 .action(DecisionResult.Action.OPEN_LONG)
+                .decisionSource(DecisionResult.DecisionSource.AUTO_MONITOR)
                 .symbol("2330.TW")
                 .tradeMode(TradeMode.DAY_TRADE)
                 .confidence(0.82)
@@ -66,6 +67,7 @@ class PaperTradeRecorderTest {
                 .commission(10.0)
                 .executionTime(LocalDateTime.of(2026, 5, 12, 9, 10))
                 .decisionReason("entry signal")
+                .autoManaged(true)
                 .message("open")
                 .build();
         ExecutionResult close = new ExecutionResult.Builder()
@@ -84,6 +86,7 @@ class PaperTradeRecorderTest {
                 .commission(10.5)
                 .executionTime(LocalDateTime.of(2026, 5, 12, 9, 30))
                 .decisionReason("exit signal")
+                .autoManaged(true)
                 .message("close")
                 .build();
 
@@ -97,10 +100,10 @@ class PaperTradeRecorderTest {
         List<String> trades = Files.readAllLines(recorder.getTodayCompletedTradeLogPath());
 
         assertThat(orders).hasSize(3);
-        assertThat(orders.get(1)).contains("OPEN-1", "BUY", "entry signal", "SignalRSI[LONG");
+        assertThat(orders.get(1)).contains("OPEN-1", "BUY", "entry signal", "SignalRSI[LONG", "AUTO_MONITOR", "true");
         assertThat(orders.get(2)).contains("CLOSE-1", "SELL", "480.000000");
         assertThat(setups).hasSize(2);
-        assertThat(setups.get(1)).contains("OPEN-1", "2330.TW", "0.770000", "RSI:LONG 82%", "SignalRSI[LONG");
+        assertThat(setups.get(1)).contains("OPEN-1", "2330.TW", "0.770000", "RSI:LONG 82%", "SignalRSI[LONG", "AUTO_MONITOR", "true");
         assertThat(trades).hasSize(2);
         assertThat(trades.get(1)).contains(
                 "OPEN-1",
@@ -110,6 +113,12 @@ class PaperTradeRecorderTest {
                 "true",
                 "WIN",
                 "480.000000",
+                "DAY_TRADE",
+                "100",
+                "entry signal",
+                "exit signal",
+                "AUTO_MONITOR",
+                "true",
                 "-100.000000",
                 "600.000000",
                 "RSI:LONG 82%",
@@ -120,5 +129,136 @@ class PaperTradeRecorderTest {
                 .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
         assertThat(Files.readAllBytes(recorder.getTodayCompletedTradeLogPath()))
                 .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
+    }
+
+    @Test
+    void shouldRecordAutoManagedFlag() throws Exception {
+        RecordedLogs logs = recordAutoManagedTrade();
+
+        assertThat(logs.orders().get(1)).contains("AUTO_MONITOR", "true");
+        assertThat(logs.setups().get(1)).contains("AUTO_MONITOR", "true");
+        assertThat(logs.trades().get(1)).contains("AUTO_MONITOR", "true");
+    }
+
+    @Test
+    void shouldRecordDecisionSource() throws Exception {
+        RecordedLogs logs = recordAutoManagedTrade();
+
+        assertThat(logs.orders().get(1)).contains("AUTO_MONITOR");
+        assertThat(logs.setups().get(1)).contains("AUTO_MONITOR");
+        assertThat(logs.trades().get(1)).contains("AUTO_MONITOR");
+    }
+
+    @Test
+    void shouldRecordModeQuantityPnlAndReason() throws Exception {
+        RecordedLogs logs = recordAutoManagedTrade();
+
+        assertThat(logs.trades().get(1)).contains(
+                "DAY_TRADE",
+                "100",
+                "480.000000",
+                "entry signal",
+                "exit signal");
+    }
+
+    @Test
+    void shouldWritePaperTradeCsvWithUtf8Bom() throws Exception {
+        RecordedLogs logs = recordAutoManagedTrade();
+
+        assertThat(Files.readAllBytes(logs.orderPath()))
+                .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
+        assertThat(Files.readAllBytes(logs.setupPath()))
+                .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
+        assertThat(Files.readAllBytes(logs.completedTradePath()))
+                .startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
+    }
+
+    private RecordedLogs recordAutoManagedTrade() throws Exception {
+        PaperTradeRecorder recorder = new PaperTradeRecorder(tempDir);
+        DecisionResult entryDecision = new DecisionResult.Builder()
+                .action(DecisionResult.Action.OPEN_LONG)
+                .decisionSource(DecisionResult.DecisionSource.AUTO_MONITOR)
+                .symbol("2330.TW")
+                .tradeMode(TradeMode.DAY_TRADE)
+                .confidence(0.82)
+                .riskRewardRatio(2.1)
+                .reason("entry signal")
+                .build();
+        MarketScanResult scanResult = MarketScanResult.builder("2330.TW")
+                .tradeMode(TradeMode.DAY_TRADE)
+                .decisionResult(entryDecision)
+                .score(0.77)
+                .riskRewardRatio(2.1)
+                .rawSignalSummary("RSI:LONG 82%")
+                .scoreComponents(List.of(new RadarScoreComponent(
+                        "SignalRSI",
+                        "LONG",
+                        0.82,
+                        0.9,
+                        0.738,
+                        "RSI oversold")))
+                .blockReason("")
+                .build();
+        ExecutionResult open = new ExecutionResult.Builder()
+                .status(ExecutionResult.Status.SUCCESS)
+                .orderId("OPEN-1")
+                .positionId("OPEN-1")
+                .symbol("2330.TW")
+                .orderSide(OrderSide.BUY)
+                .orderType(OrderType.MARKET)
+                .orderStatus(OrderStatus.FILLED)
+                .requestedQuantity(100)
+                .executedQuantity(100)
+                .requestedPrice(100.0)
+                .executedPrice(100.0)
+                .stopLoss(98.0)
+                .takeProfit(104.0)
+                .commission(10.0)
+                .executionTime(LocalDateTime.of(2026, 5, 12, 9, 10))
+                .decisionReason("entry signal")
+                .autoManaged(true)
+                .message("open")
+                .build();
+        ExecutionResult close = new ExecutionResult.Builder()
+                .status(ExecutionResult.Status.SUCCESS)
+                .orderId("CLOSE-1")
+                .positionId("OPEN-1")
+                .symbol("2330.TW")
+                .orderSide(OrderSide.SELL)
+                .orderType(OrderType.MARKET)
+                .orderStatus(OrderStatus.FILLED)
+                .requestedQuantity(100)
+                .executedQuantity(100)
+                .requestedPrice(105.0)
+                .executedPrice(105.0)
+                .realizedPnL(480.0)
+                .commission(10.5)
+                .executionTime(LocalDateTime.of(2026, 5, 12, 9, 30))
+                .decisionReason("exit signal")
+                .autoManaged(true)
+                .message("close")
+                .build();
+
+        recorder.record(open, entryDecision, scanResult, "test");
+        recorder.recordMarketPrice("2330.TW", 99.0, LocalDateTime.of(2026, 5, 12, 9, 15));
+        recorder.recordMarketPrice("2330.TW", 106.0, LocalDateTime.of(2026, 5, 12, 9, 25));
+        recorder.record(close, null, "test");
+
+        return new RecordedLogs(
+                Files.readAllLines(recorder.getTodayOrderLogPath()),
+                Files.readAllLines(recorder.getTodaySetupLogPath()),
+                Files.readAllLines(recorder.getTodayCompletedTradeLogPath()),
+                recorder.getTodayOrderLogPath(),
+                recorder.getTodaySetupLogPath(),
+                recorder.getTodayCompletedTradeLogPath());
+    }
+
+    private record RecordedLogs(
+            List<String> orders,
+            List<String> setups,
+            List<String> trades,
+            Path orderPath,
+            Path setupPath,
+            Path completedTradePath) {
     }
 }

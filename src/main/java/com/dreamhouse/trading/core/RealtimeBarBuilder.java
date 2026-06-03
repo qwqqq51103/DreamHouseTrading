@@ -90,13 +90,22 @@ public class RealtimeBarBuilder {
 
         // ⭐ 將快照按K線週期分組，計算真實的OHLC
         Map<LocalDateTime, List<Snapshot>> barGroups = new LinkedHashMap<>();
+        Map<LocalDateTime, Long> barVolumes = new LinkedHashMap<>();
+        Long previousCumulativeVolume = null;
 
         for (Snapshot snapshot : snapshots) {
             // 計算這個快照屬於哪根K線
             LocalDateTime barTime = alignToTimeWindow(snapshot.timestamp, timeframe.getMinutes());
+            long deltaVolume = previousCumulativeVolume == null
+                    ? Math.max(0L, snapshot.volume)
+                    : snapshot.volume >= previousCumulativeVolume
+                            ? snapshot.volume - previousCumulativeVolume
+                            : Math.max(0L, snapshot.volume);
+            previousCumulativeVolume = snapshot.volume;
 
             if (!barTime.isBefore(marketOpen)) {
                 barGroups.computeIfAbsent(barTime, k -> new ArrayList<>()).add(snapshot);
+                barVolumes.merge(barTime, deltaVolume, Long::sum);
             }
         }
 
@@ -114,7 +123,7 @@ public class RealtimeBarBuilder {
             double close = barSnapshots.get(barSnapshots.size() - 1).close;  // 最後一個快照作為收盤
             double high = barSnapshots.stream().mapToDouble(s -> s.high).max().orElse(close);
             double low = barSnapshots.stream().mapToDouble(s -> s.low).min().orElse(close);
-            long volume = barSnapshots.get(barSnapshots.size() - 1).volume;  // 使用最後快照的累計量
+            long volume = barVolumes.getOrDefault(barTime, 0L);
 
             Bar bar = new Bar(barTime, open, high, low, close, volume);
             bars.add(bar);
@@ -135,7 +144,15 @@ public class RealtimeBarBuilder {
      * 將時間對齊到K線窗口開始時間
      */
     private LocalDateTime alignToTimeWindow(LocalDateTime time, int periodMinutes) {
-        int totalMinutes = time.getHour() * 60 + time.getMinute();
+        LocalDateTime effectiveTime = time;
+        if (periodMinutes > 0 && periodMinutes < Timeframe.D1.getMinutes()) {
+            LocalDateTime marketClose = time.toLocalDate().atTime(13, 30);
+            if (!effectiveTime.isBefore(marketClose)) {
+                effectiveTime = marketClose.minusNanos(1);
+            }
+        }
+
+        int totalMinutes = effectiveTime.getHour() * 60 + effectiveTime.getMinute();
 
         // 從09:00開始計算
         int marketOpenMinutes = 9 * 60;
@@ -152,7 +169,7 @@ public class RealtimeBarBuilder {
         int hour = alignedTotalMinutes / 60;
         int minute = alignedTotalMinutes % 60;
 
-        return time.toLocalDate().atTime(hour, minute);
+        return effectiveTime.toLocalDate().atTime(hour, minute);
     }
 
     /**

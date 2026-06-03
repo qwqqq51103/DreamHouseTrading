@@ -130,4 +130,155 @@ class ExecutionEngineTest {
         assertThat(close.getTax()).isEqualTo(151.5);
         assertThat(close.getRealizedPnL()).isLessThan(1000.0 - 100.0 * 1000 * 0.001425 - 101.0 * 1000 * 0.001425);
     }
+
+    @Test
+    void shouldRejectOpenLongWhenCashIsInsufficientForDecisionQuantity() {
+        ExecutionEngine smallAccountEngine = new ExecutionEngine(ExecutionMode.BACKTEST, new Portfolio(50_000.0), 0.001425);
+        DecisionResult decision = openLongDecision(1_000, "entry setup valid");
+
+        ExecutionResult result = smallAccountEngine.executeDecision(decision, 100.0);
+
+        assertThat(result.isFailed()).isTrue();
+        assertThat(result.getOrderStatus()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(result.getMessage()).contains("Required cash");
+        assertThat(smallAccountEngine.getPortfolio().hasPosition("2330.TW")).isFalse();
+    }
+
+    @Test
+    void shouldExecuteOpenLongThroughDecisionResult() {
+        DecisionResult decision = openLongDecision(1_000, "auto monitor entry setup valid");
+
+        ExecutionResult result = executionEngine.executeDecision(decision, 100.0);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getOrderSide()).isEqualTo(OrderSide.BUY);
+        assertThat(result.getRequestedQuantity()).isEqualTo(1_000);
+        assertThat(result.getExecutedPrice()).isEqualTo(100.0);
+        assertThat(portfolio.getPosition("2330.TW").getQuantity()).isEqualTo(1_000);
+    }
+
+    @Test
+    void shouldMarkAutoManagedPositionWhenDecisionIsAutoMonitor() {
+        DecisionResult decision = openLongDecision(1_000, "entry setup from radar",
+                DecisionResult.DecisionSource.AUTO_MONITOR);
+
+        ExecutionResult result = executionEngine.executeDecision(decision, 100.0);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.isAutoManaged()).isTrue();
+        assertThat(executionEngine.isAutoManagedPosition("2330.TW")).isTrue();
+    }
+
+    @Test
+    void shouldNotCreateShortPositionInLongOnlyMode() {
+        DecisionResult decision = new DecisionResult.Builder()
+                .action(DecisionResult.Action.OPEN_SHORT)
+                .source(DecisionResult.Source.VOTING_ENTRY)
+                .symbol("2330.TW")
+                .orderType(OrderType.MARKET)
+                .orderSide(OrderSide.SHORT)
+                .suggestedQuantity(1_000)
+                .reason("short setup")
+                .build();
+
+        ExecutionResult result = executionEngine.executeDecision(decision, 100.0);
+
+        assertThat(result.isFailed()).isTrue();
+        assertThat(result.getOrderStatus()).isEqualTo(OrderStatus.REJECTED);
+        assertThat(result.getMessage()).contains("Short selling is disabled");
+        assertThat(portfolio.hasPosition("2330.TW")).isFalse();
+    }
+
+    @Test
+    void shouldPartialClosePositionAndPreserveRemainingQuantity() {
+        executionEngine.openPosition("2330.TW", 1_000, 100.0);
+
+        ExecutionResult result = executionEngine.partialClose("2330.TW", 0.4, 110.0);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getExecutedQuantity()).isEqualTo(400);
+        assertThat(result.getDecisionReason()).isEqualTo("Partial close");
+        assertThat(result.getRealizedPnL()).isGreaterThan(0.0);
+        assertThat(portfolio.getPosition("2330.TW").getQuantity()).isEqualTo(600);
+    }
+
+    @Test
+    void shouldForceCloseAllAutoManagedPositions() {
+        executionEngine.executeDecision(openLongDecision(
+                1_000,
+                "auto entry",
+                DecisionResult.DecisionSource.AUTO_MONITOR), 100.0);
+        executionEngine.openPosition("2317.TW", 1_000, 50.0);
+
+        var results = executionEngine.forceCloseAutoManagedPositions(
+                symbol -> 101.0,
+                OrderType.MARKET,
+                "FORCE_CLOSE",
+                DecisionResult.DecisionSource.AUTO_MONITOR);
+
+        assertThat(results).containsOnlyKeys("2330.TW");
+        assertThat(results.get("2330.TW").isSuccess()).isTrue();
+        assertThat(results.get("2330.TW").isAutoManaged()).isTrue();
+        assertThat(results.get("2330.TW").getDecisionSource()).isEqualTo(DecisionResult.DecisionSource.AUTO_MONITOR);
+        assertThat(portfolio.hasPosition("2330.TW")).isFalse();
+        assertThat(portfolio.hasPosition("2317.TW")).isTrue();
+    }
+
+    @Test
+    void shouldRejectReversePositionInLongOnlyMode() {
+        executionEngine.openPosition("2330.TW", 1_000, 100.0);
+
+        ExecutionResult[] results = executionEngine.reversePosition("2330.TW", 1_000, 99.0);
+
+        assertThat(results).hasSize(2);
+        assertThat(results[0].isFailed()).isTrue();
+        assertThat(results[0].getMessage()).contains("Reverse position is disabled");
+        assertThat(results[1].isFailed()).isTrue();
+        assertThat(results[1].getMessage()).contains("Short selling is disabled");
+        assertThat(portfolio.getPosition("2330.TW").getQuantity()).isEqualTo(1_000);
+    }
+
+    @Test
+    void shouldNotLoseDecisionSourceWhenClosingPosition() {
+        executionEngine.executeDecision(openLongDecision(
+                1_000,
+                "auto entry",
+                DecisionResult.DecisionSource.AUTO_MONITOR), 100.0);
+        DecisionResult closeDecision = new DecisionResult.Builder()
+                .action(DecisionResult.Action.CLOSE_POSITION)
+                .source(DecisionResult.Source.STOP_MANAGER)
+                .decisionSource(DecisionResult.DecisionSource.AUTO_MONITOR)
+                .symbol("2330.TW")
+                .orderType(OrderType.STOP)
+                .orderSide(OrderSide.SELL)
+                .suggestedQuantity(1_000)
+                .reason("STOP_LOSS")
+                .build();
+
+        ExecutionResult close = executionEngine.executeDecision(closeDecision, 98.0);
+
+        assertThat(close.isSuccess()).isTrue();
+        assertThat(close.getDecisionSource()).isEqualTo(DecisionResult.DecisionSource.AUTO_MONITOR);
+        assertThat(close.isAutoManaged()).isTrue();
+        assertThat(close.getOrderType()).isEqualTo(OrderType.STOP);
+    }
+
+    private DecisionResult openLongDecision(int quantity, String reason) {
+        return openLongDecision(quantity, reason, DecisionResult.DecisionSource.SYSTEM);
+    }
+
+    private DecisionResult openLongDecision(int quantity, String reason, DecisionResult.DecisionSource decisionSource) {
+        return new DecisionResult.Builder()
+                .action(DecisionResult.Action.OPEN_LONG)
+                .source(DecisionResult.Source.VOTING_ENTRY)
+                .decisionSource(decisionSource)
+                .symbol("2330.TW")
+                .orderType(OrderType.MARKET)
+                .orderSide(OrderSide.BUY)
+                .suggestedQuantity(quantity)
+                .suggestedStopLoss(98.0)
+                .suggestedTakeProfit(104.0)
+                .reason(reason)
+                .build();
+    }
 }
