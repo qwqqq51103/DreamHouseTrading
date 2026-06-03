@@ -1,37 +1,37 @@
-# DreamHouseTrading Project Context
+# DreamHouseTrading 專案脈絡
 
-Last updated: 2026-06-03
+最後更新：2026-06-03
 
-DreamHouseTrading is a Java 17 / Maven / Swing desktop trading analysis platform. It is designed for analysis, market scanning, decision support, backtesting, replay, and simulated execution. It must not perform real broker order placement.
+DreamHouseTrading 是 Java 17 / Maven / Swing 桌面交易分析平台，用於分析、行情掃描、決策輔助、回測、重播與模擬執行。本專案不得執行真實券商下單。
 
-## 1. Technology
+## 1. 技術棧
 
-- Language: Java 17
-- Build: Maven
-- UI: Swing, FlatLaf, JFreeChart, Modern Docking
-- Tests: JUnit 5, Mockito, AssertJ, Surefire, JaCoCo
-- Primary local market data: MySQL `market_data`
+- 語言：Java 17
+- 建構：Maven
+- UI：Swing、FlatLaf、JFreeChart、Modern Docking
+- 測試：JUnit 5、Mockito、AssertJ、Surefire、JaCoCo
+- 主要本機行情資料：MySQL `market_data`
 
-## 2. Product Boundary
+## 2. 產品邊界
 
-The system may:
+系統可以：
 
-- Load market data.
-- Generate signals.
-- Build standardized decisions.
-- Apply risk checks.
-- Simulate execution.
-- Backtest and replay.
-- Export reports and paper-trade records.
+- 載入行情資料。
+- 產生訊號。
+- 建立標準化決策。
+- 套用風控檢查。
+- 模擬執行。
+- 回測與重播。
+- 匯出報告與 paper-trade records。
 
-The system must not:
+系統不得：
 
-- Route real broker orders.
-- Add executable short-selling paths without explicit future scope approval.
-- Use UI state as the source of core trading truth.
-- Use FinMind as a realtime intraday fallback source.
+- 送出真實券商訂單。
+- 未經明確未來 scope 核准，就新增可執行放空路徑。
+- 讓 UI state 成為核心交易事實來源。
+- 使用 FinMind 作為盤中即時 fallback source。
 
-## 3. Core Flow
+## 3. 核心流程
 
 1. Market Data
 2. Signal Generation
@@ -39,7 +39,7 @@ The system must not:
 4. Execution Simulation
 5. Backtest & Reporting
 
-Important core outputs and services:
+重要核心輸出與服務：
 
 - `MarketScanResult`
 - `DecisionResult`
@@ -47,67 +47,67 @@ Important core outputs and services:
 - `ExecutionEngine`
 - `PaperTradeRecorder`
 
-## 4. Data Source Boundary
+## 4. 資料源邊界
 
-Intraday radar and intraday K bars:
-- Prefer `MarketDataCollectorFeed` reading local SQL `market_data`.
-- Do not fallback to FinMind realtime quotes.
+盤中雷達與盤中 K 棒：
+- 優先使用 `MarketDataCollectorFeed` 讀取本機 SQL `market_data`。
+- 不得 fallback 到 FinMind 即時報價。
 
-FinMind:
-- Low-frequency data.
-- After-hours data.
-- News.
-- Broker/branch data.
-- Manual API query workflows.
+FinMind：
+- 低頻資料。
+- 盤後資料。
+- 新聞。
+- 券商 / 分點資料。
+- 手動 API 查詢流程。
 
-Yahoo / other feeds:
-- Secondary or fallback market-data workflows only where documented.
+Yahoo / 其他 feeds：
+- 只在已文件化的 secondary 或 fallback market-data workflows 使用。
 
-## 5. Trading Rules
+## 5. 交易規則
 
-Current v1 day-trade automation is long-only.
+目前 v1 當沖自動化維持 long-only。
 
-Key rules:
+關鍵規則：
 
-- Auto monitor and today's opportunity radar are forced to `DAY_TRADE`.
-- Auto `DAY_TRADE` order quantity is fixed at 1000 shares.
-- Insufficient cash rejects; it must not reduce to odd-lot quantity.
-- After 13:25, no auto-monitor `OPEN_LONG`.
-- At/after 13:25, auto-managed positions are force-closed.
-- Manual positions must not be treated as auto-managed.
-- RSI oversold is not by itself a long-entry reason.
-- `SignalRSI = SHORT` blocks auto-monitor `OPEN_LONG`.
-- Close <= VWAP, VWAP slope <= 0, failed Volume Sustain, and ATR chase excess are hard block candidates or explicit block reasons.
+- Auto monitor 與今日機會雷達強制為 `DAY_TRADE`。
+- 自動 `DAY_TRADE` 下單數量固定 1000 股。
+- 現金不足時拒單；不得降成零股數量。
+- 13:25 後禁止 auto-monitor `OPEN_LONG`。
+- 13:25 起 auto-managed positions 強制平倉。
+- Manual positions 不得被當成 auto-managed。
+- RSI 超賣不能單獨作為開多理由。
+- `SignalRSI = SHORT` 會阻擋 auto-monitor `OPEN_LONG`。
+- Close <= VWAP、VWAP slope <= 0、Volume Sustain 失敗、ATR 追價過高，應作為硬阻擋候選或明確阻擋原因。
 
-## 6. Backtest / Replay Rules
+## 6. Backtest / Replay 規則
 
-- Avoid lookahead bias.
-- Signal on completed K bar N can execute only on N+1 open or a next visible tick.
-- If take profit and stop loss are both touched in the same K bar, count stop loss first.
-- Replay with ticks must aggregate only ticks visible at replay time.
-- Candles-only mode can use only completed bars.
-- Cross-day warmup can initialize indicators but must not pollute selected-date performance.
-- Backtest/replay reports must preserve timeframe and source diagnostics.
+- 必須避免 lookahead bias。
+- 第 N 根已完成 K 棒產生的訊號，只能在第 N+1 根 open 或下一筆可見 tick 成交。
+- 同一根 K 棒同時碰到停利與停損時，保守先算停損。
+- replay 若使用 ticks，必須只聚合 replay time 當下可見 ticks。
+- candles-only 模式只能使用已收完 K 棒。
+- 跨日暖機可初始化指標，但不得污染指定日期績效。
+- backtest / replay 報告必須保留 timeframe 與 source diagnostics。
 
-## 7. AI Collaboration Mode
+## 7. AI 協作模式
 
-Recommended mode: semi-automatic GPT + Codex workflow.
+建議模式：GPT + Codex 半自動協作流程。
 
-- GPT: requirement decomposition, spec, testing strategy, code review.
-- Codex: repo reading, code/doc/test edits, diff or PR preparation.
-- User: final confirmation, merge, and production judgment.
+- GPT：需求拆解、規格、測試策略、code review。
+- Codex：讀取 repo、修改 code / docs / tests、準備 diff 或 PR。
+- 使用者：最終確認、合併與上線判斷。
 
-This project is not ready for highly automated merging because trading semantics are dense, UI and core workflows still intersect, and regression risk requires human review.
+本專案目前不適合高度自動合併，因為交易語意密度高，UI 與核心流程仍有交錯，且回歸風險需要人工審查。
 
-## 8. Local State
+## 8. 本機狀態
 
-Do not commit:
+不得提交：
 
 - `logs/`
 - `data/`
 - `config/ui-layout.xml`
 - diagnostic CSV
 - paper trade CSV
-- local credentials such as `datasource.properties`
+- `datasource.properties` 等本機 credentials
 
-If these files are already tracked, report them before making PR decisions.
+如果這些檔案已被追蹤，做 PR 決策前必須先回報。
